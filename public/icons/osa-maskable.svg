@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#2563eb" />
+  <circle cx="256" cy="256" r="180" fill="#1d4ed8" />
+  <text x="256" y="264" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-family="system-ui, -apple-system, sans-serif" font-weight="800" font-size="112" letter-spacing="4">OSA</text>
+  <circle cx="356" cy="164" r="20" fill="#22c55e" stroke="#1d4ed8" stroke-width="6" />
+</svg>
