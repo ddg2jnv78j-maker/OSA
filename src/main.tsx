@@ -14,7 +14,10 @@ if ('serviceWorker' in navigator) {
           await reg.unregister();
         }
       }
-      await navigator.serviceWorker.register('/service-worker.js');
+      const baseUrl = import.meta.env.BASE_URL || '/';
+      await navigator.serviceWorker.register(`${baseUrl}service-worker.js`, {
+        scope: baseUrl,
+      });
     } catch {
       // Ignore SW registration errors in restricted preview contexts
     }

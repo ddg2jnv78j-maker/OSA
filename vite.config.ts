@@ -5,14 +5,17 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
+  const base =
+    process.env.VITE_BASE_PATH || (process.env.GITHUB_ACTIONS === 'true' ? '/OSA/' : '/');
+
   return {
-    base: '/OSA/',
+    base,
     plugins: [
       react(),
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        injectRegister: null, // Managed cleanly by /service-worker.js in src/main.tsx without duplicate SW conflict
+        injectRegister: null, // Managed cleanly by service-worker.js in src/main.tsx without duplicate SW conflict
         includeAssets: [
           'icon.svg',
           'apple-touch-icon.png',
@@ -24,7 +27,7 @@ export default defineConfig(() => {
           'offline.html',
         ],
         manifest: {
-          id: '/',
+          id: base,
           name: 'OSA',
           short_name: 'OSA',
           description: 'OSA — Complete Real-Time Messaging, Status, Groups, and WebRTC Audio/Video Calling App',
@@ -32,29 +35,29 @@ export default defineConfig(() => {
           background_color: '#0f172a',
           display: 'standalone',
           orientation: 'portrait',
-          start_url: '/OSA/',
-          scope: '/OSA/',
+          start_url: base,
+          scope: base,
           icons: [
             {
-              src: '/OSA/pwa-192x192.png',
+              src: `${base}pwa-192x192.png`,
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/OSA/pwa-512x512.png',
+              src: `${base}pwa-512x512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/OSA/pwa-maskable-512x512.png',
+              src: `${base}pwa-maskable-512x512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
             },
             {
-              src: '/OSA/icons/osa-icon.svg',
+              src: `${base}icons/osa-icon.svg`,
               sizes: 'any',
               type: 'image/svg+xml',
               purpose: 'any',

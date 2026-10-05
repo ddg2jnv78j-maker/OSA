@@ -189,3 +189,40 @@ OSA supports real-time in-app notifications via Supabase Realtime (`notification
 - **Never expose the Supabase `service_role` key** in `.env` or frontend code. Use only the public `anon` key (`VITE_SUPABASE_ANON_KEY`).
 - All database access is protected by PostgreSQL **Row Level Security (RLS)** defined in `supabase/schema.sql`.
 - Account deletion is executed safely on the server via the `public.delete_own_account()` SECURITY DEFINER RPC function or the optional [`supabase/functions/delete-account/index.ts`](./supabase/functions/delete-account/index.ts) Edge Function.
+
+---
+
+## 17. Updating the App & Building an Android APK
+
+### Updating the Application Later
+1. Pull the latest changes from GitHub:
+   ```bash
+   git pull origin main
+   ```
+2. Install any new packages, run type-checking, and build:
+   ```bash
+   npm install
+   npm run lint
+   npm run build
+   ```
+3. Commit and push your updates:
+   ```bash
+   git add .
+   git commit -m "Describe your update"
+   git push origin main
+   ```
+
+### Installing on Android & iOS (PWA WebAPK & Native Capacitor APK)
+- **Direct Install via Browser (No APK sideloading required)**:
+  - Open the live HTTPS URL in **Chrome on Android** and tap **Install App** in the top header (or browser menu &rarr; **Add to Home screen / Install app**). Chrome automatically generates and installs a signed Android **WebAPK**.
+  - On **iPhone / iPad (Safari)**, tap the **Share** button and select **Add to Home Screen**.
+- **Building a Native `.apk` Locally (Requires JDK 17+ & Android SDK)**:
+  The project includes [`capacitor.config.json`](./capacitor.config.json). On a machine with Android Studio / Android SDK installed:
+  ```bash
+  npm install @capacitor/core @capacitor/cli @capacitor/android
+  npm run build
+  npx cap add android
+  npx cap sync android
+  cd android && ./gradlew assembleDebug
+  ```
+  The installable APK will be output at `android/app/build/outputs/apk/debug/app-debug.apk`.
