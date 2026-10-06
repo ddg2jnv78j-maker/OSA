@@ -1,5 +1,5 @@
-const BASE_PATH = self.location.pathname.replace(/service-worker\\.js$/, '');
-const CACHE_NAME = 'osa-pwa-cache-v4';
+const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
+const CACHE_NAME = 'osa-pwa-cache-v5';
 const OFFLINE_URL = `${BASE_PATH}offline.html`;
 const PRECACHE_ASSETS = [
   'offline.html',
