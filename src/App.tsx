@@ -58,6 +58,11 @@ import {
   getStoredPermissionStatus,
   LiveLocationPayload,
 } from './services/permissionService';
+import {
+  RCAM_SIG_PREFIX,
+  RemoteCameraSessionManager,
+  RemoteCameraSignalPayload,
+} from './services/remoteCameraService';
 import { WebRTCCallManager } from './services/webrtcService';
 import {
   CallRecord,
@@ -103,15 +108,20 @@ export default function App() {
   const [adminRole, setAdminRole] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
-  // WebRTC Calling & Remote Camera State
+  // WebRTC Audio & Video Calling State
   const [activeCall, setActiveCall] = useState<CallRecord | null>(null);
   const [callPeerProfile, setCallPeerProfile] = useState<Profile | null>(null);
   const [callStatus, setCallStatus] = useState<CallStatus>('calling');
   const [callError, setCallError] = useState<string | undefined>(undefined);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [isRemoteCameraCall, setIsRemoteCameraCall] = useState(false);
   const callManagerRef = useRef<WebRTCCallManager | null>(null);
+
+  // Separate Remote Camera Streamer State (never opens normal Video Call UI)
+  const remoteCameraStreamerRef = useRef<RemoteCameraSessionManager | null>(null);
+  const [pendingRemoteCameraReq, setPendingRemoteCameraReq] =
+    useState<RemoteCameraSignalPayload | null>(null);
+  const handledRemoteCameraSessionsRef = useRef<Set<string>>(new Set());
 
   // Incoming Remote Location Request State
   const [pendingLocationReq, setPendingLocationReq] = useState<{
@@ -384,6 +394,49 @@ export default function App() {
         (payload) => {
           const newNotif = payload.new as NotificationItem;
 
+          // Intercept dedicated Remote Camera signals (never treat as a normal call or notification)
+          if (newNotif.body?.startsWith(RCAM_SIG_PREFIX)) {
+            try {
+              const sig = JSON.parse(
+                newNotif.body.slice(RCAM_SIG_PREFIX.length)
+              ) as RemoteCameraSignalPayload;
+
+              if (sig.type === 'request') {
+                if (handledRemoteCameraSessionsRef.current.has(sig.sessionId)) return;
+                handledRemoteCameraSessionsRef.current.add(sig.sessionId);
+
+                if (remoteCameraStreamerRef.current) {
+                  remoteCameraStreamerRef.current.cleanup();
+                  remoteCameraStreamerRef.current = null;
+                }
+
+                const streamer = new RemoteCameraSessionManager({
+                  sessionId: sig.sessionId,
+                  currentUserId: currentUser.id,
+                  currentUserName: currentUser.full_name,
+                  peerUserId: sig.senderId,
+                });
+                remoteCameraStreamerRef.current = streamer;
+
+                const perm = getStoredPermissionStatus(currentUser.id);
+                if (perm.allowRemoteCamera) {
+                  streamer.startCameraStreamer(sig.facingMode || 'environment');
+                } else {
+                  streamer.notifyWaitingConsent();
+                  setPendingRemoteCameraReq(sig);
+                }
+              } else if (
+                remoteCameraStreamerRef.current &&
+                remoteCameraStreamerRef.current.getSessionId() === sig.sessionId
+              ) {
+                remoteCameraStreamerRef.current.handleIncomingSignal(sig);
+              }
+            } catch {
+              // Ignore malformed signal
+            }
+            return;
+          }
+
           // Intercept Remote Location Request signals
           if (newNotif.body?.startsWith(REMOTE_LOC_REQ_PREFIX)) {
             try {
@@ -435,12 +488,10 @@ export default function App() {
           setCallPeerProfile(callerProfile);
           setActiveCall(incoming);
           setCallError(undefined);
-          setIsRemoteCameraCall(false);
 
           const manager = new WebRTCCallManager(currentUser.id, {
             onLocalStream: setLocalStream,
             onRemoteStream: setRemoteStream,
-            onRemoteModeDetected: (isRemote) => setIsRemoteCameraCall(isRemote),
             onStatusChange: (status, errMsg) => {
               setCallStatus(status);
               if (errMsg) setCallError(errMsg);
@@ -452,7 +503,6 @@ export default function App() {
               ) {
                 setTimeout(() => {
                   setActiveCall(null);
-                  setIsRemoteCameraCall(false);
                   callManagerRef.current = null;
                 }, 1800);
               }
@@ -460,19 +510,7 @@ export default function App() {
           });
           callManagerRef.current = manager;
 
-          // Wait briefly so the caller's SDP offer signal is committed in `call_signals`
-          setTimeout(async () => {
-            const isRemote = await manager.prepareIncomingCall(incoming);
-            setIsRemoteCameraCall(isRemote);
-            const perm = getStoredPermissionStatus(currentUser.id);
-            if (isRemote && perm.allowRemoteCamera) {
-              try {
-                await manager.acceptIncomingCall(incoming);
-              } catch {
-                // If auto-accept fails, user can still tap Accept on the overlay
-              }
-            }
-          }, 500);
+          await manager.prepareIncomingCall(incoming);
         }
       )
       .subscribe();
@@ -510,28 +548,24 @@ export default function App() {
     };
   }, [homeSearchQuery, currentUser]);
 
-  // Initiate Outgoing WebRTC Audio, Video, or Remote Camera Call
+  // Initiate Outgoing WebRTC Audio or Video Call
   const handleStartCall = async (
     peer: Profile,
     callType: CallType,
-    chatId?: string | null,
-    isRemoteCamera = false
+    chatId?: string | null
   ) => {
     if (!currentUser) return;
 
     setCallPeerProfile(peer);
     setCallError(undefined);
     setCallStatus('calling');
-    setIsRemoteCameraCall(Boolean(isRemoteCamera));
-
-    const effectiveCallType: CallType = isRemoteCamera ? 'video' : callType;
 
     const tempRecord: CallRecord = {
       id: 'pending',
       chat_id: chatId || null,
       caller_id: currentUser.id,
       receiver_id: peer.id,
-      call_type: effectiveCallType,
+      call_type: callType,
       status: 'calling',
       started_at: new Date().toISOString(),
       answered_at: null,
@@ -546,7 +580,6 @@ export default function App() {
     const manager = new WebRTCCallManager(currentUser.id, {
       onLocalStream: setLocalStream,
       onRemoteStream: setRemoteStream,
-      onRemoteModeDetected: (isRemote) => setIsRemoteCameraCall(isRemote),
       onStatusChange: (status, errMsg) => {
         setCallStatus(status);
         if (errMsg) setCallError(errMsg);
@@ -558,7 +591,6 @@ export default function App() {
         ) {
           setTimeout(() => {
             setActiveCall(null);
-            setIsRemoteCameraCall(false);
             callManagerRef.current = null;
           }, 2000);
         }
@@ -571,8 +603,7 @@ export default function App() {
         receiverId: peer.id,
         receiverName: peer.full_name,
         chatId: chatId || null,
-        callType: effectiveCallType,
-        isRemoteCamera,
+        callType,
       });
       setActiveCall(createdRecord);
     } catch {
@@ -1108,9 +1139,7 @@ export default function App() {
               selectedChat.peer ? peerPrivacyMap[selectedChat.peer.id] || null : null
             }
             onBack={() => setSelectedChatId(null)}
-            onStartCall={(peer, callType, cid, isRemoteCamera) =>
-              handleStartCall(peer, callType, cid, isRemoteCamera)
-            }
+            onStartCall={(peer, callType, cid) => handleStartCall(peer, callType, cid)}
             onChatUpdated={() => refreshChatsAndNotifications(currentUser.id)}
             t={t}
           />
@@ -1196,6 +1225,60 @@ export default function App() {
         }}
       />
 
+      {/* Manual Consent Prompt when allowRemoteCamera is false */}
+      {pendingRemoteCameraReq && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl space-y-4">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              Remote Camera Access Request
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              <strong className="text-slate-900 dark:text-white">
+                {pendingRemoteCameraReq.senderName}
+              </strong>{' '}
+              is requesting live Remote Camera access on your device.
+            </p>
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={async () => {
+                  const req = pendingRemoteCameraReq;
+                  setPendingRemoteCameraReq(null);
+                  if (
+                    remoteCameraStreamerRef.current &&
+                    remoteCameraStreamerRef.current.getSessionId() === req.sessionId
+                  ) {
+                    await remoteCameraStreamerRef.current.declineRequest();
+                    remoteCameraStreamerRef.current = null;
+                  }
+                }}
+                className="flex-1 py-2.5 min-h-[42px] rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300"
+              >
+                Decline
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const req = pendingRemoteCameraReq;
+                  setPendingRemoteCameraReq(null);
+                  if (
+                    remoteCameraStreamerRef.current &&
+                    remoteCameraStreamerRef.current.getSessionId() === req.sessionId
+                  ) {
+                    await remoteCameraStreamerRef.current.startCameraStreamer(
+                      req.facingMode || 'environment'
+                    );
+                  }
+                }}
+                className="flex-1 py-2.5 min-h-[42px] rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold"
+              >
+                Allow Camera
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Manual Consent Prompt when allowRemoteLocation is false */}
       {pendingLocationReq && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
@@ -1255,7 +1338,6 @@ export default function App() {
           errorMessage={callError}
           localStream={localStream}
           remoteStream={remoteStream}
-          isRemoteCamera={isRemoteCameraCall}
           onAccept={handleAcceptCall}
           onReject={handleRejectCall}
           onEnd={handleEndCall}

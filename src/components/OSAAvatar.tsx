@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Users } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 interface OSAAvatarProps {
   name: string;
@@ -37,6 +38,47 @@ const PALETTE = [
   'bg-slate-700 text-white',
 ];
 
+function extractStorageBucketAndPath(rawUrl: string): {
+  bucket: string;
+  objectPath: string;
+} | null {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+
+  // Match Supabase Storage URLs: /storage/v1/object/(public|sign|authenticated)/<bucket>/<path>
+  const match = trimmed.match(
+    /\/storage\/v1\/object\/(?:public|sign|authenticated)\/([^/?#]+)\/([^?#]+)/i
+  );
+  if (match && match[1] && match[2]) {
+    return {
+      bucket: decodeURIComponent(match[1]),
+      objectPath: decodeURIComponent(match[2]),
+    };
+  }
+
+  // Relative storage path such as "<userId>/avatar_123.png" or "osa-avatars/<userId>/avatar.png"
+  if (
+    !trimmed.startsWith('http://') &&
+    !trimmed.startsWith('https://') &&
+    !trimmed.startsWith('data:') &&
+    !trimmed.startsWith('blob:')
+  ) {
+    const clean = trimmed.replace(/^\/+/, '');
+    if (clean.startsWith('osa-avatars/')) {
+      return {
+        bucket: 'osa-avatars',
+        objectPath: clean.slice('osa-avatars/'.length),
+      };
+    }
+    return {
+      bucket: 'osa-avatars',
+      objectPath: clean,
+    };
+  }
+
+  return null;
+}
+
 export const OSAAvatar: React.FC<OSAAvatarProps> = ({
   name,
   avatarUrl,
@@ -47,7 +89,82 @@ export const OSAAvatar: React.FC<OSAAvatarProps> = ({
   hidePhotoForPrivacy = false,
   className = '',
 }) => {
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
   const [imgError, setImgError] = useState(false);
+  const [triedSignedFallback, setTriedSignedFallback] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+    setTriedSignedFallback(false);
+
+    if (!avatarUrl || !avatarUrl.trim()) {
+      setResolvedSrc(null);
+      return;
+    }
+
+    const raw = avatarUrl.trim();
+    if (
+      raw.startsWith('http://') ||
+      raw.startsWith('https://') ||
+      raw.startsWith('data:') ||
+      raw.startsWith('blob:')
+    ) {
+      setResolvedSrc(raw);
+      return;
+    }
+
+    // Relative storage path -> convert to public URL first
+    const parsed = extractStorageBucketAndPath(raw);
+    if (parsed) {
+      const { data } = supabase.storage
+        .from(parsed.bucket)
+        .getPublicUrl(parsed.objectPath);
+      setResolvedSrc(data.publicUrl);
+    } else {
+      setResolvedSrc(raw);
+    }
+  }, [avatarUrl]);
+
+  const handleImageError = async () => {
+    if (triedSignedFallback || !avatarUrl) {
+      setImgError(true);
+      return;
+    }
+    setTriedSignedFallback(true);
+
+    const parsed = extractStorageBucketAndPath(avatarUrl);
+    if (!parsed) {
+      setImgError(true);
+      return;
+    }
+
+    try {
+      // 1. Try creating a signed URL using the authenticated session
+      const { data: signedData } = await supabase.storage
+        .from(parsed.bucket)
+        .createSignedUrl(parsed.objectPath, 60 * 60 * 24);
+
+      if (signedData?.signedUrl) {
+        setResolvedSrc(signedData.signedUrl);
+        return;
+      }
+
+      // 2. Fallback: download blob via authenticated storage API
+      const { data: blobData } = await supabase.storage
+        .from(parsed.bucket)
+        .download(parsed.objectPath);
+
+      if (blobData) {
+        const objectUrl = URL.createObjectURL(blobData);
+        setResolvedSrc(objectUrl);
+        return;
+      }
+    } catch {
+      // Fall through to initials avatar
+    }
+
+    setImgError(true);
+  };
 
   const initials = (name || 'OSA')
     .trim()
@@ -59,16 +176,16 @@ export const OSAAvatar: React.FC<OSAAvatarProps> = ({
   const colorIndex =
     (name || 'OSA').split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % PALETTE.length;
 
-  const shouldRenderImage = Boolean(avatarUrl && !imgError && !hidePhotoForPrivacy);
+  const shouldRenderImage = Boolean(resolvedSrc && !imgError && !hidePhotoForPrivacy);
 
   return (
     <div className={`relative inline-flex shrink-0 select-none ${className}`}>
       {shouldRenderImage ? (
         <img
-          src={avatarUrl!}
+          src={resolvedSrc!}
           alt={name || 'OSA User'}
           referrerPolicy="no-referrer"
-          onError={() => setImgError(true)}
+          onError={handleImageError}
           className={`${SIZE_MAP[size]} rounded-full object-cover bg-slate-200 dark:bg-slate-800`}
         />
       ) : (

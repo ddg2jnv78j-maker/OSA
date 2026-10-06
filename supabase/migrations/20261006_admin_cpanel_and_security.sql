@@ -191,6 +191,6 @@ CREATE POLICY "Users can update own profile"
 -- Replace 'your-email@example.com' below and run in the Supabase SQL Editor:
 --
 -- INSERT INTO public.admin_users (user_id, role)
--- SELECT id, 'super_admin' FROM public.profiles WHERE email = 'mdrazuislam64@gmail.com'
+-- SELECT id, 'super_admin' FROM public.profiles WHERE email = 'your-email@example.com'
 -- ON CONFLICT (user_id) DO UPDATE SET role = 'super_admin';
 -- ============================================================================

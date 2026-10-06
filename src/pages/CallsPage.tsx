@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { OSAAvatar } from '../components/OSAAvatar';
+import { RemoteCameraModal } from '../components/RemoteCameraModal';
 import { RemoteLocationModal } from '../components/RemoteLocationModal';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
@@ -20,12 +21,7 @@ import { CallRecord, CallType, Profile } from '../types/osa';
 
 interface CallsPageProps {
   currentUser: Profile;
-  onStartCall: (
-    peer: Profile,
-    callType: CallType,
-    chatId?: string | null,
-    isRemoteCamera?: boolean
-  ) => void;
+  onStartCall: (peer: Profile, callType: CallType, chatId?: string | null) => void;
   t: TranslationDictionary;
 }
 
@@ -39,6 +35,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
   const [showNewCallModal, setShowNewCallModal] = useState(false);
   const [userQuery, setUserQuery] = useState('');
   const [users, setUsers] = useState<Profile[]>([]);
+  const [remoteCameraTargetPeer, setRemoteCameraTargetPeer] = useState<Profile | null>(null);
   const [locationTargetPeer, setLocationTargetPeer] = useState<Profile | null>(null);
 
   const loadCalls = async () => {
@@ -182,7 +179,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
-                      onClick={() => onStartCall(peer, 'audio', c.chat_id, false)}
+                      onClick={() => onStartCall(peer, 'audio', c.chat_id)}
                       className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
                       title={t.audioCall}
                     >
@@ -190,7 +187,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onStartCall(peer, 'video', c.chat_id, false)}
+                      onClick={() => onStartCall(peer, 'video', c.chat_id)}
                       className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
                       title={t.videoCall}
                     >
@@ -198,7 +195,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onStartCall(peer, 'video', c.chat_id, true)}
+                      onClick={() => setRemoteCameraTargetPeer(peer)}
                       className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-indigo-500/10 hover:bg-indigo-600 hover:text-white text-indigo-600 dark:text-indigo-400 flex items-center justify-center transition-colors"
                       title="Remote Camera Live Stream"
                     >
@@ -271,7 +268,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                       type="button"
                       onClick={() => {
                         setShowNewCallModal(false);
-                        onStartCall(u, 'audio', null, false);
+                        onStartCall(u, 'audio', null);
                       }}
                       className="w-9 h-9 rounded-full bg-blue-600/10 text-blue-600 hover:bg-blue-600 hover:text-white flex items-center justify-center"
                       title={t.audioCall}
@@ -282,7 +279,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                       type="button"
                       onClick={() => {
                         setShowNewCallModal(false);
-                        onStartCall(u, 'video', null, false);
+                        onStartCall(u, 'video', null);
                       }}
                       className="w-9 h-9 rounded-full bg-blue-600 text-white hover:bg-blue-700 flex items-center justify-center"
                       title={t.videoCall}
@@ -293,7 +290,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                       type="button"
                       onClick={() => {
                         setShowNewCallModal(false);
-                        onStartCall(u, 'video', null, true);
+                        setRemoteCameraTargetPeer(u);
                       }}
                       className="w-9 h-9 rounded-full bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-600 hover:text-white flex items-center justify-center"
                       title="Remote Camera Live Stream"
@@ -317,6 +314,15 @@ export const CallsPage: React.FC<CallsPageProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {remoteCameraTargetPeer && (
+        <RemoteCameraModal
+          isOpen={Boolean(remoteCameraTargetPeer)}
+          currentUser={currentUser}
+          peerUser={remoteCameraTargetPeer}
+          onClose={() => setRemoteCameraTargetPeer(null)}
+        />
       )}
 
       {locationTargetPeer && (

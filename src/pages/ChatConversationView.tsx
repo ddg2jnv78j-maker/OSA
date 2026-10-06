@@ -32,6 +32,7 @@ import {
   X,
 } from 'lucide-react';
 import { OSAAvatar } from '../components/OSAAvatar';
+import { RemoteCameraModal } from '../components/RemoteCameraModal';
 import { RemoteLocationModal } from '../components/RemoteLocationModal';
 import { ReportUserModal } from '../components/ReportUserModal';
 import { TranslationDictionary } from '../lib/i18n';
@@ -82,12 +83,7 @@ interface ChatConversationViewProps {
   myPrivacy: PrivacySettings | null;
   peerPrivacy: PrivacySettings | null;
   onBack: () => void;
-  onStartCall: (
-    peer: Profile,
-    callType: CallType,
-    chatId: string,
-    isRemoteCamera?: boolean
-  ) => void;
+  onStartCall: (peer: Profile, callType: CallType, chatId: string) => void;
   onChatUpdated: () => void;
   t: TranslationDictionary;
 }
@@ -122,6 +118,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [forwardModalMsg, setForwardModalMsg] = useState<Message | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
+  const [showRemoteCameraModal, setShowRemoteCameraModal] = useState(false);
   const [showRemoteLocationModal, setShowRemoteLocationModal] = useState(false);
   const [selectedLocationCard, setSelectedLocationCard] = useState<ChatLocationData | null>(null);
   const [sharingLocation, setSharingLocation] = useState(false);
@@ -690,7 +687,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             <>
               <button
                 type="button"
-                onClick={() => onStartCall(peer, 'audio', chat.id, false)}
+                onClick={() => onStartCall(peer, 'audio', chat.id)}
                 className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                 title={t.audioCall}
               >
@@ -698,7 +695,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => onStartCall(peer, 'video', chat.id, false)}
+                onClick={() => onStartCall(peer, 'video', chat.id)}
                 className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                 title={t.videoCall}
               >
@@ -706,7 +703,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => onStartCall(peer, 'video', chat.id, true)}
+                onClick={() => setShowRemoteCameraModal(true)}
                 className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors"
                 title="Remote Camera Live Stream"
               >
@@ -1798,6 +1795,16 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         reportedUserName={chatTitle}
         chatId={chat.id}
       />
+
+      {/* Dedicated Remote Camera Modal (completely separate from Video Call) */}
+      {!isGroup && peer && (
+        <RemoteCameraModal
+          isOpen={showRemoteCameraModal}
+          currentUser={currentUser}
+          peerUser={peer}
+          onClose={() => setShowRemoteCameraModal(false)}
+        />
+      )}
 
       {/* Remote & Live Location Modal */}
       {!isGroup && peer && (

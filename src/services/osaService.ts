@@ -236,6 +236,43 @@ export async function setUserOnlineStatus(userId: string, isOnline: boolean): Pr
     .eq('id', userId);
 }
 
+async function createCompactAvatarDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Failed to decode image file.'));
+      img.onload = () => {
+        const maxDim = 256;
+        let width = img.width || maxDim;
+        let height = img.height || maxDim;
+        if (width > height) {
+          if (width > maxDim) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          }
+        } else if (height > maxDim) {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(reader.result as string);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export async function uploadProfileAvatar(userId: string, file: File): Promise<string> {
   if (!file.type.startsWith('image/')) {
     throw new Error('Please select a valid image file (PNG, JPG, WEBP).');
@@ -251,10 +288,38 @@ export async function uploadProfileAvatar(userId: string, file: File): Promise<s
     .from('osa-avatars')
     .upload(filePath, file, { upsert: true, contentType: file.type });
 
-  if (uploadError) throw uploadError;
+  if (!uploadError) {
+    const { data } = supabase.storage.from('osa-avatars').getPublicUrl(filePath);
+    const publicUrl = data.publicUrl;
+    try {
+      const checkRes = await fetch(publicUrl, { method: 'HEAD' });
+      if (checkRes.ok) {
+        return publicUrl;
+      }
+    } catch {
+      // Bucket may not be public; fall through to compact data URL so all users can see avatar
+    }
+  }
 
-  const { data } = supabase.storage.from('osa-avatars').getPublicUrl(filePath);
-  return data.publicUrl;
+  return await createCompactAvatarDataUrl(file);
+}
+
+export async function fetchProfilesMapByIds(
+  userIds: string[]
+): Promise<Record<string, Profile>> {
+  const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (uniqueIds.length === 0) return {};
+
+  const { data } = await supabase
+    .from('profiles')
+    .select('*')
+    .in('id', uniqueIds);
+
+  const map: Record<string, Profile> = {};
+  ((data || []) as Profile[]).forEach((p) => {
+    map[p.id] = p;
+  });
+  return map;
 }
 
 export async function fetchPrivacySettings(userId: string): Promise<PrivacySettings> {
@@ -400,9 +465,62 @@ export async function fetchUserChats(currentUserId: string): Promise<Chat[]> {
     .in('chat_id', chatIds);
 
   const membersByChat: Record<string, ChatMember[]> = {};
-  (allMembersData || []).forEach((m) => {
+  const userIdsToHydrate = new Set<string>();
+
+  (allMembersData || []).forEach((rawMember) => {
+    const m = rawMember as ChatMember & { profile?: Profile | Profile[] | null };
+    const normalizedProfile = Array.isArray(m.profile) ? m.profile[0] : m.profile || undefined;
+    if (m.user_id) userIdsToHydrate.add(m.user_id);
     if (!membersByChat[m.chat_id]) membersByChat[m.chat_id] = [];
-    membersByChat[m.chat_id].push(m as ChatMember);
+    membersByChat[m.chat_id].push({
+      ...m,
+      profile: normalizedProfile,
+    });
+  });
+
+  // For any direct chat where RLS on `chat_members` might only return `currentUserId`,
+  // discover the peer user ID from `chats.created_by` or `messages.sender_id`.
+  const directChatsMissingPeer: string[] = [];
+  ((chatsData || []) as Chat[]).forEach((chat) => {
+    if (chat.type === 'direct') {
+      const mems = membersByChat[chat.id] || [];
+      const hasPeer = mems.some((m) => m.user_id !== currentUserId);
+      if (!hasPeer) {
+        if (chat.created_by && chat.created_by !== currentUserId) {
+          userIdsToHydrate.add(chat.created_by);
+        } else {
+          directChatsMissingPeer.push(chat.id);
+        }
+      }
+    }
+  });
+
+  const inferredPeerByChat: Record<string, string> = {};
+  if (directChatsMissingPeer.length > 0) {
+    const { data: msgSenders } = await supabase
+      .from('messages')
+      .select('chat_id, sender_id')
+      .in('chat_id', directChatsMissingPeer)
+      .neq('sender_id', currentUserId)
+      .limit(100);
+
+    (msgSenders || []).forEach((row: { chat_id: string; sender_id: string }) => {
+      if (row.sender_id && row.sender_id !== currentUserId) {
+        inferredPeerByChat[row.chat_id] = row.sender_id;
+        userIdsToHydrate.add(row.sender_id);
+      }
+    });
+  }
+
+  // Explicitly batch-fetch all peer/member profiles directly from `public.profiles`
+  const profilesMap = await fetchProfilesMapByIds(Array.from(userIdsToHydrate));
+
+  Object.values(membersByChat).forEach((list) => {
+    list.forEach((m) => {
+      if (profilesMap[m.user_id]) {
+        m.profile = profilesMap[m.user_id];
+      }
+    });
   });
 
   const myMap: Record<string, ChatMember> = {};
@@ -412,11 +530,20 @@ export async function fetchUserChats(currentUserId: string): Promise<Chat[]> {
 
   return ((chatsData || []) as Chat[]).map((chat) => {
     const members = membersByChat[chat.id] || [];
-    const peerMember = chat.type === 'direct' ? members.find((m) => m.user_id !== currentUserId) : null;
+    const peerMember =
+      chat.type === 'direct' ? members.find((m) => m.user_id !== currentUserId) : null;
+    const fallbackPeerId =
+      inferredPeerByChat[chat.id] ||
+      (chat.created_by && chat.created_by !== currentUserId ? chat.created_by : null);
+    const resolvedPeer =
+      (peerMember?.user_id ? profilesMap[peerMember.user_id] : null) ||
+      peerMember?.profile ||
+      (fallbackPeerId ? profilesMap[fallbackPeerId] || null : null);
+
     return {
       ...chat,
       members,
-      peer: peerMember?.profile || null,
+      peer: resolvedPeer,
       my_membership: myMap[chat.id] || null,
     };
   });
@@ -529,8 +656,15 @@ export async function fetchChatMessages(
   if (error) throw error;
 
   const rawMessages = (data || []) as Message[];
+  const senderIds = Array.from(new Set(rawMessages.map((m) => m.sender_id).filter(Boolean)));
+  const profilesMap = await fetchProfilesMapByIds(senderIds);
+
   const byId = new Map<string, Message>();
-  rawMessages.forEach((m) => byId.set(m.id, m));
+  rawMessages.forEach((m) => {
+    const normalizedSender = Array.isArray(m.sender) ? m.sender[0] : m.sender;
+    m.sender = profilesMap[m.sender_id] || normalizedSender;
+    byId.set(m.id, m);
+  });
 
   return rawMessages
     .filter((m) => !(m.deleted_for_user_ids || []).includes(currentUserId))
@@ -869,13 +1003,7 @@ export async function createGroupWithChat(params: {
 
   let avatarUrl: string | null = null;
   if (avatarFile) {
-    const ext = avatarFile.name.split('.').pop() || 'png';
-    const path = `groups/${creatorId}_${Date.now()}.${ext}`;
-    const { error: upErr } = await supabase.storage
-      .from('osa-avatars')
-      .upload(path, avatarFile, { upsert: true, contentType: avatarFile.type });
-    if (upErr) throw upErr;
-    avatarUrl = supabase.storage.from('osa-avatars').getPublicUrl(path).data.publicUrl;
+    avatarUrl = await uploadProfileAvatar(`groups_${creatorId}`, avatarFile);
   }
 
   // Try RPC first
@@ -944,7 +1072,12 @@ export async function fetchGroupMembers(groupId: string): Promise<GroupMember[]>
     .eq('group_id', groupId)
     .order('role', { ascending: true });
   if (error) throw error;
-  return (data || []) as GroupMember[];
+  const rows = (data || []) as GroupMember[];
+  const profilesMap = await fetchProfilesMapByIds(rows.map((r) => r.user_id));
+  return rows.map((r) => ({
+    ...r,
+    profile: profilesMap[r.user_id] || (Array.isArray(r.profile) ? r.profile[0] : r.profile),
+  }));
 }
 
 export async function updateGroupDetails(
@@ -954,13 +1087,7 @@ export async function updateGroupDetails(
 ): Promise<Group> {
   const payload = { ...updates };
   if (avatarFile) {
-    const ext = avatarFile.name.split('.').pop() || 'png';
-    const path = `groups/${groupId}_${Date.now()}.${ext}`;
-    const { error: upErr } = await supabase.storage
-      .from('osa-avatars')
-      .upload(path, avatarFile, { upsert: true, contentType: avatarFile.type });
-    if (upErr) throw upErr;
-    payload.avatar_url = supabase.storage.from('osa-avatars').getPublicUrl(path).data.publicUrl;
+    payload.avatar_url = await uploadProfileAvatar(`groups_${groupId}`, avatarFile);
   }
 
   const { data, error } = await supabase
@@ -1136,7 +1263,21 @@ export async function fetchUserNotifications(userId: string): Promise<Notificati
     .limit(60);
 
   if (error) throw error;
-  return (data || []) as NotificationItem[];
+  const rows = ((data || []) as NotificationItem[]).filter(
+    (n) =>
+      !n.body?.startsWith('[OSA_RCAM_SIG]') &&
+      !n.body?.startsWith('[OSA_LOC_REQ]') &&
+      !n.body?.startsWith('[OSA_LOC_RES]') &&
+      !n.body?.startsWith('[OSA_LOC_ERR]')
+  );
+  const actorIds = rows.map((n) => n.actor_id).filter((id): id is string => Boolean(id));
+  const profilesMap = await fetchProfilesMapByIds(actorIds);
+  return rows.map((n) => ({
+    ...n,
+    actor:
+      (n.actor_id ? profilesMap[n.actor_id] : null) ||
+      (Array.isArray(n.actor) ? n.actor[0] : n.actor),
+  }));
 }
 
 export async function createNotification(params: {
@@ -1198,7 +1339,18 @@ export async function fetchCallHistory(userId: string): Promise<CallRecord[]> {
     .limit(60);
 
   if (error) throw error;
-  return (data || []) as CallRecord[];
+  const rows = (data || []) as CallRecord[];
+  const userIds = rows.flatMap((c) => [c.caller_id, c.receiver_id]);
+  const profilesMap = await fetchProfilesMapByIds(userIds);
+  return rows.map((c) => ({
+    ...c,
+    caller:
+      profilesMap[c.caller_id] ||
+      (Array.isArray(c.caller) ? c.caller[0] : c.caller),
+    receiver:
+      profilesMap[c.receiver_id] ||
+      (Array.isArray(c.receiver) ? c.receiver[0] : c.receiver),
+  }));
 }
 
 export async function createCallRecord(params: {

@@ -7,7 +7,6 @@ export interface WebRTCCallCallbacks {
   onLocalStream: (stream: MediaStream | null) => void;
   onRemoteStream: (stream: MediaStream | null) => void;
   onStatusChange: (status: CallStatus, errorMessage?: string) => void;
-  onRemoteModeDetected?: (isRemoteCamera: boolean) => void;
 }
 
 export class WebRTCCallManager {
@@ -19,10 +18,11 @@ export class WebRTCCallManager {
   private currentUserId: string;
   private callbacks: WebRTCCallCallbacks;
   private pendingCandidates: RTCIceCandidateInit[] = [];
+  private processedSignalIds: Set<string> = new Set();
   private callTimeoutTimer: number | null = null;
+  private signalPollTimer: number | null = null;
   private connectedAtMs: number | null = null;
   private facingMode: 'user' | 'environment' = 'user';
-  private isRemoteCameraSession = false;
 
   constructor(currentUserId: string, callbacks: WebRTCCallCallbacks) {
     this.currentUserId = currentUserId;
@@ -33,78 +33,55 @@ export class WebRTCCallManager {
     return this.currentCall;
   }
 
-  public getIsRemoteCameraSession(): boolean {
-    return this.isRemoteCameraSession;
-  }
-
   public async startOutgoingCall(params: {
     receiverId: string;
     receiverName: string;
     chatId?: string | null;
     callType: CallType;
-    isRemoteCamera?: boolean;
   }): Promise<CallRecord> {
     try {
-      this.isRemoteCameraSession = Boolean(params.isRemoteCamera);
-      this.callbacks.onRemoteModeDetected?.(this.isRemoteCameraSession);
       this.callbacks.onStatusChange('calling');
 
-      // 1. For standard calls, acquire local microphone (and camera if video).
-      // For Remote Camera initiator, we view the remote peer's camera without turning on local camera.
-      if (!this.isRemoteCameraSession) {
-        const stream = await this.acquireMediaStream(params.callType);
-        this.localStream = stream;
-        this.callbacks.onLocalStream(stream);
-      } else {
-        this.localStream = null;
-        this.callbacks.onLocalStream(null);
-      }
+      // 1. Acquire local microphone (and camera if normal video call)
+      const stream = await this.acquireMediaStream(params.callType);
+      this.localStream = stream;
+      this.callbacks.onLocalStream(new MediaStream(stream.getTracks()));
 
-      // 2. Create call row in Supabase (uses 'video' for remote camera to satisfy DB check constraint)
-      const dbCallType: CallType = this.isRemoteCameraSession ? 'video' : params.callType;
+      // 2. Create call row in Supabase
       const callRecord = await createCallRecord({
         callerId: this.currentUserId,
         receiverId: params.receiverId,
         chatId: params.chatId || null,
-        callType: dbCallType,
+        callType: params.callType,
       });
       this.currentCall = callRecord;
 
-      // 3. Notify receiver in notifications table
-      await createNotification({
-        userId: params.receiverId,
-        actorId: this.currentUserId,
-        type: 'incoming_call',
-        title: this.isRemoteCameraSession
-          ? 'OSA Remote Camera Session'
-          : `Incoming ${params.callType === 'video' ? 'Video' : 'Audio'} Call`,
-        body: this.isRemoteCameraSession
-          ? '[OSA_REMOTE_CAMERA] Authorized remote camera stream request'
-          : `Incoming ${params.callType} call on OSA`,
-        referenceId: callRecord.id,
-        chatId: params.chatId || null,
-      });
-
-      // 4. Initialize RTCPeerConnection & subscribe to signaling
+      // 3. Initialize RTCPeerConnection, add local tracks, and subscribe to signaling
       this.initPeerConnection(callRecord.id, params.receiverId);
-      if (this.isRemoteCameraSession && this.peerConnection) {
-        this.peerConnection.addTransceiver('video', { direction: 'recvonly' });
-        this.peerConnection.addTransceiver('audio', { direction: 'recvonly' });
-      }
       await this.subscribeToCallSignals(callRecord.id);
 
-      // 5. Create SDP Offer and send via `call_signals`
+      // 4. Create SDP Offer and store in `call_signals` BEFORE notifying receiver
       const offer = await this.peerConnection!.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: dbCallType === 'video',
+        offerToReceiveVideo: params.callType === 'video',
       });
       await this.peerConnection!.setLocalDescription(offer);
 
       await this.sendSignal(callRecord.id, params.receiverId, 'offer', {
         sdp: offer.sdp,
         type: offer.type,
-        callType: dbCallType,
-        mode: this.isRemoteCameraSession ? 'remote_camera' : 'standard',
+        callType: params.callType,
+      });
+
+      // 5. Notify receiver in notifications table
+      await createNotification({
+        userId: params.receiverId,
+        actorId: this.currentUserId,
+        type: 'incoming_call',
+        title: `Incoming ${params.callType === 'video' ? 'Video' : 'Audio'} Call`,
+        body: `Incoming ${params.callType} call on OSA`,
+        referenceId: callRecord.id,
+        chatId: params.chatId || null,
       });
 
       // 6. Set 45-second unanswered timeout
@@ -144,27 +121,12 @@ export class WebRTCCallManager {
     }
   }
 
-  public async prepareIncomingCall(callRecord: CallRecord): Promise<boolean> {
+  public async prepareIncomingCall(callRecord: CallRecord): Promise<void> {
     this.currentCall = callRecord;
     this.callbacks.onStatusChange('ringing');
     await updateCallRecordStatus(callRecord.id, 'ringing');
     await this.subscribeToCallSignals(callRecord.id);
-
-    // Check if the offer signal marks this as a Remote Camera session
-    const { data: signals } = await supabase
-      .from('call_signals')
-      .select('*')
-      .eq('call_id', callRecord.id)
-      .eq('signal_type', 'offer')
-      .limit(1);
-
-    const offerSignal = ((signals || []) as CallSignal[])[0];
-    const isRemote = offerSignal?.payload?.mode === 'remote_camera';
-    this.isRemoteCameraSession = isRemote;
-    this.callbacks.onRemoteModeDetected?.(isRemote);
-
     await this.sendSignal(callRecord.id, callRecord.caller_id, 'ringing', {});
-    return isRemote;
   }
 
   public async acceptIncomingCall(callRecord: CallRecord): Promise<void> {
@@ -172,29 +134,39 @@ export class WebRTCCallManager {
       this.currentCall = callRecord;
       this.callbacks.onStatusChange('accepted');
 
-      // 1. Get local stream
+      // 1. Get local stream (audio + video for video calls)
       const stream = await this.acquireMediaStream(callRecord.call_type);
       this.localStream = stream;
-      this.callbacks.onLocalStream(stream);
+      this.callbacks.onLocalStream(new MediaStream(stream.getTracks()));
 
-      // 2. Setup peer connection if not already created
-      if (!this.peerConnection) {
-        this.initPeerConnection(callRecord.id, callRecord.caller_id);
+      // 2. Setup peer connection with local tracks attached before setRemoteDescription
+      if (this.peerConnection) {
+        this.peerConnection.close();
+        this.peerConnection = null;
       }
+      this.initPeerConnection(callRecord.id, callRecord.caller_id);
       await this.subscribeToCallSignals(callRecord.id);
 
-      // 3. Fetch stored offer signal from `call_signals`
-      const { data: signals } = await supabase
-        .from('call_signals')
-        .select('*')
-        .eq('call_id', callRecord.id)
-        .order('created_at', { ascending: true });
+      // 3. Fetch stored offer signal from `call_signals` (retry up to 6 times if offer is still in flight)
+      let offerSignal: CallSignal | undefined;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const { data: signals } = await supabase
+          .from('call_signals')
+          .select('*')
+          .eq('call_id', callRecord.id)
+          .order('created_at', { ascending: true });
 
-      const offerSignal = ((signals || []) as CallSignal[]).find((s) => s.signal_type === 'offer');
+        offerSignal = ((signals || []) as CallSignal[]).find(
+          (s) => s.signal_type === 'offer' && Boolean(s.payload?.sdp)
+        );
+        if (offerSignal) break;
+        await new Promise((r) => setTimeout(r, 400));
+      }
 
       if (!offerSignal || !offerSignal.payload?.sdp) {
         throw new Error('Call offer signal not found or expired.');
       }
+      this.processedSignalIds.add(offerSignal.id);
 
       await this.peerConnection!.setRemoteDescription(
         new RTCSessionDescription({
@@ -205,7 +177,11 @@ export class WebRTCCallManager {
 
       // Apply any queued ICE candidates
       for (const candidate of this.pendingCandidates) {
-        await this.peerConnection!.addIceCandidate(new RTCIceCandidate(candidate));
+        try {
+          await this.peerConnection!.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch {
+          // Ignore duplicate candidate
+        }
       }
       this.pendingCandidates = [];
 
@@ -218,6 +194,7 @@ export class WebRTCCallManager {
         .eq('sender_id', callRecord.caller_id);
 
       for (const sig of (existingCandidates || []) as CallSignal[]) {
+        this.processedSignalIds.add(sig.id);
         if (sig.payload?.candidate) {
           try {
             await this.peerConnection!.addIceCandidate(
@@ -239,6 +216,9 @@ export class WebRTCCallManager {
 
       const nowIso = new Date().toISOString();
       this.connectedAtMs = Date.now();
+      if (this.currentCall) {
+        this.currentCall.status = 'connected';
+      }
       await updateCallRecordStatus(callRecord.id, 'connected', {
         answered_at: nowIso,
       });
@@ -304,20 +284,7 @@ export class WebRTCCallManager {
   }
 
   public async switchCamera(): Promise<void> {
-    if (!this.currentCall || this.currentCall.call_type !== 'video') return;
-
-    // If we are the Remote Camera viewer (no local video stream), send signal to switch the peer's camera
-    if (!this.localStream || this.localStream.getVideoTracks().length === 0) {
-      const peerId =
-        this.currentCall.caller_id === this.currentUserId
-          ? this.currentCall.receiver_id
-          : this.currentCall.caller_id;
-      await this.sendSignal(this.currentCall.id, peerId, 'renegotiate', {
-        command: 'switch_remote_camera',
-      });
-      return;
-    }
-
+    if (!this.localStream || !this.currentCall || this.currentCall.call_type !== 'video') return;
     this.facingMode = this.facingMode === 'user' ? 'environment' : 'user';
 
     const newStream = await navigator.mediaDevices.getUserMedia({
@@ -341,7 +308,7 @@ export class WebRTCCallManager {
         await sender.replaceTrack(newVideoTrack);
       }
     }
-    this.callbacks.onLocalStream(this.localStream);
+    this.callbacks.onLocalStream(new MediaStream(this.localStream.getTracks()));
   }
 
   private async acquireMediaStream(callType: CallType): Promise<MediaStream> {
@@ -366,6 +333,12 @@ export class WebRTCCallManager {
     return await navigator.mediaDevices.getUserMedia(constraints);
   }
 
+  private emitUpdatedRemoteStream(): void {
+    if (!this.remoteStream) return;
+    const freshStream = new MediaStream(this.remoteStream.getTracks());
+    this.callbacks.onRemoteStream(freshStream);
+  }
+
   private initPeerConnection(callId: string, peerUserId: string): void {
     const pc = new RTCPeerConnection({
       iceServers: getIceServers(),
@@ -381,13 +354,30 @@ export class WebRTCCallManager {
     }
 
     pc.ontrack = (event) => {
-      if (event.streams && event.streams[0]) {
-        this.remoteStream = event.streams[0];
-        this.callbacks.onRemoteStream(this.remoteStream);
-      } else if (this.remoteStream) {
-        this.remoteStream.addTrack(event.track);
-        this.callbacks.onRemoteStream(this.remoteStream);
+      if (!this.remoteStream) {
+        this.remoteStream = new MediaStream();
       }
+
+      if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach((track) => {
+          if (!this.remoteStream!.getTracks().some((t) => t.id === track.id)) {
+            this.remoteStream!.addTrack(track);
+          }
+        });
+      }
+
+      if (
+        event.track &&
+        !this.remoteStream.getTracks().some((t) => t.id === event.track.id)
+      ) {
+        this.remoteStream.addTrack(event.track);
+      }
+
+      event.track.onunmute = () => {
+        this.emitUpdatedRemoteStream();
+      };
+
+      this.emitUpdatedRemoteStream();
     };
 
     pc.onicecandidate = async (event) => {
@@ -398,21 +388,36 @@ export class WebRTCCallManager {
       }
     };
 
+    const handleConnectedState = async () => {
+      if (this.callTimeoutTimer) {
+        clearTimeout(this.callTimeoutTimer);
+        this.callTimeoutTimer = null;
+      }
+      if (!this.connectedAtMs) {
+        this.connectedAtMs = Date.now();
+      }
+      if (this.currentCall) {
+        this.currentCall.status = 'connected';
+      }
+      await updateCallRecordStatus(callId, 'connected', {
+        answered_at: new Date().toISOString(),
+      });
+      this.callbacks.onStatusChange('connected');
+      this.emitUpdatedRemoteStream();
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      if (!pc) return;
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        handleConnectedState();
+      }
+    };
+
     pc.onconnectionstatechange = async () => {
       if (!pc) return;
       if (pc.connectionState === 'connected') {
-        if (this.callTimeoutTimer) {
-          clearTimeout(this.callTimeoutTimer);
-          this.callTimeoutTimer = null;
-        }
-        if (!this.connectedAtMs) {
-          this.connectedAtMs = Date.now();
-        }
-        await updateCallRecordStatus(callId, 'connected', {
-          answered_at: new Date().toISOString(),
-        });
-        this.callbacks.onStatusChange('connected');
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        await handleConnectedState();
+      } else if (pc.connectionState === 'failed') {
         this.callbacks.onStatusChange('failed', 'Call connection lost due to network interruption.');
       }
     };
@@ -420,40 +425,82 @@ export class WebRTCCallManager {
     this.peerConnection = pc;
   }
 
-  private async subscribeToCallSignals(callId: string): Promise<void> {
-    if (this.signalChannel) return;
+  private async pollCallSignals(callId: string): Promise<void> {
+    try {
+      const { data: rows } = await supabase
+        .from('call_signals')
+        .select('*')
+        .eq('call_id', callId)
+        .order('created_at', { ascending: true });
 
-    this.signalChannel = supabase
-      .channel(`osa-call-signals-${callId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'call_signals',
-          filter: `call_id=eq.${callId}`,
-        },
-        async (payload) => {
-          const signal = payload.new as CallSignal;
-          if (signal.sender_id === this.currentUserId) return;
+      for (const sig of (rows || []) as CallSignal[]) {
+        if (sig.sender_id === this.currentUserId) continue;
+        if (this.processedSignalIds.has(sig.id)) continue;
+        this.processedSignalIds.add(sig.id);
+        await this.handleIncomingSignal(sig);
+      }
+    } catch {
+      // Ignore transient poll error
+    }
+  }
+
+  private async subscribeToCallSignals(callId: string): Promise<void> {
+    if (!this.signalChannel) {
+      this.signalChannel = supabase
+        .channel(`osa-call-signals-${callId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'call_signals',
+            filter: `call_id=eq.${callId}`,
+          },
+          async (payload) => {
+            const signal = payload.new as CallSignal;
+            if (!signal || signal.sender_id === this.currentUserId) return;
+            if (signal.id && this.processedSignalIds.has(signal.id)) return;
+            if (signal.id) this.processedSignalIds.add(signal.id);
+            await this.handleIncomingSignal(signal);
+          }
+        )
+        .on('broadcast', { event: 'call_signal' }, async ({ payload }) => {
+          const signal = payload as CallSignal;
+          if (!signal || signal.sender_id === this.currentUserId) return;
+          if (signal.id && this.processedSignalIds.has(signal.id)) return;
+          if (signal.id) this.processedSignalIds.add(signal.id);
           await this.handleIncomingSignal(signal);
-        }
-      )
-      .subscribe();
+        })
+        .subscribe();
+    }
+
+    if (!this.signalPollTimer) {
+      this.signalPollTimer = window.setInterval(() => {
+        this.pollCallSignals(callId);
+      }, 1200);
+    }
   }
 
   private async handleIncomingSignal(signal: CallSignal): Promise<void> {
     try {
       switch (signal.signal_type) {
         case 'ringing': {
-          if (this.currentCall) {
+          if (this.currentCall && this.currentCall.status === 'calling') {
             this.currentCall.status = 'ringing';
+            this.callbacks.onStatusChange('ringing');
           }
-          this.callbacks.onStatusChange('ringing');
           break;
         }
         case 'answer': {
-          if (this.peerConnection && signal.payload?.sdp) {
+          if (
+            this.peerConnection &&
+            signal.payload?.sdp &&
+            this.peerConnection.signalingState === 'have-local-offer'
+          ) {
+            if (this.callTimeoutTimer) {
+              clearTimeout(this.callTimeoutTimer);
+              this.callTimeoutTimer = null;
+            }
             await this.peerConnection.setRemoteDescription(
               new RTCSessionDescription({
                 type: (signal.payload.type as RTCSdpType) || 'answer',
@@ -461,11 +508,19 @@ export class WebRTCCallManager {
               })
             );
             for (const candidate of this.pendingCandidates) {
-              await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+              try {
+                await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+              } catch {
+                // Ignore duplicate candidate
+              }
             }
             this.pendingCandidates = [];
             this.connectedAtMs = Date.now();
+            if (this.currentCall) {
+              this.currentCall.status = 'connected';
+            }
             this.callbacks.onStatusChange('connected');
+            this.emitUpdatedRemoteStream();
           }
           break;
         }
@@ -473,15 +528,13 @@ export class WebRTCCallManager {
           const candidateInit = signal.payload?.candidate as RTCIceCandidateInit | undefined;
           if (!candidateInit) break;
           if (this.peerConnection && this.peerConnection.remoteDescription) {
-            await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidateInit));
+            try {
+              await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidateInit));
+            } catch {
+              // Ignore duplicate candidate
+            }
           } else {
             this.pendingCandidates.push(candidateInit);
-          }
-          break;
-        }
-        case 'renegotiate': {
-          if (signal.payload?.command === 'switch_remote_camera') {
-            await this.switchCamera();
           }
           break;
         }
@@ -507,13 +560,29 @@ export class WebRTCCallManager {
     signalType: SignalType,
     payload: Record<string, unknown>
   ): Promise<void> {
-    await supabase.from('call_signals').insert({
-      call_id: callId,
-      sender_id: this.currentUserId,
-      receiver_id: receiverId,
-      signal_type: signalType,
-      payload,
-    });
+    const { data } = await supabase
+      .from('call_signals')
+      .insert({
+        call_id: callId,
+        sender_id: this.currentUserId,
+        receiver_id: receiverId,
+        signal_type: signalType,
+        payload,
+      })
+      .select('*')
+      .maybeSingle();
+
+    if (this.signalChannel && data) {
+      try {
+        await this.signalChannel.send({
+          type: 'broadcast',
+          event: 'call_signal',
+          payload: data,
+        });
+      } catch {
+        // Ignore broadcast error since DB row is saved
+      }
+    }
   }
 
   private describeMediaOrNetworkError(err: unknown): string {
@@ -539,6 +608,10 @@ export class WebRTCCallManager {
       clearTimeout(this.callTimeoutTimer);
       this.callTimeoutTimer = null;
     }
+    if (this.signalPollTimer) {
+      clearInterval(this.signalPollTimer);
+      this.signalPollTimer = null;
+    }
     if (this.signalChannel) {
       supabase.removeChannel(this.signalChannel);
       this.signalChannel = null;
@@ -552,6 +625,7 @@ export class WebRTCCallManager {
       this.peerConnection = null;
     }
     this.remoteStream = null;
+    this.processedSignalIds.clear();
     this.callbacks.onLocalStream(null);
     this.callbacks.onRemoteStream(null);
   }
