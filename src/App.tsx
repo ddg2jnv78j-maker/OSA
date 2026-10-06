@@ -15,6 +15,12 @@ import { CallOverlay } from './components/CallOverlay';
 import { NewChatModal } from './components/NewChatModal';
 import { OSAAvatar } from './components/OSAAvatar';
 import { PWAInstallButton } from './components/PWAInstallButton';
+import { PermissionSetupModal } from './components/PermissionSetupModal';
+import {
+  REMOTE_LOC_ERR_PREFIX,
+  REMOTE_LOC_REQ_PREFIX,
+  REMOTE_LOC_RES_PREFIX,
+} from './components/RemoteLocationModal';
 import { SplashScreen } from './components/SplashScreen';
 import { SupabaseConfigModal } from './components/SupabaseConfigModal';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
@@ -31,6 +37,7 @@ import { StatusPage } from './pages/StatusPage';
 import {
   applyThemeToDocument,
   checkIsUserAdmin,
+  createNotification,
   ensureProfileAndPrivacy,
   fetchMyProfile,
   fetchPrivacyMapForUsers,
@@ -46,6 +53,11 @@ import {
   setUserOnlineStatus,
   signOutUser,
 } from './services/osaService';
+import {
+  getCurrentDeviceLocation,
+  getStoredPermissionStatus,
+  LiveLocationPayload,
+} from './services/permissionService';
 import { WebRTCCallManager } from './services/webrtcService';
 import {
   CallRecord,
@@ -85,18 +97,30 @@ export default function App() {
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
   const [showSupabaseConfigModal, setShowSupabaseConfigModal] = useState(false);
   const [showAdminPanelModal, setShowAdminPanelModal] = useState(false);
+  const [showPermissionSetupModal, setShowPermissionSetupModal] = useState(false);
+  const [isFirstTimePermissionSetup, setIsFirstTimePermissionSetup] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [adminRole, setAdminRole] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
-  // WebRTC Calling State
+  // WebRTC Calling & Remote Camera State
   const [activeCall, setActiveCall] = useState<CallRecord | null>(null);
   const [callPeerProfile, setCallPeerProfile] = useState<Profile | null>(null);
   const [callStatus, setCallStatus] = useState<CallStatus>('calling');
   const [callError, setCallError] = useState<string | undefined>(undefined);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [isRemoteCameraCall, setIsRemoteCameraCall] = useState(false);
   const callManagerRef = useRef<WebRTCCallManager | null>(null);
+
+  // Incoming Remote Location Request State
+  const [pendingLocationReq, setPendingLocationReq] = useState<{
+    requestId: string;
+    requesterId: string;
+    requesterName: string;
+    chatId?: string | null;
+  } | null>(null);
+  const handledLocationReqIdsRef = useRef<Set<string>>(new Set());
 
   const isOnline = useOnlineStatus();
 
@@ -172,6 +196,21 @@ export default function App() {
       if (profile.theme) handleThemeChange(profile.theme);
       if (profile.language) handleLanguageChange(profile.language);
 
+      // Show Permission Setup screen on first-time registration / onboarding
+      const permStatus = getStoredPermissionStatus(profile.id);
+      let needsOnboarding = !permStatus.onboardingCompleted;
+      try {
+        if (localStorage.getItem('osa_needs_permission_onboarding') === 'true') {
+          needsOnboarding = true;
+        }
+      } catch {
+        // Ignore
+      }
+      if (needsOnboarding) {
+        setIsFirstTimePermissionSetup(true);
+        setShowPermissionSetupModal(true);
+      }
+
       await setUserOnlineStatus(profile.id, true);
       await refreshChatsAndNotifications(profile.id);
     } catch {
@@ -212,9 +251,100 @@ export default function App() {
     };
   }, [loadAuthenticatedUser]);
 
-  // Global Realtime Subscriptions for Chats, Messages, Notifications, Profiles, and Incoming Calls
+  // Helper to respond to a Remote Location request with real GPS coordinates
+  const respondWithDeviceLocation = useCallback(
+    async (req: {
+      requestId: string;
+      requesterId: string;
+      requesterName: string;
+      chatId?: string | null;
+    }) => {
+      if (!currentUser) return;
+      try {
+        const pos = await getCurrentDeviceLocation();
+        const locPayload: LiveLocationPayload = {
+          requestId: req.requestId,
+          senderId: currentUser.id,
+          senderName: currentUser.full_name,
+          receiverId: req.requesterId,
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: Math.round(pos.coords.accuracy || 10),
+          altitude: pos.coords.altitude,
+          heading: pos.coords.heading,
+          speed: pos.coords.speed,
+          timestamp: new Date(pos.timestamp).toISOString(),
+        };
+
+        await createNotification({
+          userId: req.requesterId,
+          actorId: currentUser.id,
+          type: 'system',
+          title: `Live GPS from ${currentUser.full_name}`,
+          body: `${REMOTE_LOC_RES_PREFIX}${JSON.stringify(locPayload)}`,
+          chatId: req.chatId || null,
+        });
+
+        const rxChannel = supabase.channel(`osa-remote-loc-rx-${req.requesterId}`);
+        rxChannel.subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            await rxChannel.send({
+              type: 'broadcast',
+              event: 'location_response',
+              payload: locPayload,
+            });
+            setTimeout(() => {
+              supabase.removeChannel(rxChannel);
+            }, 1500);
+          }
+        });
+      } catch (err) {
+        const errMsg =
+          err instanceof Error
+            ? err.message
+            : 'Target device could not acquire GPS coordinates.';
+        await createNotification({
+          userId: req.requesterId,
+          actorId: currentUser.id,
+          type: 'system',
+          title: `Location Error from ${currentUser.full_name}`,
+          body: `${REMOTE_LOC_ERR_PREFIX}${JSON.stringify({ message: errMsg })}`,
+          chatId: req.chatId || null,
+        });
+      }
+    },
+    [currentUser]
+  );
+
+  // Global Realtime Subscriptions for Chats, Messages, Notifications, Profiles, Remote Location & Incoming Calls
   useEffect(() => {
     if (!currentUser) return;
+
+    const handleIncomingLocationReqRaw = (req: {
+      requestId: string;
+      requesterId: string;
+      requesterName: string;
+      chatId?: string | null;
+    }) => {
+      if (!req?.requestId || handledLocationReqIdsRef.current.has(req.requestId)) return;
+      handledLocationReqIdsRef.current.add(req.requestId);
+
+      const perm = getStoredPermissionStatus(currentUser.id);
+      if (perm.allowRemoteLocation) {
+        respondWithDeviceLocation(req);
+      } else {
+        setPendingLocationReq(req);
+      }
+    };
+
+    const locBroadcastChannel = supabase
+      .channel(`osa-remote-loc-tx-${currentUser.id}`)
+      .on('broadcast', { event: 'location_request' }, ({ payload }) => {
+        if (payload?.requestId && payload?.requesterId) {
+          handleIncomingLocationReqRaw(payload);
+        }
+      })
+      .subscribe();
 
     const globalChannel = supabase
       .channel(`osa-global-sync-${currentUser.id}`)
@@ -253,6 +383,28 @@ export default function App() {
         },
         (payload) => {
           const newNotif = payload.new as NotificationItem;
+
+          // Intercept Remote Location Request signals
+          if (newNotif.body?.startsWith(REMOTE_LOC_REQ_PREFIX)) {
+            try {
+              const parsed = JSON.parse(
+                newNotif.body.slice(REMOTE_LOC_REQ_PREFIX.length)
+              );
+              handleIncomingLocationReqRaw(parsed);
+            } catch {
+              // Ignore
+            }
+            return;
+          }
+
+          // Ignore internal Remote Location Response/Error notifications from cluttering notification feed
+          if (
+            newNotif.body?.startsWith(REMOTE_LOC_RES_PREFIX) ||
+            newNotif.body?.startsWith(REMOTE_LOC_ERR_PREFIX)
+          ) {
+            return;
+          }
+
           setNotifications((prev) => [newNotif, ...prev]);
           if (
             'Notification' in window &&
@@ -283,10 +435,12 @@ export default function App() {
           setCallPeerProfile(callerProfile);
           setActiveCall(incoming);
           setCallError(undefined);
+          setIsRemoteCameraCall(false);
 
           const manager = new WebRTCCallManager(currentUser.id, {
             onLocalStream: setLocalStream,
             onRemoteStream: setRemoteStream,
+            onRemoteModeDetected: (isRemote) => setIsRemoteCameraCall(isRemote),
             onStatusChange: (status, errMsg) => {
               setCallStatus(status);
               if (errMsg) setCallError(errMsg);
@@ -298,13 +452,27 @@ export default function App() {
               ) {
                 setTimeout(() => {
                   setActiveCall(null);
+                  setIsRemoteCameraCall(false);
                   callManagerRef.current = null;
                 }, 1800);
               }
             },
           });
           callManagerRef.current = manager;
-          await manager.prepareIncomingCall(incoming);
+
+          // Wait briefly so the caller's SDP offer signal is committed in `call_signals`
+          setTimeout(async () => {
+            const isRemote = await manager.prepareIncomingCall(incoming);
+            setIsRemoteCameraCall(isRemote);
+            const perm = getStoredPermissionStatus(currentUser.id);
+            if (isRemote && perm.allowRemoteCamera) {
+              try {
+                await manager.acceptIncomingCall(incoming);
+              } catch {
+                // If auto-accept fails, user can still tap Accept on the overlay
+              }
+            }
+          }, 500);
         }
       )
       .subscribe();
@@ -316,9 +484,10 @@ export default function App() {
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      supabase.removeChannel(locBroadcastChannel);
       supabase.removeChannel(globalChannel);
     };
-  }, [currentUser, activeCall, refreshChatsAndNotifications]);
+  }, [currentUser, activeCall, refreshChatsAndNotifications, respondWithDeviceLocation]);
 
   // Live user directory search when typing in the Home Search bar
   useEffect(() => {
@@ -341,23 +510,28 @@ export default function App() {
     };
   }, [homeSearchQuery, currentUser]);
 
-  // Initiate Outgoing WebRTC Audio or Video Call
+  // Initiate Outgoing WebRTC Audio, Video, or Remote Camera Call
   const handleStartCall = async (
     peer: Profile,
     callType: CallType,
-    chatId?: string | null
+    chatId?: string | null,
+    isRemoteCamera = false
   ) => {
     if (!currentUser) return;
+
     setCallPeerProfile(peer);
     setCallError(undefined);
     setCallStatus('calling');
+    setIsRemoteCameraCall(Boolean(isRemoteCamera));
+
+    const effectiveCallType: CallType = isRemoteCamera ? 'video' : callType;
 
     const tempRecord: CallRecord = {
       id: 'pending',
       chat_id: chatId || null,
       caller_id: currentUser.id,
       receiver_id: peer.id,
-      call_type: callType,
+      call_type: effectiveCallType,
       status: 'calling',
       started_at: new Date().toISOString(),
       answered_at: null,
@@ -372,6 +546,7 @@ export default function App() {
     const manager = new WebRTCCallManager(currentUser.id, {
       onLocalStream: setLocalStream,
       onRemoteStream: setRemoteStream,
+      onRemoteModeDetected: (isRemote) => setIsRemoteCameraCall(isRemote),
       onStatusChange: (status, errMsg) => {
         setCallStatus(status);
         if (errMsg) setCallError(errMsg);
@@ -383,6 +558,7 @@ export default function App() {
         ) {
           setTimeout(() => {
             setActiveCall(null);
+            setIsRemoteCameraCall(false);
             callManagerRef.current = null;
           }, 2000);
         }
@@ -395,7 +571,8 @@ export default function App() {
         receiverId: peer.id,
         receiverName: peer.full_name,
         chatId: chatId || null,
-        callType,
+        callType: effectiveCallType,
+        isRemoteCamera,
       });
       setActiveCall(createdRecord);
     } catch {
@@ -864,6 +1041,10 @@ export default function App() {
               onNotificationsChanged={() => refreshChatsAndNotifications(currentUser.id)}
               onOpenSupabaseConfig={() => setShowSupabaseConfigModal(true)}
               onOpenAdminPanel={() => setShowAdminPanelModal(true)}
+              onOpenPermissionSetup={() => {
+                setIsFirstTimePermissionSetup(false);
+                setShowPermissionSetupModal(true);
+              }}
               onLogout={handleLogout}
               t={t}
             />
@@ -927,7 +1108,9 @@ export default function App() {
               selectedChat.peer ? peerPrivacyMap[selectedChat.peer.id] || null : null
             }
             onBack={() => setSelectedChatId(null)}
-            onStartCall={(peer, callType, cid) => handleStartCall(peer, callType, cid)}
+            onStartCall={(peer, callType, cid, isRemoteCamera) =>
+              handleStartCall(peer, callType, cid, isRemoteCamera)
+            }
             onChatUpdated={() => refreshChatsAndNotifications(currentUser.id)}
             t={t}
           />
@@ -994,6 +1177,75 @@ export default function App() {
         />
       )}
 
+      <PermissionSetupModal
+        isOpen={showPermissionSetupModal}
+        userId={currentUser.id}
+        isFirstTimeOnboarding={isFirstTimePermissionSetup}
+        onComplete={() => {
+          setShowPermissionSetupModal(false);
+          setIsFirstTimePermissionSetup(false);
+          try {
+            localStorage.removeItem('osa_needs_permission_onboarding');
+          } catch {
+            // Ignore
+          }
+        }}
+        onClose={() => {
+          setShowPermissionSetupModal(false);
+          setIsFirstTimePermissionSetup(false);
+        }}
+      />
+
+      {/* Manual Consent Prompt when allowRemoteLocation is false */}
+      {pendingLocationReq && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl space-y-4">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              Remote Location Request
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              <strong className="text-slate-900 dark:text-white">
+                {pendingLocationReq.requesterName}
+              </strong>{' '}
+              is requesting your current live GPS location on OSA.
+            </p>
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={async () => {
+                  const req = pendingLocationReq;
+                  setPendingLocationReq(null);
+                  await createNotification({
+                    userId: req.requesterId,
+                    actorId: currentUser.id,
+                    type: 'system',
+                    title: 'Location Request Declined',
+                    body: `${REMOTE_LOC_ERR_PREFIX}${JSON.stringify({
+                      message: `${currentUser.full_name} declined the location request.`,
+                    })}`,
+                    chatId: req.chatId || null,
+                  });
+                }}
+                className="flex-1 py-2.5 min-h-[42px] rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300"
+              >
+                Decline
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const req = pendingLocationReq;
+                  setPendingLocationReq(null);
+                  await respondWithDeviceLocation(req);
+                }}
+                className="flex-1 py-2.5 min-h-[42px] rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+              >
+                Allow &amp; Share GPS
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeCall && (
         <CallOverlay
           callRecord={activeCall}
@@ -1003,6 +1255,7 @@ export default function App() {
           errorMessage={callError}
           localStream={localStream}
           remoteStream={remoteStream}
+          isRemoteCamera={isRemoteCameraCall}
           onAccept={handleAcceptCall}
           onReject={handleRejectCall}
           onEnd={handleEndCall}

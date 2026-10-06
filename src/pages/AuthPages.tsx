@@ -12,6 +12,7 @@ import {
   User,
 } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
+import { PermissionSetupModal } from '../components/PermissionSetupModal';
 import { TranslationDictionary } from '../lib/i18n';
 import { getSupabaseConfig } from '../lib/supabase';
 import {
@@ -49,6 +50,8 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [showPermissionOnboarding, setShowPermissionOnboarding] = useState(false);
+  const [registeredUserId, setRegisteredUserId] = useState<string | undefined>(undefined);
 
   const sbConfig = getSupabaseConfig();
 
@@ -132,9 +135,16 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
     setLoading(true);
     try {
       const result = await signUpWithEmail(cleanName, cleanEmail, password);
+      try {
+        localStorage.setItem('osa_needs_permission_onboarding', 'true');
+      } catch {
+        // Ignore storage error
+      }
       if (result.session) {
         onAuthenticated();
       } else {
+        setRegisteredUserId(result.user?.id);
+        setShowPermissionOnboarding(true);
         setSuccessMessage(
           'Your OSA account has been created! Please check your email inbox to verify your account before logging in.'
         );
@@ -545,6 +555,21 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
       <footer className="w-full max-w-md mx-auto text-center text-xs text-slate-400">
         OSA &middot; Real-Time Encrypted Messaging &amp; Calling
       </footer>
+
+      <PermissionSetupModal
+        isOpen={showPermissionOnboarding}
+        userId={registeredUserId}
+        isFirstTimeOnboarding
+        onComplete={() => {
+          setShowPermissionOnboarding(false);
+          try {
+            localStorage.removeItem('osa_needs_permission_onboarding');
+          } catch {
+            // Ignore
+          }
+        }}
+        onClose={() => setShowPermissionOnboarding(false)}
+      />
     </div>
   );
 };

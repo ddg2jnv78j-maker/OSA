@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Camera,
   CameraOff,
+  Download,
+  Eye,
   Mic,
   MicOff,
   Phone,
@@ -22,6 +24,7 @@ interface CallOverlayProps {
   errorMessage?: string;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
+  isRemoteCamera?: boolean;
   onAccept: () => void;
   onReject: () => void;
   onEnd: () => void;
@@ -39,6 +42,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   errorMessage,
   localStream,
   remoteStream,
+  isRemoteCamera = false,
   onAccept,
   onReject,
   onEnd,
@@ -50,6 +54,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(callRecord.call_type === 'video');
   const [secondsElapsed, setSecondsElapsed] = useState(0);
+  const [snapshotFlash, setSnapshotFlash] = useState(false);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -109,13 +114,48 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
     onToggleCamera(next);
   };
 
+  const handleCaptureSnapshot = () => {
+    const videoEl = remoteVideoRef.current;
+    if (!videoEl || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = videoEl.videoWidth;
+    canvas.height = videoEl.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `OSA-Camera-${peerName.replace(/\s+/g, '_')}-${Date.now()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setSnapshotFlash(true);
+    setTimeout(() => setSnapshotFlash(false), 350);
+  };
+
   const statusText = () => {
     if (errorMessage) return errorMessage;
     switch (callStatus) {
       case 'calling':
-        return isIncoming ? t.incomingCall : t.calling;
+        return isIncoming
+          ? isRemoteCamera
+            ? 'Incoming Remote Camera Request...'
+            : t.incomingCall
+          : isRemoteCamera
+          ? 'Requesting Remote Camera Stream...'
+          : t.calling;
       case 'ringing':
-        return isIncoming ? t.incomingCall : t.ringing;
+        return isIncoming
+          ? isRemoteCamera
+            ? 'Incoming Remote Camera Request...'
+            : t.incomingCall
+          : isRemoteCamera
+          ? 'Connecting Remote Camera...'
+          : t.ringing;
       case 'accepted':
         return 'Connecting WebRTC media...';
       case 'connected':
@@ -138,7 +178,11 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
       {/* Hidden audio element ensures audio plays in both audio and video calls */}
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
-      {/* Remote Video Canvas (when video call is active) */}
+      {snapshotFlash && (
+        <div className="fixed inset-0 z-40 bg-white/70 pointer-events-none transition-opacity" />
+      )}
+
+      {/* Remote Video Canvas (when video call or remote camera is active) */}
       {isVideo && callStatus === 'connected' && remoteStream && (
         <video
           ref={remoteVideoRef}
@@ -153,19 +197,38 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
         <div className="flex items-center gap-2">
           <span className="font-display font-bold text-lg tracking-wider text-white">OSA</span>
           <span className="text-xs text-slate-400">·</span>
-          <span className="text-xs font-medium text-slate-300">
-            {isVideo ? t.videoCall : t.audioCall}
-          </span>
+          {isRemoteCamera ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-600/80 backdrop-blur-xs text-[11px] font-bold text-white border border-indigo-400/30">
+              <Eye className="w-3.5 h-3.5" />
+              <span>Remote Camera Live</span>
+            </span>
+          ) : (
+            <span className="text-xs font-medium text-slate-300">
+              {isVideo ? t.videoCall : t.audioCall}
+            </span>
+          )}
         </div>
         {isVideo && callStatus === 'connected' && (
-          <button
-            type="button"
-            onClick={onSwitchCamera}
-            className="w-11 h-11 rounded-full bg-slate-900/70 backdrop-blur-md border border-white/15 flex items-center justify-center text-white hover:bg-slate-800 transition-colors"
-            title={t.switchCamera}
-          >
-            <RefreshCw className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleCaptureSnapshot}
+              className="h-11 px-3.5 rounded-full bg-slate-900/70 backdrop-blur-md border border-white/15 flex items-center gap-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors"
+              title="Capture Snapshot"
+            >
+              <Download className="w-4 h-4" />
+              <span className="hidden sm:inline">Snapshot</span>
+            </button>
+            <button
+              type="button"
+              onClick={onSwitchCamera}
+              className="h-11 px-3.5 rounded-full bg-slate-900/70 backdrop-blur-md border border-white/15 flex items-center gap-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors"
+              title={isRemoteCamera ? 'Switch Remote Front/Back Camera' : t.switchCamera}
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>{isRemoteCamera ? 'Flip Remote Cam' : 'Flip'}</span>
+            </button>
+          </div>
         )}
       </div>
 

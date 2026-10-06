@@ -11,8 +11,11 @@ import {
   CornerUpLeft,
   CornerUpRight,
   Download,
+  ExternalLink,
+  Eye,
   FileText,
   Info,
+  MapPin,
   MoreVertical,
   Paperclip,
   Pencil,
@@ -29,10 +32,18 @@ import {
   X,
 } from 'lucide-react';
 import { OSAAvatar } from '../components/OSAAvatar';
+import { RemoteLocationModal } from '../components/RemoteLocationModal';
 import { ReportUserModal } from '../components/ReportUserModal';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
 import { generateSmartDraftOrReply } from '../services/aiService';
+import {
+  ChatLocationData,
+  formatLocationChatMessage,
+  getCurrentDeviceLocation,
+  parseLocationChatMessage,
+  requestLocationPermission,
+} from '../services/permissionService';
 import {
   addMembersToGroup,
   blockUser,
@@ -71,7 +82,12 @@ interface ChatConversationViewProps {
   myPrivacy: PrivacySettings | null;
   peerPrivacy: PrivacySettings | null;
   onBack: () => void;
-  onStartCall: (peer: Profile, callType: CallType, chatId: string) => void;
+  onStartCall: (
+    peer: Profile,
+    callType: CallType,
+    chatId: string,
+    isRemoteCamera?: boolean
+  ) => void;
   onChatUpdated: () => void;
   t: TranslationDictionary;
 }
@@ -106,6 +122,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [forwardModalMsg, setForwardModalMsg] = useState<Message | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
+  const [showRemoteLocationModal, setShowRemoteLocationModal] = useState(false);
+  const [selectedLocationCard, setSelectedLocationCard] = useState<ChatLocationData | null>(null);
+  const [sharingLocation, setSharingLocation] = useState(false);
 
   // Realtime & Typing state
   const [peerIsTyping, setPeerIsTyping] = useState(false);
@@ -665,25 +684,44 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           </button>
         </div>
 
-        {/* Right Header Actions: Audio Call, Video Call, Search, Chat Info */}
+        {/* Right Header Actions: Audio Call, Video Call, Remote Camera, Remote Location, Search, Chat Info */}
         <div className="flex items-center gap-1 shrink-0">
           {!isGroup && peer && !blockState.anyBlock && (
             <>
               <button
                 type="button"
-                onClick={() => onStartCall(peer, 'audio', chat.id)}
-                className="w-10 h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                onClick={() => onStartCall(peer, 'audio', chat.id, false)}
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                 title={t.audioCall}
               >
                 <Phone className="w-4.5 h-4.5" />
               </button>
               <button
                 type="button"
-                onClick={() => onStartCall(peer, 'video', chat.id)}
-                className="w-10 h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                onClick={() => onStartCall(peer, 'video', chat.id, false)}
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                 title={t.videoCall}
               >
                 <Video className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onStartCall(peer, 'video', chat.id, true)}
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors"
+                title="Remote Camera Live Stream"
+              >
+                <Eye className="w-4.5 h-4.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedLocationCard(null);
+                  setShowRemoteLocationModal(true);
+                }}
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors"
+                title="Remote Location & Live GPS"
+              >
+                <MapPin className="w-4.5 h-4.5" />
               </button>
             </>
           )}
@@ -879,14 +917,88 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       </div>
                     ))}
 
-                  {/* Message Text */}
-                  <p
-                    className={`text-sm whitespace-pre-wrap break-words leading-relaxed ${
-                      msg.is_deleted_for_everyone ? 'italic opacity-75 text-xs' : ''
-                    }`}
-                  >
-                    {msg.is_deleted_for_everyone ? t.messageDeleted : msg.content}
-                  </p>
+                  {/* Message Text or Live GPS Location Card */}
+                  {(() => {
+                    const locData = !msg.is_deleted_for_everyone
+                      ? parseLocationChatMessage(msg.content)
+                      : null;
+                    if (locData) {
+                      const mapHref = `https://www.google.com/maps?q=${locData.latitude.toFixed(
+                        6
+                      )},${locData.longitude.toFixed(6)}`;
+                      return (
+                        <div className="space-y-2 min-w-[210px] max-w-[270px]">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                                isMine
+                                  ? 'bg-white/20 text-white'
+                                  : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                              }`}
+                            >
+                              <MapPin className="w-4 h-4" />
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold truncate">
+                                {locData.label || 'Live GPS Location'}
+                              </p>
+                              <p
+                                className={`text-[11px] font-mono-num ${
+                                  isMine ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'
+                                }`}
+                              >
+                                {locData.latitude.toFixed(5)}, {locData.longitude.toFixed(5)}
+                                {locData.accuracy ? ` (±${Math.round(locData.accuracy)}m)` : ''}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 pt-1">
+                            {!isGroup && peer && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedLocationCard(locData);
+                                  setShowRemoteLocationModal(true);
+                                }}
+                                className={`flex-1 py-1.5 px-2.5 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1 ${
+                                  isMine
+                                    ? 'bg-white text-blue-700 hover:bg-blue-50'
+                                    : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                }`}
+                              >
+                                <MapPin className="w-3.5 h-3.5" />
+                                <span>Live Map</span>
+                              </button>
+                            )}
+                            <a
+                              href={mapHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={`flex-1 py-1.5 px-2.5 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1 ${
+                                isMine
+                                  ? 'bg-blue-700/60 text-white hover:bg-blue-700'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200'
+                              }`}
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>Google Maps</span>
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <p
+                        className={`text-sm whitespace-pre-wrap break-words leading-relaxed ${
+                          msg.is_deleted_for_everyone ? 'italic opacity-75 text-xs' : ''
+                        }`}
+                      >
+                        {msg.is_deleted_for_everyone ? t.messageDeleted : msg.content}
+                      </p>
+                    );
+                  })()}
 
                   {/* Timestamp + Delivery / Read Receipt + Message Menu Trigger */}
                   <div className="mt-1 flex items-center justify-end gap-1.5">
@@ -1156,6 +1268,50 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             title="Attach Image, Video, Audio or File"
           >
             <Paperclip className="w-5 h-5" />
+          </button>
+
+          <button
+            type="button"
+            disabled={sharingLocation}
+            onClick={async () => {
+              if (!isGroup && peer) {
+                setSelectedLocationCard(null);
+                setShowRemoteLocationModal(true);
+                return;
+              }
+              setSharingLocation(true);
+              setError('');
+              try {
+                await requestLocationPermission(currentUser.id);
+                const pos = await getCurrentDeviceLocation();
+                const content = formatLocationChatMessage({
+                  latitude: pos.coords.latitude,
+                  longitude: pos.coords.longitude,
+                  accuracy: Math.round(pos.coords.accuracy || 10),
+                  label: `${currentUser.full_name}'s GPS Location`,
+                  timestamp: new Date(pos.timestamp).toISOString(),
+                });
+                const sent = await sendTextMessage({
+                  chatId: chat.id,
+                  senderId: currentUser.id,
+                  content,
+                });
+                setMessages((prev) =>
+                  prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+                );
+                onChatUpdated();
+              } catch (err) {
+                setError(
+                  err instanceof Error ? err.message : 'Unable to share current GPS location.'
+                );
+              } finally {
+                setSharingLocation(false);
+              }
+            }}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 disabled:opacity-40 shrink-0 transition-colors"
+            title="Share Live GPS or Request Remote Location"
+          >
+            <MapPin className="w-5 h-5" />
           </button>
 
           <button
@@ -1642,6 +1798,33 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         reportedUserName={chatTitle}
         chatId={chat.id}
       />
+
+      {/* Remote & Live Location Modal */}
+      {!isGroup && peer && (
+        <RemoteLocationModal
+          isOpen={showRemoteLocationModal}
+          currentUser={currentUser}
+          peerUser={peer}
+          chatId={chat.id}
+          initialLocationData={selectedLocationCard}
+          onClose={() => {
+            setShowRemoteLocationModal(false);
+            setSelectedLocationCard(null);
+          }}
+          onSendLocationToChat={async (locData) => {
+            const content = formatLocationChatMessage(locData);
+            const sent = await sendTextMessage({
+              chatId: chat.id,
+              senderId: currentUser.id,
+              content,
+            });
+            setMessages((prev) =>
+              prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+            );
+            onChatUpdated();
+          }}
+        />
+      )}
     </div>
   );
 };

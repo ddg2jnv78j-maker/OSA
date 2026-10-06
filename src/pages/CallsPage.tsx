@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Eye,
+  MapPin,
   Phone,
   PhoneIncoming,
   PhoneMissed,
@@ -10,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { OSAAvatar } from '../components/OSAAvatar';
+import { RemoteLocationModal } from '../components/RemoteLocationModal';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
 import { fetchCallHistory, searchUsers } from '../services/osaService';
@@ -17,7 +20,12 @@ import { CallRecord, CallType, Profile } from '../types/osa';
 
 interface CallsPageProps {
   currentUser: Profile;
-  onStartCall: (peer: Profile, callType: CallType, chatId?: string | null) => void;
+  onStartCall: (
+    peer: Profile,
+    callType: CallType,
+    chatId?: string | null,
+    isRemoteCamera?: boolean
+  ) => void;
   t: TranslationDictionary;
 }
 
@@ -31,6 +39,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
   const [showNewCallModal, setShowNewCallModal] = useState(false);
   const [userQuery, setUserQuery] = useState('');
   const [users, setUsers] = useState<Profile[]>([]);
+  const [locationTargetPeer, setLocationTargetPeer] = useState<Profile | null>(null);
 
   const loadCalls = async () => {
     try {
@@ -173,19 +182,35 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
-                      onClick={() => onStartCall(peer, 'audio', c.chat_id)}
-                      className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
+                      onClick={() => onStartCall(peer, 'audio', c.chat_id, false)}
+                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
                       title={t.audioCall}
                     >
                       <Phone className="w-4 h-4" />
                     </button>
                     <button
                       type="button"
-                      onClick={() => onStartCall(peer, 'video', c.chat_id)}
-                      className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
+                      onClick={() => onStartCall(peer, 'video', c.chat_id, false)}
+                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
                       title={t.videoCall}
                     >
                       <Video className="w-4.5 h-4.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onStartCall(peer, 'video', c.chat_id, true)}
+                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-indigo-500/10 hover:bg-indigo-600 hover:text-white text-indigo-600 dark:text-indigo-400 flex items-center justify-center transition-colors"
+                      title="Remote Camera Live Stream"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLocationTargetPeer(peer)}
+                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-emerald-500/10 hover:bg-emerald-600 hover:text-white text-emerald-600 dark:text-emerald-400 flex items-center justify-center transition-colors"
+                      title="Remote Location & Live GPS"
+                    >
+                      <MapPin className="w-4 h-4" />
                     </button>
                   </div>
                 )}
@@ -201,7 +226,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
           <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl max-h-[82vh] flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                Start OSA Call
+                Start OSA Call or Remote Session
               </h3>
               <button
                 type="button"
@@ -246,9 +271,9 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                       type="button"
                       onClick={() => {
                         setShowNewCallModal(false);
-                        onStartCall(u, 'audio');
+                        onStartCall(u, 'audio', null, false);
                       }}
-                      className="w-10 h-10 rounded-full bg-blue-600/10 text-blue-600 hover:bg-blue-600 hover:text-white flex items-center justify-center"
+                      className="w-9 h-9 rounded-full bg-blue-600/10 text-blue-600 hover:bg-blue-600 hover:text-white flex items-center justify-center"
                       title={t.audioCall}
                     >
                       <Phone className="w-4 h-4" />
@@ -257,12 +282,34 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                       type="button"
                       onClick={() => {
                         setShowNewCallModal(false);
-                        onStartCall(u, 'video');
+                        onStartCall(u, 'video', null, false);
                       }}
-                      className="w-10 h-10 rounded-full bg-blue-600 text-white hover:bg-blue-700 flex items-center justify-center"
+                      className="w-9 h-9 rounded-full bg-blue-600 text-white hover:bg-blue-700 flex items-center justify-center"
                       title={t.videoCall}
                     >
                       <Video className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowNewCallModal(false);
+                        onStartCall(u, 'video', null, true);
+                      }}
+                      className="w-9 h-9 rounded-full bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-600 hover:text-white flex items-center justify-center"
+                      title="Remote Camera Live Stream"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowNewCallModal(false);
+                        setLocationTargetPeer(u);
+                      }}
+                      className="w-9 h-9 rounded-full bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-600 hover:text-white flex items-center justify-center"
+                      title="Remote Location & Live GPS"
+                    >
+                      <MapPin className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -270,6 +317,15 @@ export const CallsPage: React.FC<CallsPageProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {locationTargetPeer && (
+        <RemoteLocationModal
+          isOpen={Boolean(locationTargetPeer)}
+          currentUser={currentUser}
+          peerUser={locationTargetPeer}
+          onClose={() => setLocationTargetPeer(null)}
+        />
       )}
     </div>
   );

@@ -96,6 +96,7 @@ interface SettingsPageProps {
   onNotificationsChanged: () => void;
   onOpenSupabaseConfig: () => void;
   onOpenAdminPanel?: () => void;
+  onOpenPermissionSetup?: () => void;
   onLogout: () => void;
   t: TranslationDictionary;
 }
@@ -121,6 +122,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onNotificationsChanged,
   onOpenSupabaseConfig,
   onOpenAdminPanel,
+  onOpenPermissionSetup,
   onLogout,
   t,
 }) => {
@@ -525,6 +527,29 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </div>
 
           <PWAInstallButton />
+
+          {onOpenPermissionSetup && (
+            <button
+              type="button"
+              onClick={onOpenPermissionSetup}
+              className="w-full rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60 p-4 flex items-center justify-between gap-3 shadow-xs transition-colors text-left"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <Shield className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                    Device Permissions &amp; Remote Access
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                    Microphone, Camera, GPS Location, Notifications &amp; Remote Access
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-4.5 h-4.5 text-slate-400 shrink-0" />
+            </button>
+          )}
 
           {isAdmin && onOpenAdminPanel && (
             <button

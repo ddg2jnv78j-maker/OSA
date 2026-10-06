@@ -7,6 +7,7 @@ export interface WebRTCCallCallbacks {
   onLocalStream: (stream: MediaStream | null) => void;
   onRemoteStream: (stream: MediaStream | null) => void;
   onStatusChange: (status: CallStatus, errorMessage?: string) => void;
+  onRemoteModeDetected?: (isRemoteCamera: boolean) => void;
 }
 
 export class WebRTCCallManager {
@@ -21,6 +22,7 @@ export class WebRTCCallManager {
   private callTimeoutTimer: number | null = null;
   private connectedAtMs: number | null = null;
   private facingMode: 'user' | 'environment' = 'user';
+  private isRemoteCameraSession = false;
 
   constructor(currentUserId: string, callbacks: WebRTCCallCallbacks) {
     this.currentUserId = currentUserId;
@@ -31,26 +33,40 @@ export class WebRTCCallManager {
     return this.currentCall;
   }
 
+  public getIsRemoteCameraSession(): boolean {
+    return this.isRemoteCameraSession;
+  }
+
   public async startOutgoingCall(params: {
     receiverId: string;
     receiverName: string;
     chatId?: string | null;
     callType: CallType;
+    isRemoteCamera?: boolean;
   }): Promise<CallRecord> {
     try {
+      this.isRemoteCameraSession = Boolean(params.isRemoteCamera);
+      this.callbacks.onRemoteModeDetected?.(this.isRemoteCameraSession);
       this.callbacks.onStatusChange('calling');
 
-      // 1. Acquire local microphone (and camera if video)
-      const stream = await this.acquireMediaStream(params.callType);
-      this.localStream = stream;
-      this.callbacks.onLocalStream(stream);
+      // 1. For standard calls, acquire local microphone (and camera if video).
+      // For Remote Camera initiator, we view the remote peer's camera without turning on local camera.
+      if (!this.isRemoteCameraSession) {
+        const stream = await this.acquireMediaStream(params.callType);
+        this.localStream = stream;
+        this.callbacks.onLocalStream(stream);
+      } else {
+        this.localStream = null;
+        this.callbacks.onLocalStream(null);
+      }
 
-      // 2. Create call row in Supabase
+      // 2. Create call row in Supabase (uses 'video' for remote camera to satisfy DB check constraint)
+      const dbCallType: CallType = this.isRemoteCameraSession ? 'video' : params.callType;
       const callRecord = await createCallRecord({
         callerId: this.currentUserId,
         receiverId: params.receiverId,
         chatId: params.chatId || null,
-        callType: params.callType,
+        callType: dbCallType,
       });
       this.currentCall = callRecord;
 
@@ -59,27 +75,36 @@ export class WebRTCCallManager {
         userId: params.receiverId,
         actorId: this.currentUserId,
         type: 'incoming_call',
-        title: `Incoming ${params.callType === 'video' ? 'Video' : 'Audio'} Call`,
-        body: `Incoming ${params.callType} call on OSA`,
+        title: this.isRemoteCameraSession
+          ? 'OSA Remote Camera Session'
+          : `Incoming ${params.callType === 'video' ? 'Video' : 'Audio'} Call`,
+        body: this.isRemoteCameraSession
+          ? '[OSA_REMOTE_CAMERA] Authorized remote camera stream request'
+          : `Incoming ${params.callType} call on OSA`,
         referenceId: callRecord.id,
         chatId: params.chatId || null,
       });
 
       // 4. Initialize RTCPeerConnection & subscribe to signaling
       this.initPeerConnection(callRecord.id, params.receiverId);
+      if (this.isRemoteCameraSession && this.peerConnection) {
+        this.peerConnection.addTransceiver('video', { direction: 'recvonly' });
+        this.peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+      }
       await this.subscribeToCallSignals(callRecord.id);
 
       // 5. Create SDP Offer and send via `call_signals`
       const offer = await this.peerConnection!.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: params.callType === 'video',
+        offerToReceiveVideo: dbCallType === 'video',
       });
       await this.peerConnection!.setLocalDescription(offer);
 
       await this.sendSignal(callRecord.id, params.receiverId, 'offer', {
         sdp: offer.sdp,
         type: offer.type,
-        callType: params.callType,
+        callType: dbCallType,
+        mode: this.isRemoteCameraSession ? 'remote_camera' : 'standard',
       });
 
       // 6. Set 45-second unanswered timeout
@@ -119,12 +144,27 @@ export class WebRTCCallManager {
     }
   }
 
-  public async prepareIncomingCall(callRecord: CallRecord): Promise<void> {
+  public async prepareIncomingCall(callRecord: CallRecord): Promise<boolean> {
     this.currentCall = callRecord;
     this.callbacks.onStatusChange('ringing');
     await updateCallRecordStatus(callRecord.id, 'ringing');
     await this.subscribeToCallSignals(callRecord.id);
+
+    // Check if the offer signal marks this as a Remote Camera session
+    const { data: signals } = await supabase
+      .from('call_signals')
+      .select('*')
+      .eq('call_id', callRecord.id)
+      .eq('signal_type', 'offer')
+      .limit(1);
+
+    const offerSignal = ((signals || []) as CallSignal[])[0];
+    const isRemote = offerSignal?.payload?.mode === 'remote_camera';
+    this.isRemoteCameraSession = isRemote;
+    this.callbacks.onRemoteModeDetected?.(isRemote);
+
     await this.sendSignal(callRecord.id, callRecord.caller_id, 'ringing', {});
+    return isRemote;
   }
 
   public async acceptIncomingCall(callRecord: CallRecord): Promise<void> {
@@ -264,7 +304,20 @@ export class WebRTCCallManager {
   }
 
   public async switchCamera(): Promise<void> {
-    if (!this.localStream || !this.currentCall || this.currentCall.call_type !== 'video') return;
+    if (!this.currentCall || this.currentCall.call_type !== 'video') return;
+
+    // If we are the Remote Camera viewer (no local video stream), send signal to switch the peer's camera
+    if (!this.localStream || this.localStream.getVideoTracks().length === 0) {
+      const peerId =
+        this.currentCall.caller_id === this.currentUserId
+          ? this.currentCall.receiver_id
+          : this.currentCall.caller_id;
+      await this.sendSignal(this.currentCall.id, peerId, 'renegotiate', {
+        command: 'switch_remote_camera',
+      });
+      return;
+    }
+
     this.facingMode = this.facingMode === 'user' ? 'environment' : 'user';
 
     const newStream = await navigator.mediaDevices.getUserMedia({
@@ -423,6 +476,12 @@ export class WebRTCCallManager {
             await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidateInit));
           } else {
             this.pendingCandidates.push(candidateInit);
+          }
+          break;
+        }
+        case 'renegotiate': {
+          if (signal.payload?.command === 'switch_remote_camera') {
+            await this.switchCamera();
           }
           break;
         }
