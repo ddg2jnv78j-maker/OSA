@@ -62,8 +62,8 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl max-h-[85vh] flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
+      <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl max-h-dvh-modal flex flex-col overflow-hidden">
+        <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-blue-600/10 text-blue-600 flex items-center justify-center">
               <Bell className="w-5 h-5" />
@@ -100,7 +100,7 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
         </div>
 
         {'Notification' in window && Notification.permission === 'default' && (
-          <div className="px-4 py-2.5 bg-blue-50 dark:bg-blue-950/50 border-b border-blue-100 dark:border-blue-900 flex items-center justify-between gap-2">
+          <div className="shrink-0 px-4 py-2.5 bg-blue-50 dark:bg-blue-950/50 border-b border-blue-100 dark:border-blue-900 flex items-center justify-between gap-2">
             <span className="text-xs text-blue-800 dark:text-blue-200">
               Enable browser push alerts for incoming messages &amp; calls
             </span>
@@ -114,7 +114,7 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+        <div className="flex-1 min-h-0 overflow-y-auto pb-4 divide-y divide-slate-100 dark:divide-slate-800">
           {notifications.length === 0 ? (
             <div className="py-14 px-6 text-center">
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">

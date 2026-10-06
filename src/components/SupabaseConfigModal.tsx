@@ -57,9 +57,9 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 overflow-y-auto">
-      <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl my-auto">
-        <div className="flex items-center justify-between mb-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 overflow-hidden">
+      <div className="w-full max-w-lg max-h-dvh-modal flex flex-col overflow-hidden rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl">
+        <div className="shrink-0 flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-blue-600/10 text-blue-600 dark:text-blue-400 flex items-center justify-center">
               <Database className="w-5 h-5" />
@@ -83,24 +83,25 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({
           </button>
         </div>
 
-        <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/60 p-4 mb-5 text-xs text-slate-600 dark:text-slate-300 space-y-2">
-          <p className="font-semibold text-slate-900 dark:text-white">
-            Setup Checklist for Production Supabase:
-          </p>
-          <ol className="list-decimal list-inside space-y-1">
-            <li>Create a Supabase project and run <code className="font-mono text-blue-600 dark:text-blue-400">supabase/schema.sql</code> in the SQL Editor.</li>
-            <li>Copy your <strong>Project URL</strong> and <strong>anon public key</strong> from Project Settings &rarr; API.</li>
-            <li>Set <code className="font-mono">VITE_SUPABASE_URL</code> and <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> in <code className="font-mono">.env</code> or enter them below.</li>
-          </ol>
-        </div>
+        <form onSubmit={handleSave} className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4 pb-2">
+            <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/60 p-4 text-xs text-slate-600 dark:text-slate-300 space-y-2">
+              <p className="font-semibold text-slate-900 dark:text-white">
+                Setup Checklist for Production Supabase:
+              </p>
+              <ol className="list-decimal list-inside space-y-1">
+                <li>Create a Supabase project and run <code className="font-mono text-blue-600 dark:text-blue-400">supabase/schema.sql</code> in the SQL Editor.</li>
+                <li>Copy your <strong>Project URL</strong> and <strong>anon public key</strong> from Project Settings &rarr; API.</li>
+                <li>Set <code className="font-mono">VITE_SUPABASE_URL</code> and <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> in <code className="font-mono">.env</code> or enter them below.</li>
+              </ol>
+            </div>
 
-        {error && (
-          <div className="mb-4 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800/70 px-4 py-3 text-xs text-red-700 dark:text-red-300">
-            {error}
-          </div>
-        )}
+            {error && (
+              <div className="rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800/70 px-4 py-3 text-xs text-red-700 dark:text-red-300">
+                {error}
+              </div>
+            )}
 
-        <form onSubmit={handleSave} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
               Supabase Project URL (VITE_SUPABASE_URL)
@@ -168,8 +169,9 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({
               </button>
             )}
           </div>
+          </div>
 
-          <div className="flex items-center gap-3 pt-2">
+          <div className="shrink-0 flex items-center gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
             <button
               type="button"
               onClick={onClose}

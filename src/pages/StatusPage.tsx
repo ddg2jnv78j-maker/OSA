@@ -158,7 +158,7 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
   };
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto px-4 py-4 space-y-6">
+    <div className="flex flex-col h-full min-h-0 overflow-hidden">
       <input
         ref={mediaInputRef}
         type="file"
@@ -167,17 +167,8 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
         className="hidden"
       />
 
-      {error && (
-        <div className="rounded-2xl bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 px-4 py-3 text-xs text-red-700 dark:text-red-300 flex items-center justify-between">
-          <span>{error}</span>
-          <button type="button" onClick={() => setError('')} className="font-bold">
-            &times;
-          </button>
-        </div>
-      )}
-
-      {/* My Status Card */}
-      <section className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 shadow-xs">
+      {/* Fixed Top Action Header - My Status */}
+      <div className="shrink-0 px-4 py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-10">
         <div className="flex items-center justify-between gap-3">
           <div
             onClick={() => {
@@ -242,10 +233,22 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Scrollable Middle Content */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 pb-6 space-y-5">
+        {error && (
+          <div className="rounded-2xl bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 px-4 py-3 text-xs text-red-700 dark:text-red-300 flex items-center justify-between">
+            <span>{error}</span>
+            <button type="button" onClick={() => setError('')} className="font-bold">
+              &times;
+            </button>
+          </div>
+        )}
 
         {/* List my own individual statuses so user can view viewers or delete */}
         {myStatuses.length > 0 && (
-          <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+          <section className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-3.5 shadow-xs space-y-2">
             {myStatuses.map((st) => (
               <div
                 key={st.id}
@@ -276,9 +279,8 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
                 </button>
               </div>
             ))}
-          </div>
+          </section>
         )}
-      </section>
 
       {/* Recent Updates from Other OSA Users */}
       <section className="space-y-3">
@@ -343,15 +345,16 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
           </div>
         )}
       </section>
+      </div>
 
       {/* Create Text Status Modal */}
       {showTextModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
           <div
-            className="w-full max-w-md rounded-3xl p-6 text-white shadow-2xl flex flex-col justify-between min-h-[360px] transition-colors"
+            className="w-full max-w-md max-h-dvh-modal rounded-3xl p-6 text-white shadow-2xl flex flex-col justify-between min-h-[340px] overflow-hidden transition-colors"
             style={{ backgroundColor: bgColor }}
           >
-            <div className="flex items-center justify-between">
+            <div className="shrink-0 flex items-center justify-between">
               <span className="text-xs font-bold tracking-wider uppercase opacity-80">
                 OSA {t.textStatus}
               </span>
@@ -364,17 +367,19 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
               </button>
             </div>
 
-            <form onSubmit={handleCreateTextStatus} className="my-auto py-6">
-              <textarea
-                rows={4}
-                value={statusText}
-                onChange={(e) => setStatusText(e.target.value)}
-                placeholder="Type your status update..."
-                autoFocus
-                className="w-full bg-transparent text-center text-xl font-bold placeholder:text-white/60 focus:outline-none resize-none"
-              />
+            <form onSubmit={handleCreateTextStatus} className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <div className="flex-1 min-h-0 overflow-y-auto flex items-center justify-center py-6">
+                <textarea
+                  rows={4}
+                  value={statusText}
+                  onChange={(e) => setStatusText(e.target.value)}
+                  placeholder="Type your status update..."
+                  autoFocus
+                  className="w-full bg-transparent text-center text-xl font-bold placeholder:text-white/60 focus:outline-none resize-none"
+                />
+              </div>
 
-              <div className="flex items-center justify-between mt-6 pt-4 border-t border-white/20">
+              <div className="shrink-0 flex items-center justify-between pt-4 border-t border-white/20">
                 <div className="flex items-center gap-2">
                   {STATUS_BG_COLORS.map((col) => (
                     <button
@@ -407,14 +412,14 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
       {/* Fullscreen Status Viewer Modal */}
       {viewingStatus && (
         <div
-          className="fixed inset-0 z-50 flex flex-col justify-between text-white p-5 select-none"
+          className="fixed inset-0 z-50 flex flex-col justify-between overflow-hidden text-white p-5 select-none"
           style={{
             backgroundColor:
               viewingStatus.media_type === 'text' ? viewingStatus.background_color : '#020617',
           }}
         >
           {/* Top Viewer Bar */}
-          <div className="flex items-center justify-between pt-safe z-10">
+          <div className="shrink-0 flex items-center justify-between pt-safe z-10">
             <div className="flex items-center gap-3">
               <OSAAvatar
                 name={viewingStatus.user?.full_name || currentUser.full_name}
@@ -458,7 +463,7 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
           </div>
 
           {/* Center Status Content */}
-          <div className="my-auto flex flex-col items-center justify-center text-center max-h-[75vh] overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center text-center py-4">
             {viewingStatus.media_type === 'text' && (
               <p className="text-2xl sm:text-3xl font-bold max-w-lg px-4 leading-relaxed whitespace-pre-wrap">
                 {viewingStatus.content}
@@ -492,7 +497,7 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
           </div>
 
           {/* Bottom Viewers Trigger (for owner) */}
-          <div className="pb-safe flex flex-col items-center">
+          <div className="shrink-0 pb-safe flex flex-col items-center z-10">
             {viewingStatus.user_id === currentUser.id && (
               <button
                 type="button"

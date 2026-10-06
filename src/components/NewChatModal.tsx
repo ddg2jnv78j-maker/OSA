@@ -74,8 +74,8 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
+      <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col max-h-dvh-modal overflow-hidden">
+        <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-blue-600/10 text-blue-600 flex items-center justify-center">
               <MessageSquarePlus className="w-5 h-5" />
@@ -93,7 +93,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
           </button>
         </div>
 
-        <div className="p-4 border-b border-slate-100 dark:border-slate-800">
+        <div className="shrink-0 p-4 border-b border-slate-100 dark:border-slate-800">
           <div className="relative">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
@@ -108,12 +108,12 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
         </div>
 
         {error && (
-          <div className="mx-4 mt-3 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 px-3.5 py-2.5 text-xs text-red-600 dark:text-red-300">
+          <div className="shrink-0 mx-4 mt-3 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 px-3.5 py-2.5 text-xs text-red-600 dark:text-red-300">
             {error}
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60">
+        <div className="flex-1 min-h-0 overflow-y-auto pb-4 divide-y divide-slate-100 dark:divide-slate-800/60">
           {loading ? (
             <div className="py-12 text-center text-xs text-slate-500">
               Searching OSA directory...

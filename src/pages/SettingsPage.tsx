@@ -450,7 +450,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   };
 
   const renderSubHeader = (title: string, backTarget: SettingsSubPage = 'main') => (
-    <div className="flex items-center gap-3 pb-3 border-b border-slate-200 dark:border-slate-800 mb-4">
+    <div className="sticky top-0 z-20 -mx-4 px-4 py-3 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md flex items-center gap-3 border-b border-slate-200 dark:border-slate-800 mb-4">
       <button
         type="button"
         onClick={() => setSubPage(backTarget)}
@@ -463,36 +463,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   );
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto px-4 py-4">
-      {statusBanner && (
-        <div
-          className={`mb-4 rounded-2xl px-4 py-3 text-xs flex items-center justify-between border ${
-            statusBanner.type === 'success'
-              ? 'bg-green-50 dark:bg-green-950/50 border-green-200 dark:border-green-800 text-green-700 dark:text-green-300'
-              : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            {statusBanner.type === 'success' && <CheckCircle2 className="w-4 h-4 shrink-0" />}
-            {statusBanner.text}
-          </span>
-          <button
-            type="button"
-            onClick={() => setStatusBanner(null)}
-            className="font-bold ml-2"
-          >
-            &times;
-          </button>
-        </div>
-      )}
-
-      {/* ================================================================= */}
-      {/* MAIN SETTINGS MENU                                                */}
-      {/* ================================================================= */}
+    <div className="flex flex-col h-full min-h-0 overflow-hidden">
+      {/* Fixed Top Profile Bar on Main Settings Screen */}
       {subPage === 'main' && (
-        <div className="space-y-5 pb-6">
-          {/* Profile Summary Card */}
-          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 flex items-center justify-between gap-3 shadow-xs">
+        <div className="shrink-0 px-4 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-10">
+          <div className="flex items-center justify-between gap-3">
             <button
               type="button"
               onClick={() => setSubPage('profile')}
@@ -525,7 +500,37 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               {t.editProfile}
             </button>
           </div>
+        </div>
+      )}
 
+      <div className={`flex-1 min-h-0 overflow-y-auto px-4 pb-6 ${subPage === 'main' ? 'pt-4' : 'pt-0'}`}>
+      {statusBanner && (
+        <div
+          className={`mt-3 mb-4 rounded-2xl px-4 py-3 text-xs flex items-center justify-between border ${
+            statusBanner.type === 'success'
+              ? 'bg-green-50 dark:bg-green-950/50 border-green-200 dark:border-green-800 text-green-700 dark:text-green-300'
+              : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            {statusBanner.type === 'success' && <CheckCircle2 className="w-4 h-4 shrink-0" />}
+            {statusBanner.text}
+          </span>
+          <button
+            type="button"
+            onClick={() => setStatusBanner(null)}
+            className="font-bold ml-2"
+          >
+            &times;
+          </button>
+        </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* MAIN SETTINGS MENU                                                */}
+      {/* ================================================================= */}
+      {subPage === 'main' && (
+        <div className="space-y-4 pb-2">
           <PWAInstallButton />
 
           {onOpenPermissionSetup && (
@@ -638,16 +643,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               <ChevronRight className="w-4.5 h-4.5 text-slate-400 shrink-0" />
             </button>
           </div>
-
-          {/* Logout Button */}
-          <button
-            type="button"
-            onClick={onLogout}
-            className="w-full py-3.5 min-h-[48px] rounded-2xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 shadow-sm transition-colors"
-          >
-            <LogOut className="w-4.5 h-4.5" />
-            <span>{t.logout}</span>
-          </button>
         </div>
       )}
 
@@ -1614,6 +1609,21 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               Open Support Ticket Form
             </button>
           </div>
+        </div>
+      )}
+      </div>
+
+      {/* Fixed Bottom Logout Bar on Main Settings Screen */}
+      {subPage === 'main' && (
+        <div className="shrink-0 px-4 py-3 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 z-10">
+          <button
+            type="button"
+            onClick={onLogout}
+            className="w-full py-3 min-h-[46px] rounded-2xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 shadow-sm transition-colors"
+          >
+            <LogOut className="w-4.5 h-4.5" />
+            <span>{t.logout}</span>
+          </button>
         </div>
       )}
     </div>

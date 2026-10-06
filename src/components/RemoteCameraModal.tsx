@@ -160,14 +160,14 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
   const isStreaming = status === 'streaming' && Boolean(remoteStream);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-4">
-      <div className="w-full max-w-xl rounded-3xl bg-slate-900 border border-slate-800 text-white shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-4 overflow-hidden">
+      <div className="w-full max-w-xl rounded-3xl bg-slate-900 border border-slate-800 text-white shadow-2xl overflow-hidden flex flex-col max-h-dvh-modal">
         {snapshotFlash && (
           <div className="fixed inset-0 z-50 bg-white/70 pointer-events-none" />
         )}
 
         {/* Header */}
-        <div className="px-5 py-4 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between gap-3">
+        <div className="shrink-0 px-5 py-4 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-2xl bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shrink-0">
               <Eye className="w-5 h-5" />
@@ -199,7 +199,7 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
         </div>
 
         {/* Viewport */}
-        <div className="relative w-full aspect-video bg-slate-950 flex items-center justify-center overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-y-auto relative w-full aspect-video bg-slate-950 flex items-center justify-center">
           <video
             ref={videoRef}
             autoPlay
@@ -264,7 +264,7 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
         </div>
 
         {/* Footer Controls */}
-        <div className="px-5 py-4 bg-slate-900 border-t border-slate-800 flex items-center justify-between gap-2">
+        <div className="shrink-0 px-5 py-4 bg-slate-900 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 z-10">
           <div className="flex items-center gap-2">
             <button
               type="button"

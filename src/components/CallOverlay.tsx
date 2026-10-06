@@ -169,7 +169,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
       )}
 
       {/* Scrim for readability */}
-      <div className="relative z-10 flex items-center justify-between pt-safe">
+      <div className="shrink-0 relative z-10 flex items-center justify-between pt-safe">
         <div className="flex items-center gap-2">
           <span className="font-display font-bold text-lg tracking-wider text-white">OSA</span>
           <span className="text-xs text-slate-400">·</span>
@@ -190,7 +190,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
       </div>
 
       {/* Center Caller / Peer Information */}
-      <div className="relative z-10 flex flex-col items-center justify-center my-auto text-center px-4">
+      <div className="flex-1 min-h-0 overflow-y-auto relative z-10 flex flex-col items-center justify-center my-auto text-center px-4">
         {(!isVideo || callStatus !== 'connected' || !hasRemoteVideoTrack) && (
           <div className="relative mb-5">
             <div
@@ -232,7 +232,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
       )}
 
       {/* Bottom Call Controls */}
-      <div className="relative z-10 pb-safe">
+      <div className="shrink-0 relative z-10 pb-safe">
         <div className="max-w-md mx-auto rounded-3xl bg-slate-900/85 backdrop-blur-md border border-white/10 p-4 flex items-center justify-around">
           {isIncoming ? (
             <>

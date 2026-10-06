@@ -686,7 +686,7 @@ export default function App() {
   });
 
   return (
-    <div className="h-screen w-full flex flex-col md:flex-row bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden">
+    <div className="h-dvh-screen w-full flex flex-col md:flex-row bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden">
       {/* Offline Mode Banner */}
       {!isOnline && (
         <div className="fixed top-2 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-full bg-amber-500 px-4 py-1.5 text-xs font-semibold text-white shadow-lg">
@@ -787,12 +787,12 @@ export default function App() {
 
       {/* Left / Primary Column (Home Chat List or Active Tab on Mobile) */}
       <div
-        className={`flex-col h-full w-full md:w-96 lg:w-[410px] md:border-r border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 shrink-0 ${
+        className={`flex-col h-full min-h-0 w-full md:w-96 lg:w-[410px] md:border-r border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 shrink-0 overflow-hidden ${
           selectedChat ? 'hidden md:flex' : 'flex'
         }`}
       >
         {/* Top App Bar */}
-        <header className="sticky top-0 z-20 flex items-center justify-between px-4 h-16 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shrink-0">
+        <header className="z-20 flex items-center justify-between px-4 min-h-16 pt-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shrink-0">
           {/* Zone 1: Single Brand Wordmark */}
           <span className="font-display text-xl font-extrabold tracking-wider text-blue-600 dark:text-blue-400">
             OSA
@@ -845,9 +845,9 @@ export default function App() {
         {/* Active Section Body */}
         <main className="flex-1 min-h-0 overflow-hidden flex flex-col">
           {activeTab === 'chats' && (
-            <div className="flex flex-col h-full overflow-hidden">
-              {/* Search Bar + Filter Tabs */}
-              <div className="p-3.5 space-y-2.5 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800/80">
+            <div className="flex flex-col h-full min-h-0 overflow-hidden">
+              {/* Search Bar + Filter Tabs (Fixed Top Area) */}
+              <div className="p-3.5 space-y-2.5 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800/80 shrink-0">
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
@@ -895,8 +895,8 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Conversation List */}
-              <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/70">
+              {/* Conversation List (Scrollable Middle Content) */}
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain pb-6 divide-y divide-slate-100 dark:divide-slate-800/70">
                 {visibleChats.length === 0 && directorySearchResults.length === 0 ? (
                   <div className="py-16 px-6 text-center">
                     <div className="w-14 h-14 rounded-2xl bg-blue-600/10 text-blue-600 flex items-center justify-center mx-auto mb-3">
@@ -1083,7 +1083,7 @@ export default function App() {
         </main>
 
         {/* Functional 5-Tab Mobile Bottom Navigation */}
-        <nav className="md:hidden grid grid-cols-5 items-center h-16 pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 shrink-0">
+        <nav className="md:hidden z-20 grid grid-cols-5 items-center min-h-16 pt-1.5 pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 shrink-0">
           {(
             [
               { id: 'chats', icon: MessageSquare, label: t.chats, badge: totalUnreadChats },
@@ -1125,7 +1125,7 @@ export default function App() {
 
       {/* Right / Active Conversation Pane */}
       <div
-        className={`flex-1 h-full min-w-0 ${
+        className={`flex-1 h-full min-h-0 min-w-0 overflow-hidden ${
           selectedChat ? 'flex' : 'hidden md:flex'
         }`}
       >

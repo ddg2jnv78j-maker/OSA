@@ -66,8 +66,8 @@ export const ReportUserModal: React.FC<ReportUserModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl">
-        <div className="flex items-center justify-between mb-4">
+      <div className="w-full max-w-md max-h-dvh-modal flex flex-col overflow-hidden rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl">
+        <div className="shrink-0 flex items-center justify-between mb-4">
           <div className="flex items-center gap-2.5">
             <div className="w-10 h-10 rounded-2xl bg-red-600/10 text-red-600 flex items-center justify-center">
               <AlertTriangle className="w-5 h-5" />
@@ -108,55 +108,57 @@ export const ReportUserModal: React.FC<ReportUserModalProps> = ({
             </button>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {error && (
-              <div className="rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 px-3.5 py-2.5 text-xs text-red-600 dark:text-red-300">
-                {error}
-              </div>
-            )}
+          <form onSubmit={handleSubmit} className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4 pb-2">
+              {error && (
+                <div className="rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 px-3.5 py-2.5 text-xs text-red-600 dark:text-red-300">
+                  {error}
+                </div>
+              )}
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">
-                Select Reason
-              </label>
-              <div className="space-y-2">
-                {REPORT_REASONS.map((r) => (
-                  <label
-                    key={r}
-                    className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
-                      reason === r
-                        ? 'border-blue-600 bg-blue-50/60 dark:bg-blue-950/30 text-slate-900 dark:text-white'
-                        : 'border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="report_reason"
-                      value={r}
-                      checked={reason === r}
-                      onChange={() => setReason(r)}
-                      className="accent-blue-600"
-                    />
-                    <span className="text-sm font-medium">{r}</span>
-                  </label>
-                ))}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                  Select Reason
+                </label>
+                <div className="space-y-2">
+                  {REPORT_REASONS.map((r) => (
+                    <label
+                      key={r}
+                      className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+                        reason === r
+                          ? 'border-blue-600 bg-blue-50/60 dark:bg-blue-950/30 text-slate-900 dark:text-white'
+                          : 'border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="report_reason"
+                        value={r}
+                        checked={reason === r}
+                        onChange={() => setReason(r)}
+                        className="accent-blue-600"
+                      />
+                      <span className="text-sm font-medium">{r}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Additional Details (Optional)
+                </label>
+                <textarea
+                  rows={3}
+                  value={details}
+                  onChange={(e) => setDetails(e.target.value)}
+                  placeholder="Provide specific context about this report..."
+                  className="w-full rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                Additional Details (Optional)
-              </label>
-              <textarea
-                rows={3}
-                value={details}
-                onChange={(e) => setDetails(e.target.value)}
-                placeholder="Provide specific context about this report..."
-                className="w-full rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
-              />
-            </div>
-
-            <div className="flex items-center gap-3 pt-2">
+            <div className="shrink-0 flex items-center gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
               <button
                 type="button"
                 onClick={handleResetAndClose}

@@ -218,10 +218,10 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
     (status.notifications === 'granted' || status.notifications === 'unsupported');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 overflow-y-auto">
-      <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 overflow-hidden">
+      <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden max-h-dvh-modal flex flex-col">
         {/* Top Header */}
-        <div className="p-6 bg-gradient-to-r from-blue-600 to-indigo-600 text-white flex items-start justify-between gap-4">
+        <div className="shrink-0 p-6 bg-gradient-to-r from-blue-600 to-indigo-600 text-white flex items-start justify-between gap-4">
           <div className="flex items-center gap-3.5">
             <div className="w-12 h-12 rounded-2xl bg-white/15 backdrop-blur-xs flex items-center justify-center shrink-0">
               <ShieldCheck className="w-7 h-7 text-white" />
@@ -251,7 +251,7 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
         </div>
 
         {/* Scrollable Content */}
-        <div className="p-5 sm:p-6 overflow-y-auto space-y-4 flex-1">
+        <div className="flex-1 min-h-0 p-5 sm:p-6 overflow-y-auto space-y-4">
           {infoMessage && (
             <div className="rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 p-3.5 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
@@ -353,7 +353,7 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
         </div>
 
         {/* Footer Buttons */}
-        <div className="p-5 bg-slate-50 dark:bg-slate-900/90 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center gap-2.5">
+        <div className="shrink-0 p-5 bg-slate-50 dark:bg-slate-900/90 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center gap-2.5">
           {!allGranted ? (
             <>
               <button

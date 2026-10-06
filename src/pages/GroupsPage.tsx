@@ -101,9 +101,9 @@ export const GroupsPage: React.FC<GroupsPageProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto px-4 py-4 space-y-4">
-      {/* Top Search + Create Group CTA */}
-      <div className="flex items-center gap-2.5">
+    <div className="flex flex-col h-full min-h-0 overflow-hidden">
+      {/* Top Search + Create Group CTA (Fixed Top) */}
+      <div className="shrink-0 flex items-center gap-2.5 px-4 py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-10">
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
@@ -111,7 +111,7 @@ export const GroupsPage: React.FC<GroupsPageProps> = ({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search OSA groups..."
-            className="w-full pl-10 pr-4 py-2.5 min-h-[44px] rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+            className="w-full pl-10 pr-4 py-2.5 min-h-[44px] rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
           />
         </div>
         <button
@@ -124,7 +124,8 @@ export const GroupsPage: React.FC<GroupsPageProps> = ({
         </button>
       </div>
 
-      {/* Groups List */}
+      {/* Scrollable Middle Content - Groups List */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 pb-6 flex flex-col">
       {filteredGroups.length === 0 ? (
         <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-8 text-center my-auto">
           <div className="w-14 h-14 rounded-2xl bg-blue-600/10 text-blue-600 flex items-center justify-center mx-auto mb-3">
@@ -193,12 +194,13 @@ export const GroupsPage: React.FC<GroupsPageProps> = ({
           })}
         </div>
       )}
+      </div>
 
       {/* Create Group Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl max-h-[88vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl max-h-dvh-modal flex flex-col overflow-hidden">
+            <div className="shrink-0 flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">
                 {t.createGroup}
               </h3>
@@ -212,14 +214,14 @@ export const GroupsPage: React.FC<GroupsPageProps> = ({
             </div>
 
             {error && (
-              <div className="mb-3 rounded-xl bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 px-3.5 py-2 text-xs text-red-600 dark:text-red-300">
+              <div className="shrink-0 mb-3 rounded-xl bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 px-3.5 py-2 text-xs text-red-600 dark:text-red-300">
                 {error}
               </div>
             )}
 
-            <form onSubmit={handleCreateGroup} className="flex-1 flex flex-col min-h-0 space-y-4">
+            <form onSubmit={handleCreateGroup} className="flex-1 flex flex-col min-h-0 overflow-hidden space-y-4">
               {/* Group Photo + Name */}
-              <div className="flex items-center gap-3.5">
+              <div className="shrink-0 flex items-center gap-3.5">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -274,7 +276,7 @@ export const GroupsPage: React.FC<GroupsPageProps> = ({
                   className="w-full px-3.5 py-2 min-h-[40px] rounded-xl bg-slate-100 dark:bg-slate-800 text-xs mb-2"
                 />
 
-                <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 border border-slate-100 dark:border-slate-800 rounded-2xl px-3">
+                <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 border border-slate-100 dark:border-slate-800 rounded-2xl px-3">
                   {availableUsers
                     .filter((u) =>
                       u.full_name.toLowerCase().includes(memberFilter.toLowerCase())
@@ -312,7 +314,7 @@ export const GroupsPage: React.FC<GroupsPageProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 pt-2">
+              <div className="shrink-0 flex items-center gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}

@@ -619,16 +619,16 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     });
 
   return (
-    <div className="flex flex-col h-full w-full bg-slate-50 dark:bg-slate-950 relative overflow-hidden">
+    <div className="flex flex-col h-full min-h-0 w-full bg-slate-50 dark:bg-slate-950 relative overflow-hidden">
       {/* Reconnect Banner */}
       {realtimeStatus === 'RECONNECTING' && (
-        <div className="bg-amber-500 text-white text-xs font-medium px-4 py-1.5 text-center">
+        <div className="shrink-0 bg-amber-500 text-white text-xs font-medium px-4 py-1.5 text-center">
           {t.reconnecting}
         </div>
       )}
 
       {/* Top Conversation Header */}
-      <header className="sticky top-0 z-20 flex items-center justify-between px-3 sm:px-5 h-16 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shrink-0">
+      <header className="z-20 flex items-center justify-between px-3 sm:px-5 h-16 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
           <button
             type="button"
@@ -745,7 +745,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
       {/* Search in Conversation Bar */}
       {searchInChatOpen && (
-        <div className="px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
+        <div className="shrink-0 px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2 z-10">
           <Search className="w-4 h-4 text-slate-400 shrink-0" />
           <input
             type="text"
@@ -778,7 +778,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       )}
 
       {error && (
-        <div className="mx-4 mt-2 rounded-xl bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 px-3.5 py-2 text-xs text-red-700 dark:text-red-300 flex items-center justify-between">
+        <div className="shrink-0 mx-4 mt-2 rounded-xl bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 px-3.5 py-2 text-xs text-red-700 dark:text-red-300 flex items-center justify-between">
           <span>{error}</span>
           <button type="button" onClick={() => setError('')} className="ml-2 font-bold">
             &times;
@@ -788,7 +788,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
       {/* Messages Stream */}
       <div
-        className="flex-1 overflow-y-auto px-3 sm:px-5 py-4 space-y-3"
+        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-5 py-4 pb-6 space-y-3"
         onClick={() => setActiveMenuMsgId(null)}
       >
         {loading ? (
@@ -1139,7 +1139,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
       {/* Upload Progress Indicator */}
       {uploadProgress !== null && (
-        <div className="px-4 py-2 bg-blue-50 dark:bg-blue-950/60 border-t border-blue-200 dark:border-blue-800 flex items-center gap-3">
+        <div className="shrink-0 px-4 py-2 bg-blue-50 dark:bg-blue-950/60 border-t border-blue-200 dark:border-blue-800 flex items-center gap-3">
           <div className="flex-1 h-2 rounded-full bg-blue-200 dark:bg-blue-900 overflow-hidden">
             <div
               className="h-full bg-blue-600 transition-all duration-200"
@@ -1154,7 +1154,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
       {/* Editing Message Banner */}
       {editingMsg && (
-        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-t border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2">
+        <div className="shrink-0 px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-t border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2">
           <div className="min-w-0 flex-1 border-l-3 border-amber-500 pl-2.5">
             <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
               Editing Message
@@ -1179,7 +1179,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
       {/* Reply Banner */}
       {replyTo && (
-        <div className="px-4 py-2 bg-slate-100 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+        <div className="shrink-0 px-4 py-2 bg-slate-100 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
           <div className="min-w-0 flex-1 border-l-3 border-blue-600 pl-2.5">
             <p className="text-xs font-semibold text-blue-600 dark:text-blue-400">
               Replying to {replyTo.sender_id === currentUser.id ? 'yourself' : chatTitle}
@@ -1200,7 +1200,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
       {/* Emoji Bar */}
       {showEmojiPicker && (
-        <div className="px-3 py-2 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center gap-1.5 overflow-x-auto">
+        <div className="shrink-0 px-3 py-2 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center gap-1.5 overflow-x-auto">
           {COMMON_EMOJIS.map((em) => (
             <button
               key={em}
@@ -1216,7 +1216,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
       {/* Message Composer or Blocked Notice */}
       {!isGroup && blockState.anyBlock ? (
-        <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 text-center">
+        <div className="shrink-0 p-4 pb-safe bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 text-center z-10">
           {blockState.blockedByMe ? (
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
               <span className="text-xs text-slate-600 dark:text-slate-300">
@@ -1343,8 +1343,8 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       {/* Forward Message Modal */}
       {forwardModalMsg && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-3">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl max-h-dvh-modal flex flex-col overflow-hidden">
+            <div className="shrink-0 flex items-center justify-between mb-3">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">
                 {t.forward} Message
               </h3>
@@ -1356,7 +1356,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
               {allChats.map((c) => {
                 const name = c.type === 'group' ? c.group?.name || 'Group' : c.peer?.full_name || 'User';
                 const avatar = c.type === 'group' ? c.group?.avatar_url : c.peer?.avatar_url;
@@ -1404,20 +1404,23 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       {/* Chat Information & Group Management Drawer */}
       {showChatInfo && (
         <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm flex justify-end">
-          <div className="w-full max-w-md bg-white dark:bg-slate-900 h-full overflow-y-auto p-5 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  {isGroup ? t.groupInfo : t.chatInfo}
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setShowChatInfo(false)}
-                  className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 h-full flex flex-col overflow-hidden">
+            {/* Fixed Top Header */}
+            <div className="shrink-0 px-5 py-4 pt-safe bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between z-10">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                {isGroup ? t.groupInfo : t.chatInfo}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowChatInfo(false)}
+                className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Scrollable Middle Content */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 pb-6">
 
               {/* Profile / Group Header */}
               <div className="py-6 flex flex-col items-center text-center border-b border-slate-100 dark:border-slate-800">
@@ -1689,8 +1692,8 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               </div>
             </div>
 
-            {/* Danger Actions: Block / Report or Leave / Delete Group */}
-            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2">
+            {/* Fixed Bottom Danger Actions: Block / Report or Leave / Delete Group */}
+            <div className="shrink-0 px-5 py-3.5 pb-safe bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 space-y-2 z-10">
               {!isGroup && peer ? (
                 <>
                   <button
@@ -1738,8 +1741,8 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       {/* Add Group Member Modal */}
       {showAddMemberModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-3">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl max-h-dvh-modal flex flex-col overflow-hidden">
+            <div className="shrink-0 flex items-center justify-between mb-3">
               <h4 className="text-sm font-bold text-slate-900 dark:text-white">
                 {t.addMembers}
               </h4>
@@ -1756,9 +1759,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               value={memberSearch}
               onChange={(e) => setMemberSearch(e.target.value)}
               placeholder="Filter users..."
-              className="w-full px-3.5 py-2 min-h-[40px] rounded-xl bg-slate-100 dark:bg-slate-800 text-xs mb-3"
+              className="shrink-0 w-full px-3.5 py-2 min-h-[40px] rounded-xl bg-slate-100 dark:bg-slate-800 text-xs mb-3"
             />
-            <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
               {candidateUsers
                 .filter((u) =>
                   u.full_name.toLowerCase().includes(memberSearch.toLowerCase())

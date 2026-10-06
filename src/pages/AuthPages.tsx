@@ -217,38 +217,41 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
   };
 
   return (
-    <div className="min-h-screen w-full flex flex-col justify-between bg-slate-50 dark:bg-slate-950 px-4 py-8">
+    <div className="h-dvh-screen w-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
       {/* Top Bar */}
-      <header className="w-full max-w-md mx-auto flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm">
-            <MessageSquare className="w-5 h-5" />
+      <header className="w-full shrink-0 z-20 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800/80 px-4 py-3 pt-safe">
+        <div className="w-full max-w-md mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm">
+              <MessageSquare className="w-5 h-5" />
+            </div>
+            <span className="font-display text-xl font-extrabold tracking-wider text-slate-900 dark:text-white">
+              OSA
+            </span>
           </div>
-          <span className="font-display text-xl font-extrabold tracking-wider text-slate-900 dark:text-white">
-            OSA
-          </span>
-        </div>
 
-        <div className="flex items-center gap-2">
-          <PWAInstallButton compact />
-          <button
-            type="button"
-            onClick={onOpenSupabaseConfig}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[38px] rounded-xl text-xs font-semibold border transition-colors ${
-              sbConfig.isConfigured
-                ? 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-900'
-                : 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-            }`}
-          >
-            <Database className="w-3.5 h-3.5" />
-            <span>{sbConfig.isConfigured ? 'Database Ready' : 'Connect Supabase'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <PWAInstallButton compact />
+            <button
+              type="button"
+              onClick={onOpenSupabaseConfig}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[38px] rounded-xl text-xs font-semibold border transition-colors ${
+                sbConfig.isConfigured
+                  ? 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-900'
+                  : 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+              }`}
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>{sbConfig.isConfigured ? 'Database Ready' : 'Connect Supabase'}</span>
+            </button>
+          </div>
         </div>
       </header>
 
-      {/* Main Card */}
-      <main className="w-full max-w-md mx-auto my-8">
-        <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-6 sm:p-8 shadow-xl shadow-slate-900/5">
+      {/* Scrollable Middle Content */}
+      <main className="flex-1 min-h-0 w-full overflow-y-auto px-4 py-6 pb-8">
+        <div className="w-full max-w-md mx-auto">
+          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-6 sm:p-8 shadow-xl shadow-slate-900/5">
           {/* Brand Header */}
           <div className="text-center mb-6">
             <div className="w-16 h-16 rounded-2xl bg-blue-600 text-white flex items-center justify-center mx-auto mb-3 shadow-lg shadow-blue-600/25">
@@ -549,10 +552,11 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
               </button>
             </form>
           )}
+          </div>
         </div>
       </main>
 
-      <footer className="w-full max-w-md mx-auto text-center text-xs text-slate-400">
+      <footer className="w-full shrink-0 z-20 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800/80 px-4 py-2.5 pb-safe text-center text-xs text-slate-400">
         OSA &middot; Real-Time Encrypted Messaging &amp; Calling
       </footer>
 
