@@ -1128,3 +1128,179 @@ BEGIN
     END;
   END LOOP;
 END $$;
+
+-- ============================================================================
+-- 8. SECURE ADMIN / C-PANEL, MODERATION & BLOCK ENFORCEMENT (MIGRATION)
+-- ============================================================================
+
+ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_profiles_is_suspended ON public.profiles(is_suspended);
+
+CREATE TABLE IF NOT EXISTS public.admin_users (
+  user_id UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'super_admin', 'moderator')),
+  notes TEXT DEFAULT '',
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS trg_admin_users_updated_at ON public.admin_users;
+CREATE TRIGGER trg_admin_users_updated_at
+  BEFORE UPDATE ON public.admin_users
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+ALTER TABLE public.admin_users ENABLE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN FALSE;
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM public.admin_users
+    WHERE user_id = auth.uid()
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION public.can_send_to_chat(p_chat_id UUID)
+RETURNS BOOLEAN
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_chat_type TEXT;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
+  IF NOT public.is_chat_member(p_chat_id) THEN
+    RETURN FALSE;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND is_suspended = TRUE
+  ) THEN
+    RETURN FALSE;
+  END IF;
+
+  SELECT type INTO v_chat_type FROM public.chats WHERE id = p_chat_id;
+
+  IF v_chat_type = 'direct' THEN
+    IF EXISTS (
+      SELECT 1
+      FROM public.chat_members cm
+      JOIN public.blocks b
+        ON (b.blocker_id = auth.uid() AND b.blocked_id = cm.user_id)
+        OR (b.blocker_id = cm.user_id AND b.blocked_id = auth.uid())
+      WHERE cm.chat_id = p_chat_id
+        AND cm.user_id <> auth.uid()
+    ) THEN
+      RETURN FALSE;
+    END IF;
+  END IF;
+
+  RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION public.admin_set_user_suspension(
+  p_target_user_id UUID,
+  p_suspended BOOLEAN
+)
+RETURNS VOID
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Forbidden: Administrator privileges required';
+  END IF;
+
+  IF p_target_user_id = auth.uid() THEN
+    RAISE EXCEPTION 'Administrators cannot suspend their own account';
+  END IF;
+
+  UPDATE public.profiles
+  SET is_suspended = p_suspended,
+      updated_at = NOW()
+  WHERE id = p_target_user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP POLICY IF EXISTS "Users can check own admin status or admins can view all" ON public.admin_users;
+CREATE POLICY "Users can check own admin status or admins can view all"
+  ON public.admin_users FOR SELECT
+  TO authenticated
+  USING (user_id = auth.uid() OR public.is_admin());
+
+DROP POLICY IF EXISTS "Super admins can manage admin_users" ON public.admin_users;
+CREATE POLICY "Super admins can manage admin_users"
+  ON public.admin_users FOR ALL
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.admin_users a
+      WHERE a.user_id = auth.uid() AND a.role = 'super_admin'
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.admin_users a
+      WHERE a.user_id = auth.uid() AND a.role = 'super_admin'
+    )
+  );
+
+DROP POLICY IF EXISTS "Chat members can send messages if not blocked" ON public.messages;
+CREATE POLICY "Chat members can send messages if not blocked"
+  ON public.messages FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    sender_id = auth.uid()
+    AND public.can_send_to_chat(chat_id)
+  );
+
+DROP POLICY IF EXISTS "Users can view own submitted reports" ON public.reports;
+DROP POLICY IF EXISTS "Users can view own reports or admins can view all" ON public.reports;
+CREATE POLICY "Users can view own reports or admins can view all"
+  ON public.reports FOR SELECT
+  TO authenticated
+  USING (reporter_id = auth.uid() OR public.is_admin());
+
+DROP POLICY IF EXISTS "Admins can update report status" ON public.reports;
+CREATE POLICY "Admins can update report status"
+  ON public.reports FOR UPDATE
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "Users can view own support tickets" ON public.support_tickets;
+DROP POLICY IF EXISTS "Users can view own tickets or admins can view all" ON public.support_tickets;
+CREATE POLICY "Users can view own tickets or admins can view all"
+  ON public.support_tickets FOR SELECT
+  TO authenticated
+  USING (user_id = auth.uid() OR public.is_admin());
+
+DROP POLICY IF EXISTS "Admins can update support ticket status" ON public.support_tickets;
+CREATE POLICY "Admins can update support ticket status"
+  ON public.support_tickets FOR UPDATE
+  TO authenticated
+  USING (public.is_admin())
+  WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
+CREATE POLICY "Users can update own profile"
+  ON public.profiles FOR UPDATE
+  TO authenticated
+  USING (id = auth.uid() OR public.is_admin())
+  WITH CHECK (id = auth.uid() OR public.is_admin());
+

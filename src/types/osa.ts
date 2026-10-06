@@ -51,6 +51,7 @@ export interface Profile {
   about: string;
   phone: string | null;
   is_online: boolean;
+  is_suspended?: boolean;
   last_seen: string;
   language: LanguageCode;
   theme: ThemeMode;
@@ -196,6 +197,9 @@ export interface ReportRecord {
   details: string;
   status: 'submitted' | 'reviewing' | 'resolved';
   created_at: string;
+  updated_at?: string;
+  reporter?: Profile;
+  reported_user?: Profile | null;
 }
 
 export interface CallRecord {
@@ -246,4 +250,14 @@ export interface SupportTicket {
   message: string;
   status: 'open' | 'in_progress' | 'closed';
   created_at: string;
+  updated_at?: string;
+  user?: Profile;
+}
+
+export interface AdminUserRecord {
+  user_id: string;
+  role: 'admin' | 'super_admin' | 'moderator';
+  notes?: string;
+  created_at: string;
+  profile?: Profile;
 }

@@ -34,6 +34,7 @@ import {
   deleteUserAccount,
   deleteUserUploadedAttachment,
   fetchBlockedUsers,
+  fetchMySubmittedReports,
   fetchMySupportTickets,
   fetchUserStorageAttachments,
   formatBytes,
@@ -54,6 +55,7 @@ import {
   NotificationItem,
   PrivacySettings,
   Profile,
+  ReportRecord,
   SupportTicket,
   ThemeMode,
   VisibilityScope,
@@ -85,12 +87,15 @@ interface SettingsPageProps {
   notifications: NotificationItem[];
   theme: ThemeMode;
   language: LanguageCode;
+  isAdmin?: boolean;
+  adminRole?: string | null;
   onProfileUpdated: (profile: Profile) => void;
   onPrivacyUpdated: (priv: PrivacySettings) => void;
   onThemeChange: (theme: ThemeMode) => void;
   onLanguageChange: (lang: LanguageCode) => void;
   onNotificationsChanged: () => void;
   onOpenSupabaseConfig: () => void;
+  onOpenAdminPanel?: () => void;
   onLogout: () => void;
   t: TranslationDictionary;
 }
@@ -107,12 +112,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   notifications,
   theme,
   language,
+  isAdmin = false,
+  adminRole = null,
   onProfileUpdated,
   onPrivacyUpdated,
   onThemeChange,
   onLanguageChange,
   onNotificationsChanged,
   onOpenSupabaseConfig,
+  onOpenAdminPanel,
   onLogout,
   t,
 }) => {
@@ -155,6 +163,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [supportMessage, setSupportMessage] = useState('');
   const [submittingSupport, setSubmittingSupport] = useState(false);
   const [myTickets, setMyTickets] = useState<SupportTicket[]>([]);
+  const [myReports, setMyReports] = useState<ReportRecord[]>([]);
 
   useEffect(() => {
     setFullName(currentUser.full_name);
@@ -176,6 +185,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     } else if (subPage === 'help_contact' || subPage === 'help_problem') {
       fetchMySupportTickets(currentUser.id)
         .then((tickets) => setMyTickets(tickets))
+        .catch(() => {});
+      fetchMySubmittedReports(currentUser.id)
+        .then((reps) => setMyReports(reps))
         .catch(() => {});
     }
   }, [subPage, currentUser.id]);
@@ -513,6 +525,32 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </div>
 
           <PWAInstallButton />
+
+          {isAdmin && onOpenAdminPanel && (
+            <button
+              type="button"
+              onClick={onOpenAdminPanel}
+              className="w-full rounded-3xl bg-blue-600 hover:bg-blue-700 text-white p-4 flex items-center justify-between gap-3 shadow-md shadow-blue-600/20 transition-colors text-left"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-white/15 flex items-center justify-center shrink-0">
+                  <Shield className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-bold truncate">OSA Admin C-Panel</p>
+                    <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold uppercase">
+                      {adminRole || 'admin'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-blue-100 truncate">
+                    Review reports, support tickets &amp; user moderation
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-4.5 h-4.5 text-white shrink-0" />
+            </button>
+          )}
 
           {/* Settings Navigation Groups */}
           <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
@@ -1420,6 +1458,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     </span>
                   </div>
                   <p className="text-slate-500">{tk.message}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {myReports.length > 0 && (
+            <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 space-y-2">
+              <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                Your Submitted User / Message Reports
+              </h4>
+              {myReports.map((rep) => (
+                <div
+                  key={rep.id}
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800 text-xs space-y-1"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-900 dark:text-white">
+                      {rep.reason}
+                    </span>
+                    <span className="text-[10px] uppercase font-semibold text-blue-600">
+                      {rep.status}
+                    </span>
+                  </div>
+                  {rep.details && <p className="text-slate-500">{rep.details}</p>}
                 </div>
               ))}
             </div>

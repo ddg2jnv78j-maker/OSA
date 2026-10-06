@@ -7,6 +7,7 @@ import {
   Phone,
   Search,
   Settings,
+  Shield,
   Users,
   WifiOff,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ import { SupabaseConfigModal } from './components/SupabaseConfigModal';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { TRANSLATIONS } from './lib/i18n';
 import { getSupabaseConfig, supabase } from './lib/supabase';
+import { AdminPanelModal } from './pages/AdminPanelModal';
 import { AuthPages, AuthScreenMode } from './pages/AuthPages';
 import { CallsPage } from './pages/CallsPage';
 import { ChatConversationView } from './pages/ChatConversationView';
@@ -28,6 +30,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { StatusPage } from './pages/StatusPage';
 import {
   applyThemeToDocument,
+  checkIsUserAdmin,
   ensureProfileAndPrivacy,
   fetchMyProfile,
   fetchPrivacyMapForUsers,
@@ -81,6 +84,9 @@ export default function App() {
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
   const [showSupabaseConfigModal, setShowSupabaseConfigModal] = useState(false);
+  const [showAdminPanelModal, setShowAdminPanelModal] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminRole, setAdminRole] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   // WebRTC Calling State
@@ -153,10 +159,15 @@ export default function App() {
         session.user.email || '',
         session.user.user_metadata?.full_name
       );
-      const priv = await fetchPrivacySettings(session.user.id);
+      const [priv, adminCheck] = await Promise.all([
+        fetchPrivacySettings(session.user.id),
+        checkIsUserAdmin(session.user.id),
+      ]);
 
       setCurrentUser(profile);
       setMyPrivacy(priv);
+      setIsAdmin(adminCheck.isAdmin);
+      setAdminRole(adminCheck.role);
 
       if (profile.theme) handleThemeChange(profile.theme);
       if (profile.language) handleLanguageChange(profile.language);
@@ -187,6 +198,8 @@ export default function App() {
         setCurrentUser(null);
       } else if (event === 'SIGNED_OUT' || !session) {
         setCurrentUser(null);
+        setIsAdmin(false);
+        setAdminRole(null);
         setChats([]);
         setSelectedChatId(null);
       } else if (event === 'SIGNED_IN' && session?.user) {
@@ -248,7 +261,7 @@ export default function App() {
           ) {
             new Notification(newNotif.title || 'OSA', {
               body: newNotif.body,
-              icon: '/pwa-192x192.png',
+              icon: `${import.meta.env.BASE_URL}pwa-192x192.png`,
             });
           }
         }
@@ -525,6 +538,17 @@ export default function App() {
         </div>
 
         <div className="flex flex-col items-center gap-3">
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setShowAdminPanelModal(true)}
+              className="w-11 h-11 rounded-2xl flex items-center justify-center bg-blue-600/10 text-blue-600 dark:text-blue-400 hover:bg-blue-600 hover:text-white transition-colors"
+              title="OSA Admin C-Panel"
+            >
+              <Shield className="w-5 h-5" />
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setShowNotificationsModal(true)}
@@ -831,12 +855,15 @@ export default function App() {
               notifications={notifications}
               theme={theme}
               language={language}
+              isAdmin={isAdmin}
+              adminRole={adminRole}
               onProfileUpdated={(updated) => setCurrentUser(updated)}
               onPrivacyUpdated={(updated) => setMyPrivacy(updated)}
               onThemeChange={handleThemeChange}
               onLanguageChange={handleLanguageChange}
               onNotificationsChanged={() => refreshChatsAndNotifications(currentUser.id)}
               onOpenSupabaseConfig={() => setShowSupabaseConfigModal(true)}
+              onOpenAdminPanel={() => setShowAdminPanelModal(true)}
               onLogout={handleLogout}
               t={t}
             />
@@ -957,6 +984,15 @@ export default function App() {
         onClose={() => setShowSupabaseConfigModal(false)}
         onSaved={() => loadAuthenticatedUser()}
       />
+
+      {isAdmin && (
+        <AdminPanelModal
+          isOpen={showAdminPanelModal}
+          onClose={() => setShowAdminPanelModal(false)}
+          currentUser={currentUser}
+          adminRole={adminRole}
+        />
+      )}
 
       {activeCall && (
         <CallOverlay

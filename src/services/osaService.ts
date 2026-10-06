@@ -719,6 +719,29 @@ export async function deleteMessageForEveryone(messageId: string, currentUserId:
   if (error) throw error;
 }
 
+export async function editMessageContent(
+  messageId: string,
+  currentUserId: string,
+  newContent: string
+): Promise<Message> {
+  const clean = newContent.trim();
+  if (!clean) throw new Error('Message content cannot be empty.');
+
+  const { data, error } = await supabase
+    .from('messages')
+    .update({
+      content: clean,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', messageId)
+    .eq('sender_id', currentUserId)
+    .select('*, sender:profiles(*), attachments:message_attachments(*)')
+    .single();
+
+  if (error) throw error;
+  return data as Message;
+}
+
 // ============================================================================
 // 6. STATUS (24-HOUR UPDATES)
 // ============================================================================
@@ -1089,6 +1112,17 @@ export async function submitUserReport(params: {
   return data as ReportRecord;
 }
 
+export async function fetchMySubmittedReports(userId: string): Promise<ReportRecord[]> {
+  const { data, error } = await supabase
+    .from('reports')
+    .select('*')
+    .eq('reporter_id', userId)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return (data || []) as ReportRecord[];
+}
+
 // ============================================================================
 // 9. NOTIFICATIONS & WEB PUSH
 // ============================================================================
@@ -1307,3 +1341,137 @@ export function loadLanguagePreference(): LanguageCode {
   if (stored === 'en' || stored === 'bn') return stored;
   return 'en';
 }
+
+// ============================================================================
+// 12. SECURE ADMIN / C-PANEL (ENFORCED BY SUPABASE RLS & public.is_admin())
+// ============================================================================
+
+export async function checkIsUserAdmin(userId: string): Promise<{
+  isAdmin: boolean;
+  role: 'admin' | 'super_admin' | 'moderator' | null;
+}> {
+  if (!userId) return { isAdmin: false, role: null };
+
+  // Check admin_users table directly (protected by RLS: user_id = auth.uid() OR public.is_admin())
+  const { data: adminRow, error } = await supabase
+    .from('admin_users')
+    .select('user_id, role')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (!error && adminRow) {
+    return {
+      isAdmin: true,
+      role: (adminRow.role as 'admin' | 'super_admin' | 'moderator') || 'admin',
+    };
+  }
+
+  // Fallback RPC check if public.is_admin() is defined
+  const { data: rpcBool, error: rpcErr } = await supabase.rpc('is_admin');
+  if (!rpcErr && rpcBool === true) {
+    return { isAdmin: true, role: 'admin' };
+  }
+
+  return { isAdmin: false, role: null };
+}
+
+export async function fetchAllReportsForAdmin(): Promise<ReportRecord[]> {
+  const { data, error } = await supabase
+    .from('reports')
+    .select(
+      '*, reporter:profiles!reports_reporter_id_fkey(*), reported_user:profiles!reports_reported_user_id_fkey(*)'
+    )
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return (data || []) as ReportRecord[];
+}
+
+export async function updateReportStatusAsAdmin(
+  reportId: string,
+  status: ReportRecord['status']
+): Promise<ReportRecord> {
+  const { data, error } = await supabase
+    .from('reports')
+    .update({
+      status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', reportId)
+    .select(
+      '*, reporter:profiles!reports_reporter_id_fkey(*), reported_user:profiles!reports_reported_user_id_fkey(*)'
+    )
+    .single();
+
+  if (error) throw error;
+  return data as ReportRecord;
+}
+
+export async function fetchAllSupportTicketsForAdmin(): Promise<SupportTicket[]> {
+  const { data, error } = await supabase
+    .from('support_tickets')
+    .select('*, user:profiles!support_tickets_user_id_fkey(*)')
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return (data || []) as SupportTicket[];
+}
+
+export async function updateSupportTicketStatusAsAdmin(
+  ticketId: string,
+  status: SupportTicket['status']
+): Promise<SupportTicket> {
+  const { data, error } = await supabase
+    .from('support_tickets')
+    .update({
+      status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', ticketId)
+    .select('*, user:profiles!support_tickets_user_id_fkey(*)')
+    .single();
+
+  if (error) throw error;
+  return data as SupportTicket;
+}
+
+export async function fetchAllUsersForAdmin(searchQuery = ''): Promise<Profile[]> {
+  let req = supabase
+    .from('profiles')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  const q = searchQuery.trim();
+  if (q) {
+    req = req.or(`full_name.ilike.%${q}%,email.ilike.%${q}%,username.ilike.%${q}%`);
+  }
+
+  const { data, error } = await req;
+  if (error) throw error;
+  return (data || []) as Profile[];
+}
+
+export async function setUserSuspensionAsAdmin(
+  targetUserId: string,
+  isSuspended: boolean
+): Promise<void> {
+  const { error: rpcErr } = await supabase.rpc('admin_set_user_suspension', {
+    p_target_user_id: targetUserId,
+    p_suspended: isSuspended,
+  });
+
+  if (!rpcErr) return;
+
+  // Fallback direct update (enforced by RLS policy: public.is_admin())
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      is_suspended: isSuspended,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', targetUserId);
+
+  if (error) throw error;
+}
+

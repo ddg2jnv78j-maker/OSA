@@ -15,11 +15,13 @@ import {
   Info,
   MoreVertical,
   Paperclip,
+  Pencil,
   Phone,
   Plus,
   Search,
   Send,
   Smile,
+  Sparkles,
   Trash2,
   UserMinus,
   UserPlus,
@@ -30,6 +32,7 @@ import { OSAAvatar } from '../components/OSAAvatar';
 import { ReportUserModal } from '../components/ReportUserModal';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
+import { generateSmartDraftOrReply } from '../services/aiService';
 import {
   addMembersToGroup,
   blockUser,
@@ -38,6 +41,7 @@ import {
   deleteGroupCompletely,
   deleteMessageForEveryone,
   deleteMessageForMe,
+  editMessageContent,
   fetchChatMessages,
   fetchGroupMembers,
   formatBytes,
@@ -96,6 +100,8 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [error, setError] = useState('');
 
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [editingMsg, setEditingMsg] = useState<Message | null>(null);
+  const [aiDrafting, setAiDrafting] = useState(false);
   const [activeMenuMsgId, setActiveMenuMsgId] = useState<string | null>(null);
   const [forwardModalMsg, setForwardModalMsg] = useState<Message | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -286,6 +292,16 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     setSending(true);
     setError('');
     try {
+      if (editingMsg) {
+        const updated = await editMessageContent(editingMsg.id, currentUser.id, clean);
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+        setEditingMsg(null);
+        setText('');
+        setShowEmojiPicker(false);
+        onChatUpdated();
+        return;
+      }
+
       const sent = await sendTextMessage({
         chatId: chat.id,
         senderId: currentUser.id,
@@ -328,6 +344,37 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       setError(err instanceof Error ? err.message : 'Failed to send message.');
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleAiDraft = async () => {
+    if (aiDrafting) return;
+    setAiDrafting(true);
+    setError('');
+    try {
+      const recentContext = messages
+        .filter((m) => !m.is_deleted_for_everyone && m.content.trim())
+        .slice(-5)
+        .map((m) => ({
+          senderName:
+            m.sender_id === currentUser.id
+              ? currentUser.full_name
+              : m.sender?.full_name || chatTitle,
+          content: m.content,
+        }));
+      const suggestion = await generateSmartDraftOrReply({
+        draftOrTopic: text,
+        recentMessages: recentContext,
+      });
+      setText(suggestion);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Google AI smart draft is currently unavailable.'
+      );
+    } finally {
+      setAiDrafting(false);
     }
   };
 
@@ -843,6 +890,17 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
                   {/* Timestamp + Delivery / Read Receipt + Message Menu Trigger */}
                   <div className="mt-1 flex items-center justify-end gap-1.5">
+                    {!msg.is_deleted_for_everyone &&
+                      msg.updated_at &&
+                      msg.updated_at !== msg.created_at && (
+                        <span
+                          className={`text-[10px] italic ${
+                            isMine ? 'text-blue-100/90' : 'text-slate-400'
+                          }`}
+                        >
+                          (edited)
+                        </span>
+                      )}
                     <span
                       className={`text-[10px] font-mono-num ${
                         isMine ? 'text-blue-100' : 'text-slate-400'
@@ -895,6 +953,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                         type="button"
                         onClick={() => {
                           setReplyTo(msg);
+                          setEditingMsg(null);
                           setActiveMenuMsgId(null);
                         }}
                         className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
@@ -902,6 +961,22 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                         <CornerUpLeft className="w-4 h-4 text-slate-400" />
                         <span>{t.reply}</span>
                       </button>
+
+                      {isMine && !msg.is_deleted_for_everyone && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingMsg(msg);
+                            setReplyTo(null);
+                            setText(msg.content);
+                            setActiveMenuMsgId(null);
+                          }}
+                          className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                        >
+                          <Pencil className="w-4 h-4 text-slate-400" />
+                          <span>Edit</span>
+                        </button>
+                      )}
 
                       <button
                         type="button"
@@ -965,6 +1040,31 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           <span className="text-xs font-mono-num font-semibold text-blue-700 dark:text-blue-300">
             {uploadProgress}%
           </span>
+        </div>
+      )}
+
+      {/* Editing Message Banner */}
+      {editingMsg && (
+        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-t border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2">
+          <div className="min-w-0 flex-1 border-l-3 border-amber-500 pl-2.5">
+            <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+              Editing Message
+            </p>
+            <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
+              {editingMsg.content}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setEditingMsg(null);
+              setText('');
+            }}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800"
+            aria-label="Cancel editing"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
@@ -1056,6 +1156,16 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             title="Attach Image, Video, Audio or File"
           >
             <Paperclip className="w-5 h-5" />
+          </button>
+
+          <button
+            type="button"
+            disabled={aiDrafting}
+            onClick={handleAiDraft}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/50 disabled:opacity-40 shrink-0 transition-colors"
+            title="AI Smart Draft / Polish Reply"
+          >
+            <Sparkles className={`w-4.5 h-4.5 ${aiDrafting ? 'animate-pulse' : ''}`} />
           </button>
 
           <input

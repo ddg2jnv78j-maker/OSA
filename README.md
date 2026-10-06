@@ -39,12 +39,13 @@ npm install
 2. Click **New Query**.
 3. Copy the entire contents of [`supabase/schema.sql`](./supabase/schema.sql) and paste it into the editor.
 4. Click **Run** to create:
-   - All 17 tables (`profiles`, `privacy_settings`, `chats`, `chat_members`, `messages`, `message_attachments`, `groups`, `group_members`, `statuses`, `status_views`, `blocks`, `reports`, `calls`, `call_signals`, `notifications`, `support_tickets`, `push_subscriptions`)
+   - All 18 tables (`profiles`, `privacy_settings`, `chats`, `chat_members`, `messages`, `message_attachments`, `groups`, `group_members`, `statuses`, `status_views`, `blocks`, `reports`, `calls`, `call_signals`, `notifications`, `support_tickets`, `push_subscriptions`, `admin_users`)
    - UUID primary keys, foreign keys, `created_at` / `updated_at` triggers, indexes, and constraints
-   - RPC functions (`get_or_create_direct_chat`, `create_group_with_chat`, `mark_chat_messages_read`, `delete_message_for_me`, `delete_own_account`)
+   - RPC functions (`get_or_create_direct_chat`, `create_group_with_chat`, `mark_chat_messages_read`, `delete_message_for_me`, `delete_own_account`, `is_admin`, `can_send_to_chat`, `admin_set_user_suspension`)
    - Row Level Security (RLS) policies on all tables
    - Storage buckets and policies
    - `supabase_realtime` publication configuration
+5. If upgrading an existing database, run [`supabase/migrations/20261006_admin_cpanel_and_security.sql`](./supabase/migrations/20261006_admin_cpanel_and_security.sql) in the SQL Editor to enable the RLS-protected **Admin C-Panel** (`public.admin_users`, `public.is_admin()`, and report/support moderation).
 
 ---
 
