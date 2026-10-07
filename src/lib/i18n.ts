@@ -78,7 +78,9 @@ export interface TranslationDictionary {
   missedCall: string;
   calling: string;
   ringing: string;
+  connecting: string;
   connected: string;
+  callRejected: string;
   callEnded: string;
   accept: string;
   reject: string;
@@ -89,6 +91,12 @@ export interface TranslationDictionary {
   cameraOff: string;
   switchCamera: string;
   noCallsYet: string;
+  // Date & Presence formatting
+  today: string;
+  yesterday: string;
+  lastSeenTodayAt: string;
+  lastSeenYesterdayAt: string;
+  lastSeenOn: string;
   // Settings & Profile
   profile: string;
   editProfile: string;
@@ -215,8 +223,10 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDictionary> = {
     missedCall: 'Missed Call',
     calling: 'Calling...',
     ringing: 'Ringing...',
+    connecting: 'Connecting...',
     connected: 'Connected',
-    callEnded: 'Call Ended',
+    callRejected: 'Rejected',
+    callEnded: 'Ended',
     accept: 'Accept',
     reject: 'Reject',
     endCall: 'End Call',
@@ -226,6 +236,11 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDictionary> = {
     cameraOff: 'Camera Off',
     switchCamera: 'Switch Camera',
     noCallsYet: 'No call history yet',
+    today: 'Today',
+    yesterday: 'Yesterday',
+    lastSeenTodayAt: 'Last seen today at',
+    lastSeenYesterdayAt: 'Last seen yesterday at',
+    lastSeenOn: 'Last seen',
     profile: 'Profile',
     editProfile: 'Edit Profile',
     changePhoto: 'Change Photo',
@@ -346,7 +361,9 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDictionary> = {
     missedCall: 'মিসড কল',
     calling: 'কল করা হচ্ছে...',
     ringing: 'রিং হচ্ছে...',
+    connecting: 'সংযোগ স্থাপন হচ্ছে...',
     connected: 'সংযুক্ত',
+    callRejected: 'প্রত্যাখ্যাত',
     callEnded: 'কল শেষ হয়েছে',
     accept: 'গ্রহণ করুন',
     reject: 'প্রত্যাখ্যান করুন',
@@ -357,6 +374,11 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDictionary> = {
     cameraOff: 'ক্যামেরা বন্ধ',
     switchCamera: 'ক্যামেরা পরিবর্তন',
     noCallsYet: 'এখনও কোনো কলের ইতিহাস নেই',
+    today: 'আজ',
+    yesterday: 'গতকাল',
+    lastSeenTodayAt: 'শেষ দেখা গেছে আজ',
+    lastSeenYesterdayAt: 'শেষ দেখা গেছে গতকাল',
+    lastSeenOn: 'শেষ দেখা গেছে',
     profile: 'প্রোফাইল',
     editProfile: 'প্রোফাইল সম্পাদনা',
     changePhoto: 'ছবি পরিবর্তন করুন',

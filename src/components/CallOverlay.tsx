@@ -145,18 +145,18 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   };
 
   const statusText = () => {
-    if (errorMessage) return errorMessage;
+    if (errorMessage && callStatus === 'failed') return errorMessage;
     switch (callStatus) {
       case 'calling':
         return isIncoming ? t.incomingCall : t.calling;
       case 'ringing':
         return isIncoming ? t.incomingCall : t.ringing;
       case 'accepted':
-        return 'Connecting WebRTC media...';
+        return t.connecting;
       case 'connected':
-        return formatDuration(secondsElapsed);
+        return `${t.connected} · ${formatDuration(secondsElapsed)}`;
       case 'rejected':
-        return 'Call Declined';
+        return t.callRejected;
       case 'missed':
         return t.missedCall;
       case 'ended':

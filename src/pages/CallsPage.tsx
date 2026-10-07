@@ -19,6 +19,12 @@ import { RingtoneModal } from '../components/RingtoneSelector';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
 import { fetchCallHistory, searchUsers } from '../services/osaService';
+import {
+  formatDailyDateHeader,
+  formatLastSeenText,
+  getProfileLastSeenIso,
+  isProfileTrulyOnline,
+} from '../services/presenceService';
 import { CallRecord, CallType, Profile } from '../types/osa';
 
 interface CallsPageProps {
@@ -138,98 +144,186 @@ export const CallsPage: React.FC<CallsPageProps> = ({
           </button>
         </div>
       ) : (
-        <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
-          {calls.map((c) => {
-            const isOutgoing = c.caller_id === currentUser.id;
-            const peer = isOutgoing ? c.receiver : c.caller;
-            const isMissed = c.status === 'missed' || c.status === 'rejected';
+        <div className="space-y-4">
+          {(() => {
+            const groups: { dateLabel: string; items: CallRecord[] }[] = [];
+            for (const c of calls) {
+              const label =
+                formatDailyDateHeader(c.created_at, t, currentUser.language) || t.today;
+              const lastGroup = groups[groups.length - 1];
+              if (!lastGroup || lastGroup.dateLabel !== label) {
+                groups.push({ dateLabel: label, items: [c] });
+              } else {
+                lastGroup.items.push(c);
+              }
+            }
 
-            return (
-              <div
-                key={c.id}
-                className="flex items-center justify-between gap-3 p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <OSAAvatar
-                    name={peer?.full_name || 'OSA User'}
-                    avatarUrl={peer?.avatar_url}
-                    size="md"
-                  />
-                  <div className="min-w-0">
-                    <p
-                      className={`text-sm font-bold truncate ${
-                        isMissed ? 'text-red-600 dark:text-red-400' : 'text-slate-900 dark:text-white'
-                      }`}
-                    >
-                      {peer?.full_name || 'OSA User'}
-                    </p>
-                    <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                      {isMissed ? (
-                        <PhoneMissed className="w-3.5 h-3.5 text-red-500 shrink-0" />
-                      ) : isOutgoing ? (
-                        <PhoneOutgoing className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                      ) : (
-                        <PhoneIncoming className="w-3.5 h-3.5 text-green-500 shrink-0" />
-                      )}
-                      <span>
-                        {isMissed
-                          ? t.missedCall
-                          : isOutgoing
-                          ? t.outgoingCall
-                          : t.incomingCall}
-                      </span>
-                      <span>&middot;</span>
-                      <span className="font-mono-num">
-                        {new Date(c.created_at).toLocaleString([], {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </span>
-                    </div>
-                  </div>
+            const formatCallDuration = (secs: number) => {
+              if (!secs || secs <= 0) return null;
+              const mins = Math.floor(secs / 60);
+              const rem = secs % 60;
+              if (mins > 0) {
+                return `${mins}m ${rem}s`;
+              }
+              return `${rem}s`;
+            };
+
+            return groups.map((group) => (
+              <div key={group.dateLabel} className="space-y-2">
+                <div className="flex items-center gap-2 px-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    {group.dateLabel}
+                  </span>
+                  <div className="flex-1 h-px bg-slate-200/70 dark:bg-slate-800" />
                 </div>
 
-                {peer && (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => onStartCall(peer, 'audio', c.chat_id)}
-                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
-                      title={t.audioCall}
-                    >
-                      <Phone className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onStartCall(peer, 'video', c.chat_id)}
-                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
-                      title={t.videoCall}
-                    >
-                      <Video className="w-4.5 h-4.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRemoteCameraTargetPeer(peer)}
-                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-indigo-500/10 hover:bg-indigo-600 hover:text-white text-indigo-600 dark:text-indigo-400 flex items-center justify-center transition-colors"
-                      title="Remote Camera Live Stream"
-                    >
-                      <Eye className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setLocationTargetPeer(peer)}
-                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-emerald-500/10 hover:bg-emerald-600 hover:text-white text-emerald-600 dark:text-emerald-400 flex items-center justify-center transition-colors"
-                      title="Remote Location & Live GPS"
-                    >
-                      <MapPin className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
+                <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+                  {group.items.map((c) => {
+                    const isOutgoing = c.caller_id === currentUser.id;
+                    const peer = isOutgoing ? c.receiver : c.caller;
+                    const isMissedOrRejected =
+                      c.status === 'missed' || c.status === 'rejected' || c.status === 'failed';
+                    const isConnectedCall =
+                      (c.status === 'ended' || c.status === 'connected') &&
+                      (c.duration_seconds > 0 || Boolean(c.answered_at));
+
+                    const statusBadgeLabel = () => {
+                      if (c.status === 'rejected') return t.callRejected;
+                      if (c.status === 'missed') return t.missedCall;
+                      if (c.status === 'calling') return t.calling;
+                      if (c.status === 'ringing') return t.ringing;
+                      if (c.status === 'accepted') return t.connecting;
+                      if (c.status === 'connected') return t.connected;
+                      if (c.status === 'failed') return 'Cancelled';
+                      if (c.status === 'ended') {
+                        return isConnectedCall ? 'Completed' : 'Cancelled';
+                      }
+                      return c.status;
+                    };
+
+                    const durationStr = formatCallDuration(c.duration_seconds);
+                    const timeStr = new Date(c.created_at).toLocaleTimeString(
+                      currentUser.language === 'bn' ? 'bn-BD' : 'en-US',
+                      {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true,
+                      }
+                    );
+                    const peerOnline = isProfileTrulyOnline(peer);
+
+                    return (
+                      <div
+                        key={c.id}
+                        className="flex items-center justify-between gap-3 p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          <OSAAvatar
+                            name={peer?.full_name || 'OSA User'}
+                            avatarUrl={peer?.avatar_url}
+                            size="md"
+                            isOnline={peerOnline}
+                            showOnlineStatus
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p
+                                className={`text-sm font-bold truncate ${
+                                  isMissedOrRejected
+                                    ? 'text-red-600 dark:text-red-400'
+                                    : 'text-slate-900 dark:text-white'
+                                }`}
+                              >
+                                {peer?.full_name || 'OSA User'}
+                              </p>
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${
+                                  isMissedOrRejected
+                                    ? 'bg-red-500/10 text-red-600 dark:text-red-400'
+                                    : isConnectedCall
+                                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                                }`}
+                              >
+                                {statusBadgeLabel()}
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                              {isMissedOrRejected ? (
+                                <PhoneMissed className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                              ) : isOutgoing ? (
+                                <PhoneOutgoing className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                              ) : (
+                                <PhoneIncoming className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                              )}
+                              <span>{isOutgoing ? t.outgoingCall : t.incomingCall}</span>
+                              <span>&middot;</span>
+                              <span className="inline-flex items-center gap-1 font-medium text-slate-600 dark:text-slate-300">
+                                {c.call_type === 'video' ? (
+                                  <Video className="w-3 h-3 text-blue-500" />
+                                ) : (
+                                  <Phone className="w-3 h-3 text-blue-500" />
+                                )}
+                                {c.call_type === 'video' ? t.videoCall : t.audioCall}
+                              </span>
+                              {durationStr && (
+                                <>
+                                  <span>&middot;</span>
+                                  <span className="font-mono-num text-emerald-600 dark:text-emerald-400 font-semibold">
+                                    {durationStr}
+                                  </span>
+                                </>
+                              )}
+                              <span>&middot;</span>
+                              <span className="font-mono-num">{timeStr}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {peer && (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => onStartCall(peer, 'audio', c.chat_id)}
+                              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
+                              title={t.audioCall}
+                            >
+                              <Phone className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onStartCall(peer, 'video', c.chat_id)}
+                              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 flex items-center justify-center transition-colors"
+                              title={t.videoCall}
+                            >
+                              <Video className="w-4.5 h-4.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setRemoteCameraTargetPeer(peer)}
+                              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-indigo-500/10 hover:bg-indigo-600 hover:text-white text-indigo-600 dark:text-indigo-400 flex items-center justify-center transition-colors"
+                              title="Remote Camera Live Stream"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setLocationTargetPeer(peer)}
+                              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-emerald-500/10 hover:bg-emerald-600 hover:text-white text-emerald-600 dark:text-emerald-400 flex items-center justify-center transition-colors"
+                              title="Remote Location & Live GPS"
+                            >
+                              <MapPin className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            );
-          })}
+            ));
+          })()}
         </div>
       )}
       </div>
@@ -263,24 +357,39 @@ export const CallsPage: React.FC<CallsPageProps> = ({
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
-              {users.map((u) => (
-                <div key={u.id} className="flex items-center justify-between py-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <OSAAvatar
-                      name={u.full_name}
-                      avatarUrl={u.avatar_url}
-                      size="sm"
-                      isOnline={u.is_online}
-                      showOnlineStatus
-                    />
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                        {u.full_name}
-                      </p>
-                      <p className="text-xs text-slate-400 truncate">{u.email}</p>
+              {users.map((u) => {
+                const uOnline = isProfileTrulyOnline(u);
+                const uLastSeen = formatLastSeenText(
+                  getProfileLastSeenIso(u),
+                  t,
+                  currentUser.language
+                );
+                return (
+                  <div key={u.id} className="flex items-center justify-between py-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <OSAAvatar
+                        name={u.full_name}
+                        avatarUrl={u.avatar_url}
+                        size="sm"
+                        isOnline={uOnline}
+                        showOnlineStatus
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                          {u.full_name}
+                        </p>
+                        <p className="text-xs text-slate-400 truncate">
+                          {uOnline ? (
+                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                              ● {t.online}
+                            </span>
+                          ) : (
+                            uLastSeen
+                          )}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() => {
@@ -327,7 +436,8 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                     </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

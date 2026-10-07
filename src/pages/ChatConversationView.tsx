@@ -22,6 +22,9 @@ import {
   Paperclip,
   Pencil,
   Phone,
+  PhoneIncoming,
+  PhoneMissed,
+  PhoneOutgoing,
   Plus,
   Search,
   Send,
@@ -69,6 +72,7 @@ import {
   deleteMessageForMe,
   editMessageContent,
   fetchChatMessages,
+  fetchConversationCallHistory,
   fetchGroupMembers,
   formatBytes,
   getDetailedBlockStatus,
@@ -82,6 +86,13 @@ import {
   updateGroupDetails,
 } from '../services/osaService';
 import {
+  formatDailyDateHeader,
+  formatLastSeenText,
+  getProfileLastSeenIso,
+  isProfileTrulyOnline,
+} from '../services/presenceService';
+import {
+  CallRecord,
   CallType,
   Chat,
   GroupMember,
@@ -119,6 +130,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   t,
 }) => {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [chatCalls, setChatCalls] = useState<CallRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -163,7 +175,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
   // Chat Info Drawer
   const [showChatInfo, setShowChatInfo] = useState(false);
-  const [infoTab, setInfoTab] = useState<'media' | 'files' | 'links' | 'members'>('media');
+  const [infoTab, setInfoTab] = useState<'media' | 'files' | 'links' | 'calls' | 'members'>('media');
   const [searchInChatOpen, setSearchInChatOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [isMuted, setIsMuted] = useState(Boolean(chat.my_membership?.is_muted));
@@ -204,6 +216,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const canShowPeerLastSeen =
     !isGroup && peer && (!peerPrivacy || peerPrivacy.last_seen_visibility !== 'nobody');
   const hidePeerPhoto = !isGroup && peerPrivacy?.profile_photo_visibility === 'nobody';
+  const peerTrulyOnline = Boolean(canShowPeerOnline && isProfileTrulyOnline(peer));
+  const peerLastSeenFormatted =
+    !isGroup && peer && !peerTrulyOnline && canShowPeerLastSeen
+      ? formatLastSeenText(getProfileLastSeenIso(peer), t, currentUser.language)
+      : null;
 
   const scrollToBottom = (smooth = true) => {
     const container = messagesContainerRef.current;
@@ -242,12 +259,25 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
   const loadMessagesAndMeta = async () => {
     try {
-      const msgs = await fetchChatMessages(
-        chat.id,
-        currentUser.id,
-        chat.my_membership?.cleared_at
-      );
+      const [msgs, callsList] = await Promise.all([
+        fetchChatMessages(
+          chat.id,
+          currentUser.id,
+          chat.my_membership?.cleared_at
+        ),
+        !isGroup
+          ? fetchConversationCallHistory(chat.id, currentUser.id, peer?.id).catch(() => [])
+          : Promise.resolve([] as CallRecord[]),
+      ]);
       setMessages(msgs);
+      const clearedTime = chat.my_membership?.cleared_at
+        ? new Date(chat.my_membership.cleared_at).getTime()
+        : 0;
+      setChatCalls(
+        clearedTime
+          ? callsList.filter((c) => new Date(c.created_at).getTime() > clearedTime)
+          : callsList
+      );
       await markChatAsRead(
         chat.id,
         currentUser.id,
@@ -278,7 +308,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages.length, peerIsTyping]);
+  }, [messages.length, chatCalls.length, peerIsTyping]);
 
   // Listen for changes to the user's preferred Chat Translation Language
   useEffect(() => {
@@ -424,6 +454,31 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             chat.my_membership?.cleared_at
           );
           setMessages(fresh);
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'calls',
+        },
+        async () => {
+          if (!isGroup) {
+            const freshCalls = await fetchConversationCallHistory(
+              chat.id,
+              currentUser.id,
+              peer?.id
+            ).catch(() => []);
+            const clearedTime = chat.my_membership?.cleared_at
+              ? new Date(chat.my_membership.cleared_at).getTime()
+              : 0;
+            setChatCalls(
+              clearedTime
+                ? freshCalls.filter((c) => new Date(c.created_at).getTime() > clearedTime)
+                : freshCalls
+            );
+          }
         }
       )
       .on('broadcast', { event: 'typing' }, (payload) => {
@@ -854,7 +909,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   name={chatTitle}
                   avatarUrl={chatAvatar}
                   size="sm"
-                  isOnline={Boolean(canShowPeerOnline && peer?.is_online)}
+                  isOnline={peerTrulyOnline}
                   showOnlineStatus={Boolean(canShowPeerOnline)}
                   isGroup={isGroup}
                   hidePhotoForPrivacy={hidePeerPhoto}
@@ -866,20 +921,18 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 </h2>
                 <p className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 truncate">
                   {peerIsTyping ? (
-                    <span className="text-green-600 dark:text-green-400 font-semibold">
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
                       {t.typing}
                     </span>
                   ) : isGroup ? (
                     `${groupMembers.length || chat.members?.length || 1} members`
-                  ) : canShowPeerOnline && peer?.is_online ? (
-                    <span className="text-green-600 dark:text-green-400 font-medium">
+                  ) : peerTrulyOnline ? (
+                    <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
                       {t.online}
                     </span>
-                  ) : canShowPeerLastSeen && peer?.last_seen ? (
-                    `${t.lastSeen} ${new Date(peer.last_seen).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}`
+                  ) : peerLastSeenFormatted ? (
+                    <span>{peerLastSeenFormatted}</span>
                   ) : (
                     t.offline
                   )}
@@ -1004,7 +1057,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           <div className="py-16 text-center text-xs text-slate-400">
             Loading OSA messages...
           </div>
-        ) : visibleMessages.length === 0 ? (
+        ) : visibleMessages.length === 0 && chatCalls.length === 0 ? (
           <div className="py-16 text-center">
             <p className="text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">
               {chatSearchQuery ? 'No messages match your search' : 'No messages yet'}
@@ -1014,16 +1067,191 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             </p>
           </div>
         ) : (
-          visibleMessages.map((msg) => {
-            const isMine = msg.sender_id === currentUser.id;
-            const senderName = msg.sender?.full_name || 'OSA User';
-            const attachments = msg.attachments || [];
+          (() => {
+            type TimelineEntry =
+              | { kind: 'message'; createdAt: string; msg: Message }
+              | { kind: 'call'; createdAt: string; call: CallRecord };
 
-            return (
-              <div
-                key={msg.id}
-                className={`flex flex-col ${isMine ? 'items-end' : 'items-start'}`}
-              >
+            const filteredCalls = chatSearchQuery.trim()
+              ? chatCalls.filter((c) => {
+                  const q = chatSearchQuery.trim().toLowerCase();
+                  return (
+                    c.call_type.toLowerCase().includes(q) ||
+                    c.status.toLowerCase().includes(q) ||
+                    'call'.includes(q)
+                  );
+                })
+              : chatCalls;
+
+            const timeline: TimelineEntry[] = [
+              ...visibleMessages.map((msg) => ({
+                kind: 'message' as const,
+                createdAt: msg.created_at,
+                msg,
+              })),
+              ...filteredCalls.map((call) => ({
+                kind: 'call' as const,
+                createdAt: call.created_at,
+                call,
+              })),
+            ].sort(
+              (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+            );
+
+            const formatCallDurationMMSS = (secs: number) => {
+              if (!secs || secs <= 0) return null;
+              const mins = Math.floor(secs / 60)
+                .toString()
+                .padStart(2, '0');
+              const rem = (secs % 60).toString().padStart(2, '0');
+              return `${mins}:${rem}`;
+            };
+
+            let lastDateHeader = '';
+
+            return timeline.map((entry) => {
+              const currentDateHeader =
+                formatDailyDateHeader(entry.createdAt, t, currentUser.language) || '';
+              const showDateSeparator =
+                Boolean(currentDateHeader) && currentDateHeader !== lastDateHeader;
+              if (currentDateHeader) {
+                lastDateHeader = currentDateHeader;
+              }
+
+              const dateSeparatorNode = showDateSeparator ? (
+                <div className="flex items-center justify-center my-2">
+                  <span className="px-3 py-1 rounded-full bg-slate-200/80 dark:bg-slate-800/90 text-[11px] font-semibold text-slate-600 dark:text-slate-300 shadow-2xs">
+                    {currentDateHeader}
+                  </span>
+                </div>
+              ) : null;
+
+              if (entry.kind === 'call') {
+                const c = entry.call;
+                const isOutgoing = c.caller_id === currentUser.id;
+                const isVideo = c.call_type === 'video';
+                const isMissed = c.status === 'missed';
+                const isRejected = c.status === 'rejected';
+                const isFailedOrCancelled =
+                  c.status === 'failed' ||
+                  (c.status === 'ended' && !c.answered_at && (!c.duration_seconds || c.duration_seconds <= 0));
+                const isBadStatus = isMissed || isRejected || isFailedOrCancelled;
+                const durationMMSS = formatCallDurationMMSS(c.duration_seconds);
+
+                const callTitle = () => {
+                  if (isMissed) {
+                    return isVideo ? `Missed video call` : t.missedCall;
+                  }
+                  if (isRejected) {
+                    return isVideo ? `Rejected video call` : `Rejected audio call`;
+                  }
+                  if (isOutgoing) {
+                    return isVideo ? `Outgoing video call` : `Outgoing audio call`;
+                  }
+                  return isVideo ? `Incoming video call` : `Incoming audio call`;
+                };
+
+                const callSubtitle = () => {
+                  if (c.status === 'calling') return t.calling;
+                  if (c.status === 'ringing') return t.ringing;
+                  if (c.status === 'accepted') return t.connecting;
+                  if (c.status === 'connected') return t.connected;
+                  if (durationMMSS) return durationMMSS;
+                  if (isRejected) return t.callRejected;
+                  if (isMissed) return t.missedCall;
+                  if (isFailedOrCancelled) return 'Cancelled';
+                  return t.callEnded;
+                };
+
+                const callTimeStr = new Date(c.created_at).toLocaleTimeString(
+                  currentUser.language === 'bn' ? 'bn-BD' : 'en-US',
+                  {
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    hour12: true,
+                  }
+                );
+
+                return (
+                  <React.Fragment key={`call-${c.id}`}>
+                    {dateSeparatorNode}
+                    <div
+                      className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}
+                    >
+                      <div
+                        className={`flex items-center gap-3 rounded-2xl px-3.5 py-2.5 border shadow-xs max-w-[86%] sm:max-w-[70%] ${
+                          isOutgoing
+                            ? 'bg-blue-600/10 dark:bg-blue-950/50 border-blue-500/25 text-slate-900 dark:text-white rounded-br-xs'
+                            : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 text-slate-900 dark:text-white rounded-bl-xs'
+                        }`}
+                      >
+                        <div
+                          className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                            isBadStatus
+                              ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                              : 'bg-blue-600/15 text-blue-600 dark:text-blue-400'
+                          }`}
+                        >
+                          {isBadStatus ? (
+                            <PhoneMissed className="w-4.5 h-4.5" />
+                          ) : isVideo ? (
+                            <Video className="w-4.5 h-4.5" />
+                          ) : isOutgoing ? (
+                            <PhoneOutgoing className="w-4.5 h-4.5" />
+                          ) : (
+                            <PhoneIncoming className="w-4.5 h-4.5" />
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <p
+                            className={`text-xs font-bold truncate ${
+                              isBadStatus
+                                ? 'text-red-600 dark:text-red-400'
+                                : 'text-slate-900 dark:text-white'
+                            }`}
+                          >
+                            {callTitle()}
+                          </p>
+                          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 font-mono-num">
+                            <span>{callSubtitle()}</span>
+                            <span>&middot;</span>
+                            <span>{callTimeStr}</span>
+                          </div>
+                        </div>
+
+                        {!isGroup && peer && !blockState.anyBlock && (
+                          <button
+                            type="button"
+                            onClick={() => onStartCall(peer, c.call_type, chat.id)}
+                            className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold inline-flex items-center gap-1 shrink-0 transition-colors"
+                            title={`Call back (${c.call_type})`}
+                          >
+                            {isVideo ? (
+                              <Video className="w-3.5 h-3.5" />
+                            ) : (
+                              <Phone className="w-3.5 h-3.5" />
+                            )}
+                            <span>Call back</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </React.Fragment>
+                );
+              }
+
+              const msg = entry.msg;
+              const isMine = msg.sender_id === currentUser.id;
+              const senderName = msg.sender?.full_name || 'OSA User';
+              const attachments = msg.attachments || [];
+
+              return (
+                <React.Fragment key={msg.id}>
+                  {dateSeparatorNode}
+                  <div
+                    className={`flex flex-col ${isMine ? 'items-end' : 'items-start'}`}
+                  >
                 <div
                   className={`relative group max-w-[84%] sm:max-w-[70%] rounded-2xl px-3.5 py-2.5 shadow-xs ${
                     isMine
@@ -1423,9 +1651,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                     </div>
                   )}
                 </div>
-              </div>
-            );
-          })
+                  </div>
+                </React.Fragment>
+              );
+            });
+          })()
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -1723,6 +1953,8 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   name={chatTitle}
                   avatarUrl={chatAvatar}
                   size="xl"
+                  isOnline={peerTrulyOnline}
+                  showOnlineStatus={Boolean(canShowPeerOnline)}
                   isGroup={isGroup}
                   hidePhotoForPrivacy={hidePeerPhoto}
                 />
@@ -1750,7 +1982,21 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 </h4>
                 {!isGroup && peer && (
                   <>
-                    <p className="text-xs text-slate-500">{peer.email}</p>
+                    <p className="mt-0.5 text-xs">
+                      {peerTrulyOnline ? (
+                        <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                          {t.online}
+                        </span>
+                      ) : peerLastSeenFormatted ? (
+                        <span className="text-slate-500 dark:text-slate-400">
+                          {peerLastSeenFormatted}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">{t.offline}</span>
+                      )}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">{peer.email}</p>
                     {(!peerPrivacy || peerPrivacy.about_visibility !== 'nobody') && (
                       <p className="mt-2 text-xs text-slate-600 dark:text-slate-300 max-w-xs">
                         {peer.about}
@@ -1867,24 +2113,32 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               {/* Tabs: Media, Files, Links, Members */}
               <div className="py-4">
                 <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl mb-3">
-                  {(['media', 'files', 'links', ...(isGroup ? ['members'] : [])] as const).map(
-                    (tabKey) => (
-                      <button
-                        key={tabKey}
-                        type="button"
-                        onClick={() =>
-                          setInfoTab(tabKey as 'media' | 'files' | 'links' | 'members')
-                        }
-                        className={`flex-1 py-1.5 text-xs font-semibold rounded-lg capitalize transition-colors ${
-                          infoTab === tabKey
-                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                            : 'text-slate-500'
-                        }`}
-                      >
-                        {tabKey}
-                      </button>
-                    )
-                  )}
+                  {(
+                    [
+                      'media',
+                      'files',
+                      'links',
+                      ...(!isGroup ? ['calls'] : []),
+                      ...(isGroup ? ['members'] : []),
+                    ] as const
+                  ).map((tabKey) => (
+                    <button
+                      key={tabKey}
+                      type="button"
+                      onClick={() =>
+                        setInfoTab(
+                          tabKey as 'media' | 'files' | 'links' | 'calls' | 'members'
+                        )
+                      }
+                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg capitalize transition-colors ${
+                        infoTab === tabKey
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                          : 'text-slate-500'
+                      }`}
+                    >
+                      {tabKey}
+                    </button>
+                  ))}
                 </div>
 
                 {infoTab === 'media' && (
@@ -1963,6 +2217,82 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                           {lnk.url}
                         </a>
                       ))
+                    )}
+                  </div>
+                )}
+
+                {infoTab === 'calls' && !isGroup && (
+                  <div className="space-y-2">
+                    {chatCalls.length === 0 ? (
+                      <p className="text-center py-6 text-xs text-slate-400">
+                        {t.noCallsYet}
+                      </p>
+                    ) : (
+                      [...chatCalls].reverse().map((c) => {
+                        const isOutgoing = c.caller_id === currentUser.id;
+                        const isVideo = c.call_type === 'video';
+                        const isMissedOrRejected =
+                          c.status === 'missed' || c.status === 'rejected';
+                        const mins = Math.floor((c.duration_seconds || 0) / 60)
+                          .toString()
+                          .padStart(2, '0');
+                        const secs = ((c.duration_seconds || 0) % 60)
+                          .toString()
+                          .padStart(2, '0');
+                        const durStr =
+                          c.duration_seconds && c.duration_seconds > 0
+                            ? `${mins}:${secs}`
+                            : null;
+                        return (
+                          <div
+                            key={c.id}
+                            className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800"
+                          >
+                            <div className="min-w-0">
+                              <p
+                                className={`text-xs font-bold truncate ${
+                                  isMissedOrRejected
+                                    ? 'text-red-600 dark:text-red-400'
+                                    : 'text-slate-900 dark:text-white'
+                                }`}
+                              >
+                                {c.status === 'missed'
+                                  ? t.missedCall
+                                  : c.status === 'rejected'
+                                  ? t.callRejected
+                                  : isOutgoing
+                                  ? isVideo
+                                    ? 'Outgoing video call'
+                                    : 'Outgoing audio call'
+                                  : isVideo
+                                  ? 'Incoming video call'
+                                  : 'Incoming audio call'}
+                              </p>
+                              <p className="text-[10px] font-mono-num text-slate-400">
+                                {durStr ? `${durStr} · ` : ''}
+                                {new Date(c.created_at).toLocaleString([], {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  hour: 'numeric',
+                                  minute: '2-digit',
+                                })}
+                              </p>
+                            </div>
+                            {peer && !blockState.anyBlock && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowChatInfo(false);
+                                  onStartCall(peer, c.call_type, chat.id);
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-blue-600 text-white text-[11px] font-semibold shrink-0"
+                              >
+                                Call back
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 )}

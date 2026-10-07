@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { syncServerPresence } from './presenceService';
 import { dispatchWebPushNotification } from './pushNotificationService';
 import {
   BlockRecord,
@@ -228,13 +229,7 @@ export async function updateMyProfile(
 }
 
 export async function setUserOnlineStatus(userId: string, isOnline: boolean): Promise<void> {
-  await supabase
-    .from('profiles')
-    .update({
-      is_online: isOnline,
-      last_seen: new Date().toISOString(),
-    })
-    .eq('id', userId);
+  await syncServerPresence(userId, isOnline);
 }
 
 async function createCompactAvatarDataUrl(file: File): Promise<string> {
@@ -1385,9 +1380,45 @@ export async function fetchCallHistory(userId: string): Promise<CallRecord[]> {
     )
     .or(`caller_id.eq.${userId},receiver_id.eq.${userId}`)
     .order('created_at', { ascending: false })
-    .limit(60);
+    .limit(200);
 
   if (error) throw error;
+  const rows = (data || []) as CallRecord[];
+  const userIds = rows.flatMap((c) => [c.caller_id, c.receiver_id]);
+  const profilesMap = await fetchProfilesMapByIds(userIds);
+  return rows.map((c) => ({
+    ...c,
+    caller:
+      profilesMap[c.caller_id] ||
+      (Array.isArray(c.caller) ? c.caller[0] : c.caller),
+    receiver:
+      profilesMap[c.receiver_id] ||
+      (Array.isArray(c.receiver) ? c.receiver[0] : c.receiver),
+  }));
+}
+
+export async function fetchConversationCallHistory(
+  chatId: string,
+  currentUserId: string,
+  peerUserId?: string | null
+): Promise<CallRecord[]> {
+  let query = supabase
+    .from('calls')
+    .select(
+      '*, caller:profiles!calls_caller_id_fkey(*), receiver:profiles!calls_receiver_id_fkey(*)'
+    );
+
+  if (peerUserId) {
+    query = query.or(
+      `chat_id.eq.${chatId},and(caller_id.eq.${currentUserId},receiver_id.eq.${peerUserId}),and(caller_id.eq.${peerUserId},receiver_id.eq.${currentUserId})`
+    );
+  } else {
+    query = query.eq('chat_id', chatId);
+  }
+
+  const { data, error } = await query.order('created_at', { ascending: true }).limit(150);
+  if (error) throw error;
+
   const rows = (data || []) as CallRecord[];
   const userIds = rows.flatMap((c) => [c.caller_id, c.receiver_id]);
   const profilesMap = await fetchProfilesMapByIds(userIds);

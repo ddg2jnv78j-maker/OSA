@@ -1,10 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { MessageSquarePlus, Search, X } from 'lucide-react';
+import { TRANSLATIONS } from '../lib/i18n';
 import {
   fetchPrivacyMapForUsers,
+  loadLanguagePreference,
   openOrCreateDirectChat,
   searchUsers,
 } from '../services/osaService';
+import {
+  formatLastSeenText,
+  getProfileLastSeenIso,
+  isProfileTrulyOnline,
+} from '../services/presenceService';
 import { PrivacySettings, Profile } from '../types/osa';
 import { OSAAvatar } from './OSAAvatar';
 
@@ -129,10 +136,18 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
             </div>
           ) : (
             users.map((u) => {
+              const lang = loadLanguagePreference();
+              const t = TRANSLATIONS[lang];
               const priv = privacyMap[u.id];
               const hidePhoto = priv?.profile_photo_visibility === 'nobody';
               const showOnline = priv ? priv.online_status : true;
+              const showLastSeen = priv ? priv.last_seen_visibility !== 'nobody' : true;
               const showAbout = priv?.about_visibility !== 'nobody';
+              const trulyOnline = Boolean(showOnline && isProfileTrulyOnline(u));
+              const lastSeenStr =
+                !trulyOnline && showLastSeen
+                  ? formatLastSeenText(getProfileLastSeenIso(u), t, lang)
+                  : null;
 
               return (
                 <button
@@ -146,7 +161,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
                     name={u.full_name}
                     avatarUrl={u.avatar_url}
                     size="md"
-                    isOnline={u.is_online}
+                    isOnline={trulyOnline}
                     showOnlineStatus={showOnline}
                     hidePhotoForPrivacy={hidePhoto}
                   />
@@ -155,11 +170,16 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
                       <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                         {u.full_name}
                       </p>
-                      {showOnline && u.is_online && (
-                        <span className="text-[11px] font-medium text-green-600 dark:text-green-400 shrink-0">
-                          Online
+                      {trulyOnline ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                          {t.online}
                         </span>
-                      )}
+                      ) : lastSeenStr ? (
+                        <span className="text-[11px] text-slate-400 shrink-0 truncate max-w-[190px]">
+                          {lastSeenStr}
+                        </span>
+                      ) : null}
                     </div>
                     <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                       {u.username ? `@${u.username}` : u.email}

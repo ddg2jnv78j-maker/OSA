@@ -53,6 +53,8 @@ export interface Profile {
   is_online: boolean;
   is_suspended?: boolean;
   last_seen: string;
+  last_seen_at?: string | null;
+  last_heartbeat_at?: string | null;
   language: LanguageCode;
   theme: ThemeMode;
   created_at: string;

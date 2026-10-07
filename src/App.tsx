@@ -61,6 +61,13 @@ import {
   syncPermissionsFromSupabase,
 } from './services/permissionService';
 import {
+  formatLastSeenText,
+  getProfileLastSeenIso,
+  isProfileTrulyOnline,
+  PresenceManager,
+  subscribeToPresenceUpdates,
+} from './services/presenceService';
+import {
   ensureUserPushSubscription,
   reportActiveChatForPush,
   showBackgroundSystemNotification,
@@ -150,8 +157,23 @@ export default function App() {
     chatId?: string | null;
   } | null>(null);
   const handledLocationReqIdsRef = useRef<Set<string>>(new Set());
+  const presenceManagerRef = useRef<PresenceManager | null>(null);
+  const [, setPresenceTick] = useState(0);
 
   const isOnline = useOnlineStatus();
+
+  useEffect(() => {
+    const unsub = subscribeToPresenceUpdates(() => {
+      setPresenceTick((n) => n + 1);
+    });
+    const timer = window.setInterval(() => {
+      setPresenceTick((n) => n + 1);
+    }, 15000);
+    return () => {
+      unsub();
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     applyThemeToDocument(theme);
@@ -302,12 +324,14 @@ export default function App() {
     [activeCall, presentIncomingCall]
   );
 
-  // Check for any active ringing/calling incoming call so background tabs & PWAs never miss calls
+  // Check for any active ringing/calling incoming call when OSA is open, visible, and online
   const checkPendingIncomingCall = useCallback(
     async (uid: string) => {
       if (!uid || activeCall) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       try {
-        const cutoff = new Date(Date.now() - 60 * 1000).toISOString();
+        const cutoff = new Date(Date.now() - 45 * 1000).toISOString();
         const { data: rows } = await supabase
           .from('calls')
           .select('*')
@@ -438,6 +462,10 @@ export default function App() {
         setCurrentUser(null);
       } else if (event === 'SIGNED_OUT' || !session) {
         stopAllRingtoneAudio();
+        if (presenceManagerRef.current) {
+          presenceManagerRef.current.stopAndMarkOffline().catch(() => {});
+          presenceManagerRef.current = null;
+        }
         setCurrentUser(null);
         setIsAdmin(false);
         setAdminRole(null);
@@ -452,6 +480,53 @@ export default function App() {
       authListener.subscription.unsubscribe();
     };
   }, [loadAuthenticatedUser]);
+
+  // Real-time multi-device presence & heartbeat lifecycle for the authenticated user
+  useEffect(() => {
+    if (!currentUser?.id) return;
+
+    const manager = new PresenceManager(currentUser.id, (peerUserId, peerOnline, lastSeenIso) => {
+      setChats((prev) =>
+        prev.map((c) =>
+          c.peer && c.peer.id === peerUserId
+            ? {
+                ...c,
+                peer: {
+                  ...c.peer,
+                  is_online: peerOnline,
+                  last_seen: lastSeenIso,
+                  last_seen_at: lastSeenIso,
+                  ...(peerOnline ? { last_heartbeat_at: lastSeenIso } : {}),
+                },
+              }
+            : c
+        )
+      );
+      setDirectorySearchResults((prev) =>
+        prev.map((u) =>
+          u.id === peerUserId
+            ? {
+                ...u,
+                is_online: peerOnline,
+                last_seen: lastSeenIso,
+                last_seen_at: lastSeenIso,
+                ...(peerOnline ? { last_heartbeat_at: lastSeenIso } : {}),
+              }
+            : u
+        )
+      );
+    });
+
+    presenceManagerRef.current = manager;
+    manager.start().catch(() => {});
+
+    return () => {
+      manager.stopAndMarkOffline().catch(() => {});
+      if (presenceManagerRef.current === manager) {
+        presenceManagerRef.current = null;
+      }
+    };
+  }, [currentUser?.id]);
 
   // Report active conversation to Service Worker & Supabase so background push is only sent when not viewing that exact chat
   useEffect(() => {
@@ -633,7 +708,22 @@ export default function App() {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'profiles' },
-        () => refreshChatsAndNotifications(currentUser.id)
+        (payload) => {
+          const updatedProfile = payload.new as Profile;
+          if (updatedProfile?.id) {
+            setChats((prev) =>
+              prev.map((c) =>
+                c.peer && c.peer.id === updatedProfile.id
+                  ? { ...c, peer: { ...c.peer, ...updatedProfile } }
+                  : c
+              )
+            );
+            setDirectorySearchResults((prev) =>
+              prev.map((u) => (u.id === updatedProfile.id ? { ...u, ...updatedProfile } : u))
+            );
+          }
+          refreshChatsAndNotifications(currentUser.id);
+        }
       )
       .on(
         'postgres_changes',
@@ -743,12 +833,20 @@ export default function App() {
           const incoming = payload.new as CallRecord;
           if (incoming.status !== 'calling' && incoming.status !== 'ringing') return;
           if (activeCall) return; // Already in a call
+          if (typeof navigator !== 'undefined' && !navigator.onLine) return;
 
           const callerProfile = await fetchMyProfile(incoming.caller_id);
-          await presentIncomingCall(incoming, currentUser.id, false);
+          const isAppVisible = document.visibilityState === 'visible';
+          const canNotifyInBackground =
+            typeof Notification !== 'undefined' && Notification.permission === 'granted';
+
+          // Only report RINGING back to the caller if OSA is actively visible OR a real system incoming-call notification can reach the user
+          if (isAppVisible || canNotifyInBackground) {
+            await presentIncomingCall(incoming, currentUser.id, false);
+          }
 
           // If tab is in background or unfocused, also show OS incoming call notification with Accept/Decline
-          if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+          if (!isAppVisible || !document.hasFocus()) {
             const callLabel = incoming.call_type === 'video' ? 'Video Call' : 'Audio Call';
             showBackgroundSystemNotification({
               userId: currentUser.id,
@@ -1239,6 +1337,15 @@ export default function App() {
                       const peerPriv = peer ? peerPrivacyMap[peer.id] : undefined;
                       const showOnline =
                         !isGroup && peer && (peerPriv ? peerPriv.online_status : true);
+                      const showLastSeen =
+                        !isGroup &&
+                        peer &&
+                        (peerPriv ? peerPriv.last_seen_visibility !== 'nobody' : true);
+                      const peerTrulyOnline = Boolean(showOnline && isProfileTrulyOnline(peer));
+                      const peerLastSeenLabel =
+                        !isGroup && peer && !peerTrulyOnline && showLastSeen
+                          ? formatLastSeenText(getProfileLastSeenIso(peer), t, language)
+                          : null;
                       const hidePhoto =
                         !isGroup && peerPriv?.profile_photo_visibility === 'nobody';
                       const title = isGroup
@@ -1265,7 +1372,7 @@ export default function App() {
                             name={title}
                             avatarUrl={avatarUrl}
                             size="md"
-                            isOnline={Boolean(showOnline && peer?.is_online)}
+                            isOnline={peerTrulyOnline}
                             showOnlineStatus={Boolean(showOnline)}
                             isGroup={isGroup}
                             hidePhotoForPrivacy={hidePhoto}
@@ -1285,6 +1392,21 @@ export default function App() {
                                 </span>
                               )}
                             </div>
+
+                            {!isGroup && peer && (peerTrulyOnline || peerLastSeenLabel) && (
+                              <p className="text-[11px] truncate mt-0.5">
+                                {peerTrulyOnline ? (
+                                  <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                                    {t.online}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 dark:text-slate-500">
+                                    {peerLastSeenLabel}
+                                  </span>
+                                )}
+                              </p>
+                            )}
 
                             <div className="flex items-center justify-between gap-2 mt-0.5">
                               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
@@ -1307,38 +1429,52 @@ export default function App() {
                         <p className="text-[11px] font-bold text-slate-400 uppercase px-2 mb-2">
                           OSA Users Directory
                         </p>
-                        {directorySearchResults.map((u) => (
-                          <button
-                            key={u.id}
-                            type="button"
-                            onClick={async () => {
-                              const cid = await openOrCreateDirectChat(
-                                currentUser.id,
-                                u.id
-                              );
-                              await refreshChatsAndNotifications(currentUser.id);
-                              setSelectedChatId(cid);
-                              setHomeSearchQuery('');
-                            }}
-                            className="w-full flex items-center gap-3 p-2.5 rounded-2xl hover:bg-white dark:hover:bg-slate-900 text-left"
-                          >
-                            <OSAAvatar
-                              name={u.full_name}
-                              avatarUrl={u.avatar_url}
-                              size="sm"
-                              isOnline={u.is_online}
-                              showOnlineStatus
-                            />
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                                {u.full_name}
-                              </p>
-                              <p className="text-[11px] text-slate-400 truncate">
-                                {u.email}
-                              </p>
-                            </div>
-                          </button>
-                        ))}
+                        {directorySearchResults.map((u) => {
+                          const userOnline = isProfileTrulyOnline(u);
+                          const userLastSeen = formatLastSeenText(
+                            getProfileLastSeenIso(u),
+                            t,
+                            language
+                          );
+                          return (
+                            <button
+                              key={u.id}
+                              type="button"
+                              onClick={async () => {
+                                const cid = await openOrCreateDirectChat(
+                                  currentUser.id,
+                                  u.id
+                                );
+                                await refreshChatsAndNotifications(currentUser.id);
+                                setSelectedChatId(cid);
+                                setHomeSearchQuery('');
+                              }}
+                              className="w-full flex items-center gap-3 p-2.5 rounded-2xl hover:bg-white dark:hover:bg-slate-900 text-left"
+                            >
+                              <OSAAvatar
+                                name={u.full_name}
+                                avatarUrl={u.avatar_url}
+                                size="sm"
+                                isOnline={userOnline}
+                                showOnlineStatus
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                  {u.full_name}
+                                </p>
+                                <p className="text-[11px] text-slate-400 truncate">
+                                  {userOnline ? (
+                                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                                      ● {t.online}
+                                    </span>
+                                  ) : (
+                                    userLastSeen
+                                  )}
+                                </p>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </>

@@ -1413,4 +1413,63 @@ CREATE POLICY "Users can update own notification settings"
   ON public.user_notification_settings FOR UPDATE TO authenticated
   USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
+-- ============================================================================
+-- 8. REALTIME CALL STATUS & MULTI-DEVICE ONLINE / LAST SEEN PRESENCE
+-- ============================================================================
+
+ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;
+
+ALTER TABLE public.profiles
+  ALTER COLUMN is_online SET DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_profiles_last_seen_at ON public.profiles(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_profiles_last_heartbeat_at ON public.profiles(last_heartbeat_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.user_presence_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  last_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  user_agent TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, session_id)
+);
+
+ALTER TABLE public.user_presence_sessions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view allowed presence sessions" ON public.user_presence_sessions;
+CREATE POLICY "Users can view allowed presence sessions"
+  ON public.user_presence_sessions FOR SELECT TO authenticated
+  USING (
+    auth.uid() = user_id
+    OR EXISTS (
+      SELECT 1 FROM public.privacy_settings ps
+      WHERE ps.user_id = public.user_presence_sessions.user_id
+        AND ps.online_status = TRUE
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM public.privacy_settings ps
+      WHERE ps.user_id = public.user_presence_sessions.user_id
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can insert own presence sessions" ON public.user_presence_sessions;
+CREATE POLICY "Users can insert own presence sessions"
+  ON public.user_presence_sessions FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update own presence sessions" ON public.user_presence_sessions;
+CREATE POLICY "Users can update own presence sessions"
+  ON public.user_presence_sessions FOR UPDATE TO authenticated
+  USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete own presence sessions" ON public.user_presence_sessions;
+CREATE POLICY "Users can delete own presence sessions"
+  ON public.user_presence_sessions FOR DELETE TO authenticated
+  USING (auth.uid() = user_id);
+
 

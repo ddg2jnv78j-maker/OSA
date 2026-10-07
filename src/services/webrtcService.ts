@@ -125,16 +125,31 @@ export class WebRTCCallManager {
 
   public async prepareIncomingCall(callRecord: CallRecord): Promise<void> {
     this.currentCall = callRecord;
+    await this.subscribeToCallSignals(callRecord.id);
+
+    // Only transition to RINGING and notify the caller when this device is online and reachable
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return;
+    }
+
+    this.currentCall.status = 'ringing';
     this.callbacks.onStatusChange('ringing');
     await updateCallRecordStatus(callRecord.id, 'ringing');
-    await this.subscribeToCallSignals(callRecord.id);
-    await this.sendSignal(callRecord.id, callRecord.caller_id, 'ringing', {});
+    await this.sendSignal(callRecord.id, callRecord.caller_id, 'ringing', {
+      reachable: true,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   public async acceptIncomingCall(callRecord: CallRecord): Promise<void> {
     try {
       this.currentCall = callRecord;
+      this.currentCall.status = 'accepted';
       this.callbacks.onStatusChange('accepted');
+      await updateCallRecordStatus(callRecord.id, 'accepted');
+      await this.sendSignal(callRecord.id, callRecord.caller_id, 'renegotiate', {
+        status: 'accepted',
+      });
 
       // 1. Get local stream (audio + video for video calls)
       const stream = await this.acquireMediaStream(callRecord.call_type);
@@ -491,8 +506,23 @@ export class WebRTCCallManager {
       ]);
 
       if (callRow) {
+        if (
+          callRow.status === 'ringing' &&
+          this.currentCall &&
+          this.currentCall.status === 'calling'
+        ) {
+          this.currentCall.status = 'ringing';
+          this.callbacks.onStatusChange('ringing');
+        } else if (
+          callRow.status === 'accepted' &&
+          this.currentCall &&
+          (this.currentCall.status === 'calling' || this.currentCall.status === 'ringing')
+        ) {
+          this.currentCall.status = 'accepted';
+          this.callbacks.onStatusChange('accepted');
+        }
         if (callRow.status === 'rejected') {
-          this.callbacks.onStatusChange('rejected', 'Call was declined.');
+          this.callbacks.onStatusChange('rejected');
           this.cleanup();
           return;
         }
@@ -545,8 +575,22 @@ export class WebRTCCallManager {
           (payload) => {
             const updated = payload.new as CallRecord;
             if (!updated) return;
-            if (updated.status === 'rejected') {
-              this.callbacks.onStatusChange('rejected', 'Call was declined.');
+            if (
+              updated.status === 'ringing' &&
+              this.currentCall &&
+              this.currentCall.status === 'calling'
+            ) {
+              this.currentCall.status = 'ringing';
+              this.callbacks.onStatusChange('ringing');
+            } else if (
+              updated.status === 'accepted' &&
+              this.currentCall &&
+              (this.currentCall.status === 'calling' || this.currentCall.status === 'ringing')
+            ) {
+              this.currentCall.status = 'accepted';
+              this.callbacks.onStatusChange('accepted');
+            } else if (updated.status === 'rejected') {
+              this.callbacks.onStatusChange('rejected');
               this.cleanup();
             } else if (
               updated.status === 'ended' ||
@@ -585,6 +629,17 @@ export class WebRTCCallManager {
           }
           break;
         }
+        case 'renegotiate': {
+          if (
+            signal.payload?.status === 'accepted' &&
+            this.currentCall &&
+            (this.currentCall.status === 'calling' || this.currentCall.status === 'ringing')
+          ) {
+            this.currentCall.status = 'accepted';
+            this.callbacks.onStatusChange('accepted');
+          }
+          break;
+        }
         case 'answer': {
           if (
             this.peerConnection &&
@@ -594,6 +649,10 @@ export class WebRTCCallManager {
             if (this.callTimeoutTimer) {
               clearTimeout(this.callTimeoutTimer);
               this.callTimeoutTimer = null;
+            }
+            if (this.currentCall && this.currentCall.status !== 'connected') {
+              this.currentCall.status = 'accepted';
+              this.callbacks.onStatusChange('accepted');
             }
             await this.peerConnection.setRemoteDescription(
               new RTCSessionDescription({
@@ -633,7 +692,7 @@ export class WebRTCCallManager {
           break;
         }
         case 'reject': {
-          this.callbacks.onStatusChange('rejected', 'Call was declined.');
+          this.callbacks.onStatusChange('rejected');
           this.cleanup();
           break;
         }
