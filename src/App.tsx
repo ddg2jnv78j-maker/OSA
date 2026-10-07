@@ -60,6 +60,11 @@ import {
   requestAllOSAPermissions,
 } from './services/permissionService';
 import {
+  ensureUserPushSubscription,
+  reportActiveChatForPush,
+  syncNotificationPreferencesFromSupabase,
+} from './services/pushNotificationService';
+import {
   RCAM_SIG_PREFIX,
   RemoteCameraSessionManager,
   RemoteCameraSignalPayload,
@@ -185,6 +190,65 @@ export default function App() {
     }
   }, []);
 
+  // Resume an incoming Audio or Video Call when the user clicks a Web Push call notification
+  const resumeIncomingCallFromNotification = useCallback(
+    async (callId: string, uid: string) => {
+      if (!callId || !uid || activeCall) return;
+      try {
+        const { data: callRow } = await supabase
+          .from('calls')
+          .select('*')
+          .eq('id', callId)
+          .maybeSingle();
+
+        const incoming = callRow as CallRecord | null;
+        if (
+          !incoming ||
+          incoming.receiver_id !== uid ||
+          (incoming.status !== 'calling' && incoming.status !== 'ringing')
+        ) {
+          setActiveTab('calls');
+          return;
+        }
+
+        const callerProfile = await fetchMyProfile(incoming.caller_id);
+        setCallPeerProfile(callerProfile);
+        setActiveCall(incoming);
+        setCallError(undefined);
+        startIncomingCallRingtone(uid, incoming.id);
+
+        const manager = new WebRTCCallManager(uid, {
+          onLocalStream: setLocalStream,
+          onRemoteStream: setRemoteStream,
+          onStatusChange: (status, errMsg) => {
+            setCallStatus(status);
+            if (status !== 'calling' && status !== 'ringing') {
+              stopIncomingCallRingtone();
+            }
+            if (errMsg) setCallError(errMsg);
+            if (
+              status === 'ended' ||
+              status === 'rejected' ||
+              status === 'missed' ||
+              status === 'failed'
+            ) {
+              stopIncomingCallRingtone();
+              setTimeout(() => {
+                setActiveCall(null);
+                callManagerRef.current = null;
+              }, 1800);
+            }
+          },
+        });
+        callManagerRef.current = manager;
+        await manager.prepareIncomingCall(incoming);
+      } catch {
+        setActiveTab('calls');
+      }
+    },
+    [activeCall]
+  );
+
   const loadAuthenticatedUser = useCallback(async () => {
     const sbConfig = getSupabaseConfig();
     if (!sbConfig.isConfigured) {
@@ -223,6 +287,9 @@ export default function App() {
       if (profile.language) handleLanguageChange(profile.language);
       syncUserRingtoneFromSupabase(profile.id).catch(() => {});
       syncChatTranslationLanguageFromSupabase(profile.id, profile.language).catch(() => {});
+      syncNotificationPreferencesFromSupabase(profile.id)
+        .then(() => ensureUserPushSubscription(profile.id))
+        .catch(() => {});
 
       // Request native permissions ONE BY ONE (1. Camera -> 2. Microphone -> 3. Location -> 4. Notifications)
       // on first-time registration / login without opening any separate Permission Setup page/modal
@@ -241,6 +308,25 @@ export default function App() {
 
       await setUserOnlineStatus(profile.id, true);
       await refreshChatsAndNotifications(profile.id);
+
+      // Handle URL query deep-links from Web Push notification clicks (?chatId=... or ?callId=...)
+      const urlParams = new URLSearchParams(window.location.search);
+      const deepChatId = urlParams.get('chatId');
+      const deepCallId = urlParams.get('callId');
+      if (deepCallId) {
+        resumeIncomingCallFromNotification(deepCallId, profile.id);
+      } else if (deepChatId) {
+        setActiveTab('chats');
+        setSelectedChatId(deepChatId);
+      }
+      if (deepChatId || deepCallId) {
+        try {
+          const cleanUrl = window.location.pathname;
+          window.history.replaceState({}, document.title, cleanUrl);
+        } catch {
+          // Ignore
+        }
+      }
     } catch {
       setCurrentUser(null);
     } finally {
@@ -279,6 +365,65 @@ export default function App() {
       authListener.subscription.unsubscribe();
     };
   }, [loadAuthenticatedUser]);
+
+  // Report active conversation to Service Worker & Supabase so background push is only sent when not viewing that exact chat
+  useEffect(() => {
+    if (!currentUser) return;
+    const isChatVisible =
+      document.visibilityState === 'visible' &&
+      activeTab === 'chats' &&
+      Boolean(selectedChatId);
+    reportActiveChatForPush(
+      currentUser.id,
+      isChatVisible ? selectedChatId : null,
+      document.visibilityState === 'visible'
+    ).catch(() => {});
+
+    const handleVisibilityChange = () => {
+      const visibleNow = document.visibilityState === 'visible';
+      reportActiveChatForPush(
+        currentUser.id,
+        visibleNow && activeTab === 'chats' ? selectedChatId : null,
+        visibleNow
+      ).catch(() => {});
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [currentUser, activeTab, selectedChatId]);
+
+  // Listen for Service Worker notificationclick & pushsubscriptionchange events
+  useEffect(() => {
+    if (!currentUser || !('serviceWorker' in navigator)) return;
+
+    const handleSWMessage = (event: MessageEvent) => {
+      const payload = event.data;
+      if (!payload || typeof payload !== 'object') return;
+
+      if (payload.type === 'OSA_NOTIFICATION_CLICK') {
+        const data = payload.data || {};
+        if (data.callId || data.type === 'incoming_call') {
+          if (data.callId) {
+            resumeIncomingCallFromNotification(String(data.callId), currentUser.id);
+          } else if (!activeCall) {
+            setActiveTab('calls');
+          }
+        } else if (data.chatId) {
+          setActiveTab('chats');
+          setSelectedChatId(String(data.chatId));
+        }
+      } else if (payload.type === 'OSA_PUSH_SUBSCRIPTION_CHANGED') {
+        ensureUserPushSubscription(currentUser.id).catch(() => {});
+      }
+    };
+
+    navigator.serviceWorker.addEventListener('message', handleSWMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+    };
+  }, [currentUser, activeCall, resumeIncomingCallFromNotification]);
 
   // Helper to respond to a Remote Location request with real GPS coordinates
   const respondWithDeviceLocation = useCallback(
@@ -478,16 +623,6 @@ export default function App() {
           }
 
           setNotifications((prev) => [newNotif, ...prev]);
-          if (
-            'Notification' in window &&
-            Notification.permission === 'granted' &&
-            document.hidden
-          ) {
-            new Notification(newNotif.title || 'OSA', {
-              body: newNotif.body,
-              icon: `${import.meta.env.BASE_URL}pwa-192x192.png`,
-            });
-          }
         }
       )
       .on(

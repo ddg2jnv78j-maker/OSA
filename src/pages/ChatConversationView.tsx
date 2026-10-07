@@ -555,6 +555,37 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
       setText('');
       setReplyTo(null);
+
+      // Notify recipients of attachment message
+      const previewBody = sent.content
+        ? `[${sent.message_type.toUpperCase()}] ${sent.content.slice(0, 80)}`
+        : `Sent a ${sent.message_type}`;
+      if (!isGroup && peer) {
+        await createNotification({
+          userId: peer.id,
+          actorId: currentUser.id,
+          type: 'new_message',
+          title: currentUser.full_name,
+          body: previewBody,
+          referenceId: sent.id,
+          chatId: chat.id,
+        });
+      } else if (isGroup && chat.members) {
+        for (const mem of chat.members) {
+          if (mem.user_id !== currentUser.id && !mem.is_muted) {
+            await createNotification({
+              userId: mem.user_id,
+              actorId: currentUser.id,
+              type: 'group_message',
+              title: `${currentUser.full_name} in ${chatTitle}`,
+              body: previewBody,
+              referenceId: sent.id,
+              chatId: chat.id,
+            });
+          }
+        }
+      }
+
       onChatUpdated();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Attachment upload failed.');

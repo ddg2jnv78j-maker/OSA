@@ -73,7 +73,7 @@ export class WebRTCCallManager {
         callType: params.callType,
       });
 
-      // 5. Notify receiver in notifications table
+      // 5. Notify receiver in notifications table & Web Push
       await createNotification({
         userId: params.receiverId,
         actorId: this.currentUserId,
@@ -82,6 +82,7 @@ export class WebRTCCallManager {
         body: `Incoming ${params.callType} call on OSA`,
         referenceId: callRecord.id,
         chatId: params.chatId || null,
+        callType: params.callType,
       });
 
       // 6. Set 45-second unanswered timeout

@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { ensureUserPushSubscription } from './pushNotificationService';
 
 export type PermissionStateValue = 'granted' | 'denied' | 'prompt' | 'unsupported';
 
@@ -237,11 +238,23 @@ export async function requestNotificationPermission(
     saveStoredPermissionStatus({ notifications: 'unsupported' }, userId);
     return 'unsupported';
   }
+  if (Notification.permission === 'denied') {
+    saveStoredPermissionStatus({ notifications: 'denied' }, userId);
+    return 'denied';
+  }
+  if (Notification.permission === 'granted') {
+    saveStoredPermissionStatus({ notifications: 'granted' }, userId);
+    await ensureUserPushSubscription(userId);
+    return 'granted';
+  }
   try {
     const result = await Notification.requestPermission();
     const state: PermissionStateValue =
       result === 'granted' ? 'granted' : result === 'denied' ? 'denied' : 'prompt';
     saveStoredPermissionStatus({ notifications: state }, userId);
+    if (state === 'granted') {
+      await ensureUserPushSubscription(userId);
+    }
     return state;
   } catch {
     return 'prompt';
@@ -265,23 +278,41 @@ export async function requestAllOSAPermissions(userId?: string): Promise<OSAPerm
       const initial = await checkNativePermissions(userId);
 
       // 1. CAMERA — Native prompt: Allow / Deny
-      if (initial.camera !== 'granted' && initial.camera !== 'unsupported') {
+      if (
+        initial.camera !== 'granted' &&
+        initial.camera !== 'denied' &&
+        initial.camera !== 'unsupported'
+      ) {
         await requestCameraPermission(userId);
       }
 
       // 2. MICROPHONE — After camera permission result is handled, Native prompt: Allow / Deny
-      if (initial.microphone !== 'granted' && initial.microphone !== 'unsupported') {
+      if (
+        initial.microphone !== 'granted' &&
+        initial.microphone !== 'denied' &&
+        initial.microphone !== 'unsupported'
+      ) {
         await requestMicrophonePermission(userId);
       }
 
       // 3. LOCATION — After microphone permission result is handled, Native prompt: Allow / Deny
-      if (initial.location !== 'granted' && initial.location !== 'unsupported') {
+      if (
+        initial.location !== 'granted' &&
+        initial.location !== 'denied' &&
+        initial.location !== 'unsupported'
+      ) {
         await requestLocationPermission(userId);
       }
 
       // 4. NOTIFICATIONS — After location permission result is handled, Native prompt: Allow / Don't Allow
-      if (initial.notifications !== 'granted' && initial.notifications !== 'unsupported') {
+      if (
+        initial.notifications !== 'granted' &&
+        initial.notifications !== 'denied' &&
+        initial.notifications !== 'unsupported'
+      ) {
         await requestNotificationPermission(userId);
+      } else if (initial.notifications === 'granted') {
+        await ensureUserPushSubscription(userId);
       }
 
       try {

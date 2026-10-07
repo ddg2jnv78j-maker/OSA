@@ -1304,3 +1304,113 @@ CREATE POLICY "Users can update own profile"
   USING (id = auth.uid() OR public.is_admin())
   WITH CHECK (id = auth.uid() OR public.is_admin());
 
+-- ============================================================================
+-- 9. WEB PUSH SUBSCRIPTIONS & NOTIFICATION SETTINGS (MULTI-DEVICE BACKGROUND PUSH)
+-- ============================================================================
+
+ALTER TABLE public.push_subscriptions
+  ADD COLUMN IF NOT EXISTS device_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active ON public.push_subscriptions(user_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON public.push_subscriptions(endpoint);
+
+DROP TRIGGER IF EXISTS trg_push_subscriptions_updated_at ON public.push_subscriptions;
+CREATE TRIGGER trg_push_subscriptions_updated_at
+  BEFORE UPDATE ON public.push_subscriptions
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+DROP POLICY IF EXISTS "Users manage own push subscriptions" ON public.push_subscriptions;
+DROP POLICY IF EXISTS "Users can view own push subscriptions" ON public.push_subscriptions;
+DROP POLICY IF EXISTS "Users can insert own push subscriptions" ON public.push_subscriptions;
+DROP POLICY IF EXISTS "Users can update own push subscriptions" ON public.push_subscriptions;
+DROP POLICY IF EXISTS "Users can delete own push subscriptions" ON public.push_subscriptions;
+
+CREATE POLICY "Users can view own push subscriptions"
+  ON public.push_subscriptions FOR SELECT TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own push subscriptions"
+  ON public.push_subscriptions FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own push subscriptions"
+  ON public.push_subscriptions FOR UPDATE TO authenticated
+  USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own push subscriptions"
+  ON public.push_subscriptions FOR DELETE TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE OR REPLACE FUNCTION public.upsert_push_subscription(
+  p_endpoint TEXT,
+  p_p256dh TEXT,
+  p_auth TEXT,
+  p_user_agent TEXT DEFAULT NULL,
+  p_device_metadata JSONB DEFAULT '{}'::jsonb,
+  p_is_active BOOLEAN DEFAULT TRUE
+)
+RETURNS public.push_subscriptions
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID := auth.uid();
+  v_row public.push_subscriptions;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  INSERT INTO public.push_subscriptions (
+    user_id, endpoint, p256dh, auth, user_agent, device_metadata, is_active, updated_at
+  )
+  VALUES (
+    v_uid, trim(p_endpoint), p_p256dh, p_auth, p_user_agent,
+    COALESCE(p_device_metadata, '{}'::jsonb), COALESCE(p_is_active, TRUE), NOW()
+  )
+  ON CONFLICT (endpoint) DO UPDATE
+    SET user_id = v_uid,
+        p256dh = EXCLUDED.p256dh,
+        auth = EXCLUDED.auth,
+        user_agent = COALESCE(EXCLUDED.user_agent, public.push_subscriptions.user_agent),
+        device_metadata = COALESCE(EXCLUDED.device_metadata, public.push_subscriptions.device_metadata),
+        is_active = EXCLUDED.is_active,
+        updated_at = NOW()
+  RETURNING * INTO v_row;
+
+  RETURN v_row;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TABLE IF NOT EXISTS public.user_notification_settings (
+  user_id UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  push_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  message_notifications BOOLEAN NOT NULL DEFAULT TRUE,
+  group_notifications BOOLEAN NOT NULL DEFAULT TRUE,
+  call_notifications BOOLEAN NOT NULL DEFAULT TRUE,
+  status_notifications BOOLEAN NOT NULL DEFAULT TRUE,
+  active_chat_id UUID REFERENCES public.chats(id) ON DELETE SET NULL,
+  active_updated_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.user_notification_settings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own notification settings" ON public.user_notification_settings;
+CREATE POLICY "Users can view own notification settings"
+  ON public.user_notification_settings FOR SELECT TO authenticated
+  USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert own notification settings" ON public.user_notification_settings;
+CREATE POLICY "Users can insert own notification settings"
+  ON public.user_notification_settings FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update own notification settings" ON public.user_notification_settings;
+CREATE POLICY "Users can update own notification settings"
+  ON public.user_notification_settings FOR UPDATE TO authenticated
+  USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+

@@ -39,6 +39,17 @@ import {
   RINGTONE_CHANGED_EVENT,
   stopRingtonePreview,
 } from '../services/ringtoneService';
+import { requestNotificationPermission } from '../services/permissionService';
+import {
+  ensureUserPushSubscription,
+  fetchMyPushSubscriptions,
+  getNotificationPreferences,
+  getWebPushSupportInfo,
+  OSANotificationPreferences,
+  saveNotificationPreferences,
+  StoredPushSubscriptionRow,
+  syncNotificationPreferencesFromSupabase,
+} from '../services/pushNotificationService';
 import {
   CHAT_TRANSLATION_LANG_CHANGED_EVENT,
   CHAT_TRANSLATION_LANGUAGES,
@@ -158,6 +169,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     useState<ChatTranslationLanguageCode>(() =>
       getChatTranslationLanguage(currentUser.id, language)
     );
+  const [notifPrefs, setNotifPrefs] = useState<OSANotificationPreferences>(() =>
+    getNotificationPreferences(currentUser.id)
+  );
+  const [browserPermState, setBrowserPermState] = useState<
+    NotificationPermission | 'unsupported'
+  >(() => getWebPushSupportInfo().permission);
+  const [myPushSubs, setMyPushSubs] = useState<StoredPushSubscriptionRow[]>([]);
+  const [syncingPush, setSyncingPush] = useState(false);
 
   useEffect(() => {
     setSelectedRingtoneId(getSelectedRingtoneId(currentUser.id));
@@ -232,7 +251,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   useEffect(() => {
     setStatusBanner(null);
-    if (subPage === 'storage') {
+    if (subPage === 'notifications') {
+      setBrowserPermState(getWebPushSupportInfo().permission);
+      syncNotificationPreferencesFromSupabase(currentUser.id)
+        .then((prefs) => setNotifPrefs(prefs))
+        .catch(() => {});
+      fetchMyPushSubscriptions(currentUser.id)
+        .then((subs) => setMyPushSubs(subs))
+        .catch(() => {});
+    } else if (subPage === 'storage') {
       setLoadingStorage(true);
       fetchUserStorageAttachments(currentUser.id)
         .then((items) => setStorageItems(items))
@@ -1064,35 +1091,209 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         <div className="space-y-5">
           {renderSubHeader(t.notifications)}
 
+          {/* Browser Permission & Web Push Status Card */}
           <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-5 space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-bold text-slate-900 dark:text-white">
-                  Browser Push Notifications
+                  Browser Push Permission
                 </p>
-                <p className="text-xs text-slate-500">
-                  Status:{' '}
-                  {'Notification' in window ? Notification.permission : 'unsupported'}
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Current status:{' '}
+                  <span
+                    className={`font-bold uppercase ${
+                      browserPermState === 'granted'
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : browserPermState === 'denied'
+                        ? 'text-red-600 dark:text-red-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    }`}
+                  >
+                    {browserPermState}
+                  </span>
                 </p>
+                {myPushSubs.length > 0 && (
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium mt-1">
+                    Active Web Push devices linked to account: {myPushSubs.length}
+                  </p>
+                )}
               </div>
-              {'Notification' in window && (
+
+              {browserPermState === 'default' && (
                 <button
                   type="button"
+                  disabled={syncingPush}
                   onClick={async () => {
-                    const perm = await Notification.requestPermission();
-                    setStatusBanner({
-                      type: perm === 'granted' ? 'success' : 'error',
-                      text: `Browser push permission: ${perm}`,
-                    });
+                    setSyncingPush(true);
+                    try {
+                      const res = await requestNotificationPermission(currentUser.id);
+                      const nextPerm = getWebPushSupportInfo().permission;
+                      setBrowserPermState(nextPerm);
+                      if (res === 'granted') {
+                        const subs = await fetchMyPushSubscriptions(currentUser.id);
+                        setMyPushSubs(subs);
+                        setStatusBanner({
+                          type: 'success',
+                          text: 'Notification permission granted and Web Push subscription registered.',
+                        });
+                      } else if (res === 'denied') {
+                        setStatusBanner({
+                          type: 'error',
+                          text: 'Notification permission was denied by your browser/device.',
+                        });
+                      }
+                    } finally {
+                      setSyncingPush(false);
+                    }
                   }}
-                  className="px-4 py-2 min-h-[40px] rounded-xl bg-blue-600 text-white text-xs font-semibold"
+                  className="px-4 py-2 min-h-[40px] rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold shrink-0"
                 >
-                  Request Permission
+                  {syncingPush ? 'Enabling...' : 'Enable Permission'}
+                </button>
+              )}
+
+              {browserPermState === 'granted' && (
+                <button
+                  type="button"
+                  disabled={syncingPush}
+                  onClick={async () => {
+                    setSyncingPush(true);
+                    try {
+                      await ensureUserPushSubscription(currentUser.id);
+                      const subs = await fetchMyPushSubscriptions(currentUser.id);
+                      setMyPushSubs(subs);
+                      setStatusBanner({
+                        type: 'success',
+                        text: 'Web Push subscription synced with Supabase.',
+                      });
+                    } finally {
+                      setSyncingPush(false);
+                    }
+                  }}
+                  className="px-3.5 py-2 min-h-[38px] rounded-xl bg-emerald-600/10 text-emerald-600 dark:text-emerald-400 text-xs font-semibold shrink-0"
+                >
+                  {syncingPush ? 'Syncing...' : 'Sync Device Push'}
                 </button>
               )}
             </div>
 
-            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            {/* Clear explanation & instructions when Notification permission is denied */}
+            {browserPermState === 'denied' && (
+              <div className="rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/80 p-3.5 text-xs text-red-700 dark:text-red-300 space-y-2">
+                <p className="font-bold flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>Notifications are blocked in your browser or phone settings</span>
+                </p>
+                <p className="leading-relaxed">
+                  OSA will not repeatedly prompt you while notifications are blocked. To enable background notifications:
+                </p>
+                <ul className="list-disc pl-4 space-y-1 text-[11px]">
+                  <li>
+                    <strong>Android / Chrome:</strong> Tap the tune/lock icon in the address bar &rarr; <strong>Permissions</strong> &rarr; allow <strong>Notifications</strong>, or open <strong>Phone Settings &rarr; Apps &rarr; OSA &rarr; Notifications</strong>.
+                  </li>
+                  <li>
+                    <strong>iPhone / iPad (Home Screen PWA):</strong> Open <strong>iOS Settings &rarr; Notifications &rarr; OSA</strong> and toggle <strong>Allow Notifications</strong> ON.
+                  </li>
+                </ul>
+              </div>
+            )}
+
+            {/* Platform guidance for iPhone/iPad and Android */}
+            <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-800 p-3.5 text-xs text-slate-600 dark:text-slate-300 space-y-1.5">
+              <p className="font-bold text-slate-800 dark:text-slate-100">
+                Background Push Platform Notes
+              </p>
+              <p className="text-[11px] leading-relaxed">
+                <strong>iPhone / iPad (iOS 16.4+):</strong> Install OSA as a <strong>Home Screen PWA</strong> (Safari Share &rarr; <em>Add to Home Screen</em>) and grant notification permission to receive background Web Push when OSA is closed.
+              </p>
+              <p className="text-[11px] leading-relaxed">
+                <strong>Android &amp; Desktop:</strong> Supports background Web Push in both installed PWA and supported browsers once notification permission is granted.
+              </p>
+            </div>
+          </div>
+
+          {/* Notification Category Toggles (ON / OFF) */}
+          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+            {(
+              [
+                {
+                  key: 'pushEnabled',
+                  title: 'Push Notifications',
+                  sub: 'Master switch for background Web Push delivery on your devices',
+                },
+                {
+                  key: 'messageNotifications',
+                  title: 'Message Notifications',
+                  sub: 'Alerts for new 1-to-1 direct chat messages',
+                },
+                {
+                  key: 'groupNotifications',
+                  title: 'Group Notifications',
+                  sub: 'Alerts when members post in your non-muted groups',
+                },
+                {
+                  key: 'callNotifications',
+                  title: 'Call Notifications',
+                  sub: 'High-priority alerts for incoming Audio Calls and Video Calls',
+                },
+                {
+                  key: 'statusNotifications',
+                  title: 'Status / Other Notifications',
+                  sub: 'Alerts for status updates and system events',
+                },
+              ] as const
+            ).map((item) => {
+              const isOn = Boolean(notifPrefs[item.key]);
+              const isDisabled = item.key !== 'pushEnabled' && !notifPrefs.pushEnabled;
+              return (
+                <div
+                  key={item.key}
+                  className={`p-4 flex items-center justify-between gap-3 ${
+                    isDisabled ? 'opacity-50' : ''
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                      {item.title}
+                    </p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {item.sub}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isDisabled}
+                    onClick={async () => {
+                      const nextVal = !isOn;
+                      const updated = await saveNotificationPreferences(
+                        { [item.key]: nextVal },
+                        currentUser.id
+                      );
+                      setNotifPrefs(updated);
+                      if (item.key === 'pushEnabled') {
+                        const subs = await fetchMyPushSubscriptions(currentUser.id);
+                        setMyPushSubs(subs);
+                      }
+                    }}
+                    className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${
+                      isOn ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'
+                    }`}
+                    aria-label={item.title}
+                  >
+                    <span
+                      className={`w-5 h-5 rounded-full bg-white shadow-xs absolute top-1 transition-transform ${
+                        isOn ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Unread & Call Ringtone Card */}
+          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-5 space-y-4">
+            <div className="flex items-center justify-between">
               <span className="text-xs text-slate-600 dark:text-slate-300">
                 Unread in-app notifications:{' '}
                 <strong>{notifications.filter((n) => !n.is_read).length}</strong>

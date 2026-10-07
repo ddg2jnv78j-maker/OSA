@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { dispatchWebPushNotification } from './pushNotificationService';
 import {
   BlockRecord,
   CallRecord,
@@ -1288,8 +1289,22 @@ export async function createNotification(params: {
   body: string;
   referenceId?: string | null;
   chatId?: string | null;
+  callType?: CallType | null;
 }): Promise<void> {
   if (params.userId === params.actorId) return;
+
+  const cleanBody = (params.body || '').trim();
+  const cleanTitle = (params.title || '').trim();
+  const isRemoteSignal =
+    cleanBody.startsWith('[OSA_RCAM_SIG]') ||
+    cleanBody.startsWith('[OSA_LOC_REQ]') ||
+    cleanBody.startsWith('[OSA_LOC_RES]') ||
+    cleanBody.startsWith('[OSA_LOC_ERR]') ||
+    cleanTitle.startsWith('[OSA_RCAM_SIG]') ||
+    cleanTitle.startsWith('[OSA_LOC_REQ]') ||
+    cleanTitle.startsWith('[OSA_LOC_RES]') ||
+    cleanTitle.startsWith('[OSA_LOC_ERR]');
+
   await supabase.from('notifications').insert({
     user_id: params.userId,
     actor_id: params.actorId || null,
@@ -1300,6 +1315,40 @@ export async function createNotification(params: {
     chat_id: params.chatId || null,
     is_read: false,
   });
+
+  // Deliver real Web Push notification via Supabase Edge Function for non-remote-signal events
+  if (!isRemoteSignal && params.actorId) {
+    const inferredCallType: CallType | null =
+      params.callType ||
+      (params.type === 'incoming_call' || params.type === 'missed_call'
+        ? cleanTitle.toLowerCase().includes('video') || cleanBody.toLowerCase().includes('video')
+          ? 'video'
+          : 'audio'
+        : null);
+
+    dispatchWebPushNotification({
+      senderId: params.actorId,
+      recipientIds: [params.userId],
+      type:
+        params.type === 'mention'
+          ? 'group_message'
+          : (params.type as
+              | 'new_message'
+              | 'group_message'
+              | 'incoming_call'
+              | 'missed_call'
+              | 'status_update'
+              | 'system'),
+      title: cleanTitle || 'OSA',
+      body: cleanBody || 'You have a new message',
+      chatId: params.chatId || null,
+      callId:
+        params.type === 'incoming_call' || params.type === 'missed_call'
+          ? params.referenceId || null
+          : null,
+      callType: inferredCallType,
+    }).catch(() => {});
+  }
 }
 
 export async function markNotificationRead(notificationId: string): Promise<void> {
