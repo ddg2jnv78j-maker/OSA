@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { notifyNativeIncomingCallDismissed } from './nativeMobileBridge';
 
 export interface OSANotificationPreferences {
   pushEnabled: boolean;
@@ -44,6 +45,18 @@ const DEFAULT_NOTIFICATION_PREFS: OSANotificationPreferences = {
 let cachedVapidPublicKey: string | null = null;
 let inFlightSubscribePromise: Promise<StoredPushSubscriptionRow | null> | null = null;
 const deliveredEventKeys = new Map<string, number>();
+const foregroundUnreadCountByChat = new Map<string, number>();
+
+interface QueuedMessageBatch {
+  firstQueuedAt: number;
+  timerId: number;
+  count: number;
+  latestParams: Parameters<typeof executeWebPushInvoke>[0];
+}
+
+const pendingMessageBatches = new Map<string, QueuedMessageBatch>();
+const MESSAGE_BATCH_WINDOW_MS = 2000;
+const MESSAGE_BATCH_MAX_WAIT_MS = 5000;
 
 export function markNotificationEventDelivered(eventKey: string | null | undefined): boolean {
   if (!eventKey) return false;
@@ -579,6 +592,9 @@ export async function reportActiveChatForPush(
   chatId: string | null,
   isVisible = true
 ): Promise<void> {
+  if (isVisible && chatId) {
+    foregroundUnreadCountByChat.delete(chatId);
+  }
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     try {
       const reg = await navigator.serviceWorker.ready;
@@ -612,6 +628,63 @@ export async function reportActiveChatForPush(
  * Triggers server-side Web Push delivery via the `send-web-push` Supabase Edge Function.
  * Strictly isolates Remote Camera & Remote Location signals and never notifies the sender.
  */
+async function executeWebPushInvoke(params: {
+  senderId: string;
+  senderName?: string;
+  recipientIds: string[];
+  type:
+    | 'message'
+    | 'new_message'
+    | 'group_message'
+    | 'incoming_call'
+    | 'cancel_call'
+    | 'missed_call'
+    | 'status_update'
+    | 'system';
+  title: string;
+  body: string;
+  chatId: string | null;
+  conversationId: string | null;
+  messageId?: string | null;
+  messageType?: string | null;
+  messageCount?: number | null;
+  callId?: string | null;
+  callType?: 'audio' | 'video' | null;
+}): Promise<void> {
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+
+    await supabase.functions.invoke('send-web-push', {
+      body: {
+        action: 'send',
+        senderId: params.senderId,
+        senderName: params.senderName || params.title || undefined,
+        recipientIds: params.recipientIds,
+        type: params.type,
+        title: params.title || 'OSA',
+        body: params.body || 'New message',
+        chatId: params.chatId,
+        conversationId: params.conversationId,
+        messageId: params.messageId || null,
+        messageType: params.messageType || null,
+        messageCount: params.messageCount || null,
+        callId: params.callId || null,
+        callType: params.callType || null,
+      },
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+    });
+  } catch {
+    // Fail gracefully if Edge Function is not yet deployed
+  }
+}
+
+/**
+ * Triggers server-side Web Push + Native FCM/APNs delivery via `send-web-push`.
+ * - Incoming calls and call cancellations are dispatched IMMEDIATELY (0ms delay).
+ * - Messages use a 2-second batching window (maximum 5 seconds) per conversation to group rapid bursts ("2 new messages", "5 new messages").
+ * - Strictly isolates Remote Camera & Remote Location signals and never notifies the sender.
+ */
 export async function dispatchWebPushNotification(params: {
   senderId: string;
   senderName?: string;
@@ -621,6 +694,7 @@ export async function dispatchWebPushNotification(params: {
     | 'new_message'
     | 'group_message'
     | 'incoming_call'
+    | 'cancel_call'
     | 'missed_call'
     | 'status_update'
     | 'system';
@@ -630,6 +704,7 @@ export async function dispatchWebPushNotification(params: {
   conversationId?: string | null;
   messageId?: string | null;
   messageType?: string | null;
+  messageCount?: number | null;
   callId?: string | null;
   callType?: 'audio' | 'video' | null;
 }): Promise<void> {
@@ -653,36 +728,112 @@ export async function dispatchWebPushNotification(params: {
   // Allow server-side recipient resolution via chat_members when resolvedChatId is present
   if (targetIds.length === 0 && !resolvedChatId) return;
 
-  try {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const accessToken = sessionData?.session?.access_token;
+  const isCallImmediate =
+    params.type === 'incoming_call' ||
+    params.type === 'cancel_call' ||
+    params.type === 'missed_call';
 
-    await supabase.functions.invoke('send-web-push', {
-      body: {
-        action: 'send',
-        senderId: params.senderId,
-        senderName: params.senderName || cleanTitle || undefined,
-        recipientIds: targetIds,
-        type: params.type,
-        title: cleanTitle || 'OSA',
-        body: cleanBody || 'New message',
-        chatId: resolvedChatId,
-        conversationId: resolvedChatId,
-        messageId: params.messageId || null,
-        messageType: params.messageType || null,
-        callId: params.callId || null,
-        callType: params.callType || null,
-      },
-      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
-    });
-  } catch {
-    // Fail gracefully if Edge Function is not yet deployed
+  const invokeParams = {
+    senderId: params.senderId,
+    senderName: params.senderName || cleanTitle || undefined,
+    recipientIds: targetIds,
+    type: params.type,
+    title: cleanTitle || 'OSA',
+    body: cleanBody || 'New message',
+    chatId: resolvedChatId,
+    conversationId: resolvedChatId,
+    messageId: params.messageId || null,
+    messageType: params.messageType || null,
+    messageCount: params.messageCount || 1,
+    callId: params.callId || null,
+    callType: params.callType || null,
+  };
+
+  // Calls MUST be immediate — never delayed by message batching window
+  if (isCallImmediate || !resolvedChatId || typeof window === 'undefined') {
+    await executeWebPushInvoke(invokeParams);
+    return;
+  }
+
+  const batchKey = `${params.senderId}:${resolvedChatId}`;
+  const now = Date.now();
+  const existingBatch = pendingMessageBatches.get(batchKey);
+
+  if (existingBatch) {
+    window.clearTimeout(existingBatch.timerId);
+    // Only increment count if this is a distinct messageId (not a duplicate invocation for the same messageId)
+    if (
+      params.messageId &&
+      existingBatch.latestParams.messageId &&
+      params.messageId !== existingBatch.latestParams.messageId
+    ) {
+      existingBatch.count += 1;
+    }
+    existingBatch.latestParams = {
+      ...invokeParams,
+      messageCount: existingBatch.count,
+    };
+
+    const elapsed = now - existingBatch.firstQueuedAt;
+    const remainingMax = Math.max(0, MESSAGE_BATCH_MAX_WAIT_MS - elapsed);
+    const delayMs = Math.min(MESSAGE_BATCH_WINDOW_MS, remainingMax);
+
+    existingBatch.timerId = window.setTimeout(() => {
+      const finished = pendingMessageBatches.get(batchKey);
+      pendingMessageBatches.delete(batchKey);
+      if (finished) {
+        executeWebPushInvoke(finished.latestParams).catch(() => {});
+      }
+    }, delayMs);
+    return;
+  }
+
+  const timerId = window.setTimeout(() => {
+    const finished = pendingMessageBatches.get(batchKey);
+    pendingMessageBatches.delete(batchKey);
+    if (finished) {
+      executeWebPushInvoke(finished.latestParams).catch(() => {});
+    }
+  }, MESSAGE_BATCH_WINDOW_MS);
+
+  pendingMessageBatches.set(batchKey, {
+    firstQueuedAt: now,
+    timerId,
+    count: 1,
+    latestParams: invokeParams,
+  });
+}
+
+/**
+ * Dismisses any active incoming call notification in both the Service Worker and Native Android/iOS CallKit layer.
+ */
+export async function dismissIncomingCallSystemNotification(
+  callId: string | null | undefined
+): Promise<void> {
+  if (!callId) return;
+  notifyNativeIncomingCallDismissed(callId);
+
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      reg.active?.postMessage({
+        type: 'OSA_DISMISS_CALL_NOTIFICATION',
+        callId,
+      });
+      if (reg.getNotifications) {
+        const list = await reg.getNotifications({ tag: `osa-call-${callId}` });
+        list.forEach((n) => n.close());
+      }
+    } catch {
+      // Ignore
+    }
   }
 }
 
 /**
  * Shows a native system notification via the unified OSA Service Worker when OSA is in another
- * browser tab or backgrounded PWA, using deterministic tags so Web Push and Realtime deduplicate cleanly.
+ * browser tab or backgrounded PWA, using WhatsApp-style conversation grouping ("2 new messages", "5 new messages")
+ * and deterministic tags per conversation or callId.
  */
 export async function showBackgroundSystemNotification(params: {
   userId: string;
@@ -750,17 +901,37 @@ export async function showBackgroundSystemNotification(params: {
   const baseUrl = import.meta.env.BASE_URL || '/';
   const tag = isCall
     ? `osa-call-${params.callId || 'incoming'}`
-    : params.messageId
-    ? `osa-msg-${params.messageId}`
     : params.chatId
     ? `osa-chat-${params.chatId}`
+    : params.messageId
+    ? `osa-msg-${params.messageId}`
     : 'osa-notification';
+
+  let displayTitle = cleanTitle || 'OSA';
+  let displayBody = cleanBody || 'New message';
+  let messageCount = 1;
+
+  if (!isCall && params.chatId) {
+    const prevCount = foregroundUnreadCountByChat.get(params.chatId) || 0;
+    messageCount = prevCount + 1;
+    foregroundUnreadCountByChat.set(params.chatId, messageCount);
+
+    const senderHeader = cleanTitle && cleanTitle !== 'OSA' ? cleanTitle : 'OSA User';
+    displayTitle = 'OSA';
+    if (messageCount >= 2) {
+      displayBody = `${senderHeader}\n${messageCount} new messages`;
+    } else {
+      displayBody = `${senderHeader}\n${cleanBody || 'New message'}`;
+    }
+  }
 
   const notifData = {
     type: isCall ? 'incoming_call' : 'message',
     chatId: params.chatId || null,
     conversationId: params.chatId || null,
+    threadId: params.chatId || null,
     messageId: params.messageId || null,
+    messageCount,
     callId: params.callId || null,
     callType: params.callType || null,
   };
@@ -768,8 +939,8 @@ export async function showBackgroundSystemNotification(params: {
   try {
     const reg = await getOrRegisterOSAServiceWorker();
     if (reg && reg.showNotification) {
-      await reg.showNotification(cleanTitle || 'OSA', {
-        body: cleanBody || 'New message',
+      await reg.showNotification(displayTitle, {
+        body: displayBody,
         icon: `${baseUrl}pwa-192x192.png`,
         badge: `${baseUrl}pwa-192x192.png`,
         tag,
@@ -792,8 +963,8 @@ export async function showBackgroundSystemNotification(params: {
   }
 
   try {
-    const n = new Notification(cleanTitle || 'OSA', {
-      body: cleanBody || 'You have a new message',
+    const n = new Notification(displayTitle, {
+      body: displayBody,
       icon: `${baseUrl}pwa-192x192.png`,
       tag,
       requireInteraction: isCall,

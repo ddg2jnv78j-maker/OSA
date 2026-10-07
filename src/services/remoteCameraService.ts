@@ -6,13 +6,26 @@ import { checkNativePermissions, saveStoredPermissionStatus } from './permission
 export const RCAM_SIG_PREFIX = '[OSA_RCAM_SIG]';
 
 export type RemoteCameraStatus =
+  | 'waiting_device'
   | 'requesting'
   | 'waiting_consent'
   | 'connecting'
   | 'streaming'
+  | 'authorization_required'
+  | 'camera_permission_required'
+  | 'camera_unavailable'
+  | 'webrtc_failed'
+  | 'timed_out'
   | 'declined'
   | 'ended'
   | 'failed';
+
+export type RemoteCameraErrorCode =
+  | 'authorization_required'
+  | 'camera_permission_required'
+  | 'camera_unavailable'
+  | 'webrtc_failed'
+  | 'timed_out';
 
 export interface RemoteCameraSignalPayload {
   sessionId: string;
@@ -21,6 +34,7 @@ export interface RemoteCameraSignalPayload {
   receiverId: string;
   type:
     | 'request'
+    | 'authorized'
     | 'waiting_consent'
     | 'offer'
     | 'answer'
@@ -32,20 +46,25 @@ export interface RemoteCameraSignalPayload {
   sdpType?: RTCSdpType;
   candidate?: RTCIceCandidateInit;
   facingMode?: 'user' | 'environment';
+  errorCode?: RemoteCameraErrorCode;
   reason?: string;
   timestamp: string;
 }
 
 /**
- * Completely separate WebRTC session manager for Remote Camera.
- * NEVER touches `public.calls`, NEVER triggers `incoming_call` notifications,
- * and NEVER opens the normal Video Call UI (`CallOverlay`).
+ * Completely dedicated WebRTC session manager for Remote Camera.
+ * - NEVER touches `public.calls`
+ * - NEVER creates call history
+ * - NEVER plays normal call ringtone
+ * - Uses dual signaling (Realtime Broadcast + Supabase notifications polling fallback)
+ * - Enforces strict permission and privacy checks (Camera permission = granted AND Allow Remote Camera Access = ON)
  */
 export class RemoteCameraSessionManager {
   private pc: RTCPeerConnection | null = null;
   private localCameraStream: MediaStream | null = null;
   private remoteVideoStream: MediaStream | null = null;
-  private channel: RealtimeChannel | null = null;
+  private sessionChannel: RealtimeChannel | null = null;
+  private peerInboxChannel: RealtimeChannel | null = null;
   private sessionId: string;
   private currentUserId: string;
   private currentUserName: string;
@@ -54,6 +73,9 @@ export class RemoteCameraSessionManager {
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private processedSignalKeys = new Set<string>();
   private timeoutTimer: number | null = null;
+  private pollTimer: number | null = null;
+  private isCleanedUp = false;
+  private sessionStartedAtIso: string;
 
   private onRemoteStream?: (stream: MediaStream | null) => void;
   private onStatusChange?: (status: RemoteCameraStatus, message?: string) => void;
@@ -72,6 +94,7 @@ export class RemoteCameraSessionManager {
     this.peerUserId = params.peerUserId;
     this.onRemoteStream = params.onRemoteStream;
     this.onStatusChange = params.onStatusChange;
+    this.sessionStartedAtIso = new Date(Date.now() - 5000).toISOString();
   }
 
   public getSessionId(): string {
@@ -82,37 +105,79 @@ export class RemoteCameraSessionManager {
    * Viewer (User A) starts a dedicated Remote Camera request to User B.
    */
   public async startViewerRequest(): Promise<void> {
-    this.onStatusChange?.('requesting', 'Requesting authorized Remote Camera access...');
-    this.setupRealtimeChannel();
+    this.isCleanedUp = false;
+    this.onStatusChange?.('waiting_device', 'Waiting for device...');
+
+    await this.ensureChannelsSubscribed();
+    this.startSignalPolling();
 
     await this.sendSignal({
       type: 'request',
       facingMode: this.facingMode,
     });
 
-    this.timeoutTimer = window.setTimeout(() => {
+    this.resetTimeout(16000, () => {
+      if (this.isCleanedUp) return;
       this.onStatusChange?.(
-        'failed',
-        'No response from remote device. Ensure the user is online in OSA and has granted Camera permission.'
+        'timed_out',
+        'Timed out waiting for remote device response. Ensure the user has OSA open and is online.'
       );
       this.cleanup();
-    }, 30000);
+    });
   }
 
   /**
-   * Streamer (User B) starts streaming their camera to User A (when authorized or consented).
+   * Streamer (User B) validates authorization & camera permissions, then streams camera to User A.
    */
   public async startCameraStreamer(
     initialFacing: 'user' | 'environment' = 'environment'
   ): Promise<void> {
+    this.isCleanedUp = false;
     try {
       this.facingMode = initialFacing;
-      this.setupRealtimeChannel();
+      await this.ensureChannelsSubscribed();
+      this.startSignalPolling();
 
+      // 1. Verify OSA Privacy -> Allow Remote Camera Access = ON and Camera Permission = granted
+      const perm = await checkNativePermissions(this.currentUserId);
+      if (!perm.allowRemoteCamera) {
+        await this.sendSignal({
+          type: 'decline',
+          errorCode: 'authorization_required',
+          reason:
+            'Authorization required: Allow Remote Camera Access is turned OFF in peer Privacy settings.',
+        });
+        this.cleanup();
+        return;
+      }
+
+      if (!perm.cameraEnabled || perm.camera === 'denied') {
+        await this.sendSignal({
+          type: 'decline',
+          errorCode: 'camera_permission_required',
+          reason:
+            'Camera permission required: Camera access is denied or disabled on the remote device.',
+        });
+        this.cleanup();
+        return;
+      }
+
+      // Notify viewer that authorization succeeded and camera is initializing
+      await this.sendSignal({
+        type: 'authorized',
+        facingMode: this.facingMode,
+      });
+
+      // 2. Acquire camera hardware stream
       const stream = await this.acquireCameraOnlyStream(this.facingMode);
+      if (this.isCleanedUp) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       this.localCameraStream = stream;
 
-      this.initPeerConnection();
+      // 3. Create RTCPeerConnection, attach video track, and send SDP Offer
+      this.initPeerConnection('streamer');
       stream.getTracks().forEach((track) => {
         this.pc!.addTrack(track, stream);
       });
@@ -130,30 +195,32 @@ export class RemoteCameraSessionManager {
         facingMode: this.facingMode,
       });
     } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : 'Remote device could not access camera hardware.';
+      const classified = this.classifyCameraError(err);
       await this.sendSignal({
         type: 'decline',
-        reason: msg,
+        errorCode: classified.errorCode,
+        reason: classified.message,
       });
       this.cleanup();
     }
   }
 
   public async notifyWaitingConsent(): Promise<void> {
-    this.setupRealtimeChannel();
+    await this.ensureChannelsSubscribed();
     await this.sendSignal({
       type: 'waiting_consent',
     });
   }
 
-  public async declineRequest(reason?: string): Promise<void> {
-    this.setupRealtimeChannel();
+  public async declineRequest(
+    reason?: string,
+    errorCode: RemoteCameraErrorCode = 'authorization_required'
+  ): Promise<void> {
+    await this.ensureChannelsSubscribed();
     await this.sendSignal({
       type: 'decline',
-      reason: reason || `${this.currentUserName} declined Remote Camera access.`,
+      errorCode,
+      reason: reason || 'Authorization required: Remote Camera access was not granted.',
     });
     this.cleanup();
   }
@@ -170,11 +237,65 @@ export class RemoteCameraSessionManager {
   }
 
   public async stopSession(): Promise<void> {
-    await this.sendSignal({
-      type: 'hangup',
-    });
-    this.onStatusChange?.('ended');
+    if (!this.isCleanedUp) {
+      await this.sendSignal({
+        type: 'hangup',
+      }).catch(() => {});
+    }
+    this.onStatusChange?.('ended', 'Remote Camera session ended.');
     this.cleanup();
+  }
+
+  private classifyCameraError(err: unknown): {
+    errorCode: RemoteCameraErrorCode;
+    message: string;
+  } {
+    if (err && typeof err === 'object' && 'errorCode' in err) {
+      const custom = err as { errorCode: RemoteCameraErrorCode; message: string };
+      return {
+        errorCode: custom.errorCode,
+        message: custom.message,
+      };
+    }
+
+    if (err instanceof DOMException) {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        return {
+          errorCode: 'camera_permission_required',
+          message: 'Camera permission required on the remote device.',
+        };
+      }
+      if (
+        err.name === 'NotFoundError' ||
+        err.name === 'DevicesNotFoundError' ||
+        err.name === 'NotReadableError' ||
+        err.name === 'TrackStartError'
+      ) {
+        return {
+          errorCode: 'camera_unavailable',
+          message: 'Device camera unavailable or currently in use by another application.',
+        };
+      }
+    }
+
+    const msg =
+      err instanceof Error ? err.message : 'Device camera unavailable on the remote device.';
+    if (msg.toLowerCase().includes('permission')) {
+      return {
+        errorCode: 'camera_permission_required',
+        message: msg,
+      };
+    }
+    if (msg.toLowerCase().includes('authorization') || msg.toLowerCase().includes('disabled')) {
+      return {
+        errorCode: 'authorization_required',
+        message: msg,
+      };
+    }
+    return {
+      errorCode: 'camera_unavailable',
+      message: msg,
+    };
   }
 
   private async flipStreamerCamera(targetFacing?: 'user' | 'environment'): Promise<void> {
@@ -207,17 +328,24 @@ export class RemoteCameraSessionManager {
     facing: 'user' | 'environment'
   ): Promise<MediaStream> {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('Camera access is not supported on the remote browser/device.');
+      throw {
+        errorCode: 'camera_unavailable' as RemoteCameraErrorCode,
+        message: 'Device camera unavailable on this browser/OS.',
+      };
     }
 
     const perm = await checkNativePermissions(this.currentUserId);
-    if (!perm.allowRemoteCamera || !perm.cameraEnabled) {
-      throw new Error('Remote Camera access is disabled in the peer device settings.');
+    if (!perm.allowRemoteCamera) {
+      throw {
+        errorCode: 'authorization_required' as RemoteCameraErrorCode,
+        message: 'Authorization required: Allow Remote Camera Access is disabled.',
+      };
     }
-    if (perm.camera !== 'granted') {
-      throw new Error(
-        'Camera permission is not granted on the remote device. The user can enable Camera in Settings → Privacy / Permissions.'
-      );
+    if (!perm.cameraEnabled || perm.camera === 'denied') {
+      throw {
+        errorCode: 'camera_permission_required' as RemoteCameraErrorCode,
+        message: 'Camera permission required on the remote device.',
+      };
     }
 
     try {
@@ -231,28 +359,69 @@ export class RemoteCameraSessionManager {
       });
       saveStoredPermissionStatus({ camera: 'granted' }, this.currentUserId);
       return stream;
-    } catch {
-      // Fallback to any available video device
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: true,
-      });
-      saveStoredPermissionStatus({ camera: 'granted' }, this.currentUserId);
-      return stream;
+    } catch (firstErr) {
+      if (
+        firstErr instanceof DOMException &&
+        (firstErr.name === 'NotAllowedError' || firstErr.name === 'PermissionDeniedError')
+      ) {
+        saveStoredPermissionStatus({ camera: 'denied' }, this.currentUserId);
+        throw {
+          errorCode: 'camera_permission_required' as RemoteCameraErrorCode,
+          message: 'Camera permission required on the remote device.',
+        };
+      }
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: true,
+        });
+        saveStoredPermissionStatus({ camera: 'granted' }, this.currentUserId);
+        return fallbackStream;
+      } catch (secondErr) {
+        throw this.classifyCameraError(secondErr);
+      }
     }
   }
 
-  private initPeerConnection(): void {
+  private initPeerConnection(role: 'viewer' | 'streamer'): void {
     if (this.pc) {
-      this.pc.close();
+      try {
+        this.pc.ontrack = null;
+        this.pc.onicecandidate = null;
+        this.pc.onconnectionstatechange = null;
+        this.pc.oniceconnectionstatechange = null;
+        this.pc.close();
+      } catch {
+        // Ignore
+      }
     }
+
     const pc = new RTCPeerConnection({
       iceServers: getIceServers(),
     });
 
+    if (role === 'viewer') {
+      try {
+        pc.addTransceiver('video', { direction: 'recvonly' });
+      } catch {
+        // Ignore if browser creates transceiver via setRemoteDescription
+      }
+    }
+
     this.remoteVideoStream = new MediaStream();
 
+    const emitLiveStream = () => {
+      if (!this.remoteVideoStream || this.isCleanedUp) return;
+      const tracks = this.remoteVideoStream.getTracks();
+      if (tracks.length === 0) return;
+      this.clearTimeoutTimer();
+      const freshStream = new MediaStream(tracks);
+      this.onRemoteStream?.(freshStream);
+      this.onStatusChange?.('streaming', 'Live Remote Camera stream connected.');
+    };
+
     pc.ontrack = (event) => {
+      if (this.isCleanedUp) return;
       if (!this.remoteVideoStream) {
         this.remoteVideoStream = new MediaStream();
       }
@@ -269,14 +438,14 @@ export class RemoteCameraSessionManager {
       ) {
         this.remoteVideoStream.addTrack(event.track);
       }
-      // Always emit a new MediaStream instance so React state updates reliably
-      const freshStream = new MediaStream(this.remoteVideoStream.getTracks());
-      this.onRemoteStream?.(freshStream);
-      this.onStatusChange?.('streaming');
+      if (event.track) {
+        event.track.onunmute = () => emitLiveStream();
+      }
+      emitLiveStream();
     };
 
     pc.onicecandidate = async (event) => {
-      if (event.candidate) {
+      if (event.candidate && !this.isCleanedUp) {
         await this.sendSignal({
           type: 'ice-candidate',
           candidate: event.candidate.toJSON(),
@@ -284,38 +453,122 @@ export class RemoteCameraSessionManager {
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      if (!this.pc || this.isCleanedUp) return;
+      const state = this.pc.iceConnectionState;
+      if (state === 'connected' || state === 'completed') {
+        this.clearTimeoutTimer();
+        emitLiveStream();
+      } else if (state === 'failed') {
+        this.onStatusChange?.(
+          'webrtc_failed',
+          'WebRTC connection failed while negotiating video stream.'
+        );
+        this.cleanup();
+      }
+    };
+
     pc.onconnectionstatechange = () => {
-      if (!this.pc) return;
+      if (!this.pc || this.isCleanedUp) return;
       if (this.pc.connectionState === 'connected') {
-        if (this.timeoutTimer) {
-          clearTimeout(this.timeoutTimer);
-          this.timeoutTimer = null;
-        }
-        this.onStatusChange?.('streaming');
-      } else if (
-        this.pc.connectionState === 'failed' ||
-        this.pc.connectionState === 'disconnected'
-      ) {
-        this.onStatusChange?.('failed', 'Remote Camera stream disconnected.');
+        this.clearTimeoutTimer();
+        emitLiveStream();
+      } else if (this.pc.connectionState === 'failed') {
+        this.onStatusChange?.(
+          'webrtc_failed',
+          'WebRTC connection failed. Unable to establish peer media transport.'
+        );
+        this.cleanup();
       }
     };
 
     this.pc = pc;
   }
 
-  private setupRealtimeChannel(): void {
-    if (this.channel) return;
-    this.channel = supabase
-      .channel(`osa-rcam-session-${this.sessionId}`)
-      .on('broadcast', { event: 'rcam_signal' }, async ({ payload }) => {
-        if (!payload) return;
-        await this.handleIncomingSignal(payload as RemoteCameraSignalPayload);
-      })
-      .subscribe();
+  private async ensureChannelsSubscribed(): Promise<void> {
+    const promises: Promise<void>[] = [];
+
+    if (!this.sessionChannel) {
+      const ch = supabase
+        .channel(`osa-rcam-session-${this.sessionId}`)
+        .on('broadcast', { event: 'rcam_signal' }, async ({ payload }) => {
+          if (!payload || this.isCleanedUp) return;
+          await this.handleIncomingSignal(payload as RemoteCameraSignalPayload);
+        });
+      this.sessionChannel = ch;
+      promises.push(
+        new Promise<void>((resolve) => {
+          const timeout = window.setTimeout(() => resolve(), 2000);
+          ch.subscribe((status) => {
+            if (status === 'SUBSCRIBED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+              clearTimeout(timeout);
+              resolve();
+            }
+          });
+        })
+      );
+    }
+
+    if (!this.peerInboxChannel) {
+      const inbox = supabase.channel(`osa-rcam-user-${this.peerUserId}`);
+      this.peerInboxChannel = inbox;
+      promises.push(
+        new Promise<void>((resolve) => {
+          const timeout = window.setTimeout(() => resolve(), 2000);
+          inbox.subscribe((status) => {
+            if (status === 'SUBSCRIBED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+              clearTimeout(timeout);
+              resolve();
+            }
+          });
+        })
+      );
+    }
+
+    if (promises.length > 0) {
+      await Promise.all(promises);
+    }
+  }
+
+  private startSignalPolling(): void {
+    if (this.pollTimer) return;
+    this.pollTimer = window.setInterval(async () => {
+      if (this.isCleanedUp) return;
+      try {
+        const { data } = await supabase
+          .from('notifications')
+          .select('id, body, created_at')
+          .eq('user_id', this.currentUserId)
+          .gt('created_at', this.sessionStartedAtIso)
+          .order('created_at', { ascending: true })
+          .limit(30);
+
+        for (const row of data || []) {
+          if (!row.body || !row.body.startsWith(RCAM_SIG_PREFIX)) continue;
+          try {
+            const sig = JSON.parse(
+              row.body.slice(RCAM_SIG_PREFIX.length)
+            ) as RemoteCameraSignalPayload;
+            if (sig.sessionId === this.sessionId) {
+              await this.handleIncomingSignal(sig);
+            }
+          } catch {
+            // Ignore malformed signal
+          }
+        }
+      } catch {
+        // Ignore transient polling errors
+      }
+    }, 1500);
   }
 
   public async handleIncomingSignal(sig: RemoteCameraSignalPayload): Promise<void> {
-    if (!sig || sig.senderId === this.currentUserId || sig.sessionId !== this.sessionId) {
+    if (
+      this.isCleanedUp ||
+      !sig ||
+      sig.senderId === this.currentUserId ||
+      sig.sessionId !== this.sessionId
+    ) {
       return;
     }
 
@@ -325,21 +578,38 @@ export class RemoteCameraSessionManager {
 
     try {
       switch (sig.type) {
+        case 'authorized': {
+          this.onStatusChange?.('connecting', 'Connecting to remote camera...');
+          this.resetTimeout(15000, () => {
+            if (this.isCleanedUp) return;
+            this.onStatusChange?.(
+              'webrtc_failed',
+              'WebRTC connection failed: Timed out waiting for video offer.'
+            );
+            this.cleanup();
+          });
+          break;
+        }
         case 'waiting_consent': {
           this.onStatusChange?.(
             'waiting_consent',
-            `Waiting for ${sig.senderName} to approve Remote Camera access...`
+            `Authorization required: Waiting for ${sig.senderName} to approve...`
           );
           break;
         }
         case 'offer': {
           if (!sig.sdp) break;
-          if (this.timeoutTimer) {
-            clearTimeout(this.timeoutTimer);
-            this.timeoutTimer = null;
-          }
           this.onStatusChange?.('connecting', 'Connecting live Remote Camera stream...');
-          this.initPeerConnection();
+          this.resetTimeout(15000, () => {
+            if (this.isCleanedUp) return;
+            this.onStatusChange?.(
+              'webrtc_failed',
+              'WebRTC connection failed: Media stream could not be established.'
+            );
+            this.cleanup();
+          });
+
+          this.initPeerConnection('viewer');
 
           await this.pc!.setRemoteDescription(
             new RTCSessionDescription({
@@ -403,25 +673,35 @@ export class RemoteCameraSessionManager {
           break;
         }
         case 'decline': {
-          if (this.timeoutTimer) {
-            clearTimeout(this.timeoutTimer);
-            this.timeoutTimer = null;
-          }
+          this.clearTimeoutTimer();
+          const mappedStatus: RemoteCameraStatus =
+            sig.errorCode === 'authorization_required'
+              ? 'authorization_required'
+              : sig.errorCode === 'camera_permission_required'
+              ? 'camera_permission_required'
+              : sig.errorCode === 'camera_unavailable'
+              ? 'camera_unavailable'
+              : sig.errorCode === 'webrtc_failed'
+              ? 'webrtc_failed'
+              : 'authorization_required';
+
           this.onStatusChange?.(
-            'declined',
-            sig.reason || `${sig.senderName} declined Remote Camera access.`
+            mappedStatus,
+            sig.reason || 'Authorization required: Remote Camera access is disabled.'
           );
           this.cleanup();
           break;
         }
         case 'hangup': {
+          this.clearTimeoutTimer();
           this.onStatusChange?.('ended', 'Remote Camera session ended.');
           this.cleanup();
           break;
         }
       }
-    } catch (err) {
-      console.error('RemoteCamera signal error:', err);
+    } catch {
+      this.onStatusChange?.('webrtc_failed', 'WebRTC connection failed.');
+      this.cleanup();
     }
   }
 
@@ -440,7 +720,33 @@ export class RemoteCameraSessionManager {
       ...partial,
     };
 
-    // 1. Send via dedicated system notification (filtered out of normal notification list & never touches `calls`)
+    // 1. Broadcast to peer's dedicated Remote Camera user inbox channel (instant delivery)
+    if (this.peerInboxChannel) {
+      try {
+        await this.peerInboxChannel.send({
+          type: 'broadcast',
+          event: 'rcam_signal',
+          payload: fullPayload,
+        });
+      } catch {
+        // Ignore
+      }
+    }
+
+    // 2. Broadcast on session-specific channel
+    if (this.sessionChannel) {
+      try {
+        await this.sessionChannel.send({
+          type: 'broadcast',
+          event: 'rcam_signal',
+          payload: fullPayload,
+        });
+      } catch {
+        // Ignore
+      }
+    }
+
+    // 3. Persist in dedicated system notification row (filtered from UI & push, used for reliable polling fallback)
     try {
       await createNotification({
         userId: this.peerUserId,
@@ -450,41 +756,81 @@ export class RemoteCameraSessionManager {
         body: `${RCAM_SIG_PREFIX}${JSON.stringify(fullPayload)}`,
       });
     } catch {
-      // Ignore notification table error if broadcast succeeds
-    }
-
-    // 2. Also broadcast via Realtime channel for low-latency delivery
-    if (this.channel) {
-      try {
-        await this.channel.send({
-          type: 'broadcast',
-          event: 'rcam_signal',
-          payload: fullPayload,
-        });
-      } catch {
-        // Ignore
-      }
+      // Ignore if notification insert fails
     }
   }
 
-  public cleanup(): void {
+  private resetTimeout(ms: number, onExpire: () => void): void {
+    this.clearTimeoutTimer();
+    this.timeoutTimer = window.setTimeout(onExpire, ms);
+  }
+
+  private clearTimeoutTimer(): void {
     if (this.timeoutTimer) {
       clearTimeout(this.timeoutTimer);
       this.timeoutTimer = null;
     }
-    if (this.channel) {
-      supabase.removeChannel(this.channel);
-      this.channel = null;
+  }
+
+  /**
+   * Complete cleanup of tracks, RTCPeerConnection, channels, timers, and session state.
+   */
+  public cleanup(): void {
+    this.isCleanedUp = true;
+    this.clearTimeoutTimer();
+
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
+
+    if (this.sessionChannel) {
+      supabase.removeChannel(this.sessionChannel);
+      this.sessionChannel = null;
+    }
+
+    if (this.peerInboxChannel) {
+      supabase.removeChannel(this.peerInboxChannel);
+      this.peerInboxChannel = null;
+    }
+
     if (this.localCameraStream) {
-      this.localCameraStream.getTracks().forEach((t) => t.stop());
+      this.localCameraStream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+          // Ignore
+        }
+      });
       this.localCameraStream = null;
     }
+
+    if (this.remoteVideoStream) {
+      this.remoteVideoStream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+          // Ignore
+        }
+      });
+      this.remoteVideoStream = null;
+    }
+
     if (this.pc) {
-      this.pc.close();
+      try {
+        this.pc.ontrack = null;
+        this.pc.onicecandidate = null;
+        this.pc.onconnectionstatechange = null;
+        this.pc.oniceconnectionstatechange = null;
+        this.pc.close();
+      } catch {
+        // Ignore
+      }
       this.pc = null;
     }
-    this.remoteVideoStream = null;
+
+    this.pendingCandidates = [];
+    this.processedSignalKeys.clear();
     this.onRemoteStream?.(null);
   }
 }

@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
+  CameraOff,
   Download,
   Eye,
   Loader2,
   RefreshCw,
   ShieldAlert,
+  WifiOff,
   X,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -31,10 +33,8 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
   peerUser,
   onClose,
 }) => {
-  const [status, setStatus] = useState<RemoteCameraStatus>('requesting');
-  const [statusMessage, setStatusMessage] = useState(
-    'Requesting authorized Remote Camera access...'
-  );
+  const [status, setStatus] = useState<RemoteCameraStatus>('waiting_device');
+  const [statusMessage, setStatusMessage] = useState('Waiting for device...');
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [snapshotFlash, setSnapshotFlash] = useState(false);
 
@@ -48,8 +48,8 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
     }
 
     setRemoteStream(null);
-    setStatus('requesting');
-    setStatusMessage(`Connecting to ${peerUser.full_name}'s Remote Camera...`);
+    setStatus('waiting_device');
+    setStatusMessage('Waiting for device...');
 
     const sessionId = `rcam_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const manager = new RemoteCameraSessionManager({
@@ -67,12 +67,29 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
     });
 
     managerRef.current = manager;
-    manager.startViewerRequest();
+    manager.startViewerRequest().catch(() => {
+      setStatus('webrtc_failed');
+      setStatusMessage('WebRTC connection failed.');
+    });
   };
 
   useEffect(() => {
     if (!isOpen) return;
     startSession();
+
+    const userInboxChannel = supabase
+      .channel(`osa-rcam-user-${currentUser.id}`)
+      .on('broadcast', { event: 'rcam_signal' }, ({ payload }) => {
+        const sig = payload as RemoteCameraSignalPayload | undefined;
+        if (
+          sig &&
+          managerRef.current &&
+          sig.sessionId === managerRef.current.getSessionId()
+        ) {
+          managerRef.current.handleIncomingSignal(sig);
+        }
+      })
+      .subscribe();
 
     const dbChannel = supabase
       .channel(`osa-rcam-db-rx-${currentUser.id}`)
@@ -105,9 +122,10 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
       .subscribe();
 
     return () => {
+      supabase.removeChannel(userInboxChannel);
       supabase.removeChannel(dbChannel);
       if (managerRef.current) {
-        managerRef.current.stopSession();
+        managerRef.current.stopSession().catch(() => {});
         managerRef.current = null;
       }
     };
@@ -118,6 +136,7 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
     if (!videoEl) return;
     if (remoteStream) {
       videoEl.srcObject = remoteStream;
+      videoEl.muted = true;
       videoEl.play().catch(() => {});
     } else {
       videoEl.srcObject = null;
@@ -128,7 +147,7 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
 
   const handleClose = async () => {
     if (managerRef.current) {
-      await managerRef.current.stopSession();
+      await managerRef.current.stopSession().catch(() => {});
       managerRef.current = null;
     }
     onClose();
@@ -158,6 +177,45 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
   };
 
   const isStreaming = status === 'streaming' && Boolean(remoteStream);
+  const isConnectingPhase =
+    status === 'waiting_device' ||
+    status === 'requesting' ||
+    status === 'waiting_consent' ||
+    status === 'connecting';
+
+  const getTerminalHeading = (): string => {
+    switch (status) {
+      case 'authorization_required':
+      case 'declined':
+        return 'Authorization required';
+      case 'camera_permission_required':
+        return 'Camera permission required';
+      case 'camera_unavailable':
+        return 'Device camera unavailable';
+      case 'webrtc_failed':
+      case 'failed':
+        return 'WebRTC connection failed';
+      case 'timed_out':
+        return 'Timed out';
+      case 'ended':
+        return 'Remote Camera Session Ended';
+      default:
+        return 'Waiting for device...';
+    }
+  };
+
+  const renderTerminalIcon = () => {
+    if (status === 'authorization_required' || status === 'declined') {
+      return <ShieldAlert className="w-6 h-6" />;
+    }
+    if (status === 'camera_permission_required' || status === 'camera_unavailable') {
+      return <CameraOff className="w-6 h-6" />;
+    }
+    if (status === 'webrtc_failed' || status === 'timed_out') {
+      return <WifiOff className="w-6 h-6" />;
+    }
+    return <AlertCircle className="w-6 h-6" />;
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-4 overflow-hidden">
@@ -204,14 +262,13 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
             ref={videoRef}
             autoPlay
             playsInline
+            muted
             className={`w-full h-full object-contain ${isStreaming ? 'block' : 'hidden'}`}
           />
 
           {!isStreaming && (
             <div className="p-6 flex flex-col items-center justify-center text-center space-y-3 max-w-sm">
-              {(status === 'requesting' ||
-                status === 'waiting_consent' ||
-                status === 'connecting') && (
+              {isConnectingPhase ? (
                 <>
                   <div className="relative">
                     <OSAAvatar
@@ -223,31 +280,25 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
                       <Loader2 className="w-4 h-4 animate-spin" />
                     </span>
                   </div>
-                  <p className="text-sm font-bold text-white">{statusMessage}</p>
+                  <p className="text-sm font-bold text-white">
+                    {status === 'waiting_device' || status === 'requesting'
+                      ? 'Waiting for device...'
+                      : statusMessage}
+                  </p>
                   <p className="text-xs text-slate-400">
                     {status === 'waiting_consent'
-                      ? `${peerUser.full_name} has manual Remote Camera confirmation enabled. Waiting for them to tap Allow...`
-                      : 'Establishing dedicated WebRTC camera stream (separate from voice/video calls).'}
+                      ? `Authorization required on ${peerUser.full_name}'s device.`
+                      : status === 'connecting'
+                      ? 'Authorized. Negotiating dedicated WebRTC camera stream...'
+                      : `Contacting ${peerUser.full_name}'s OSA session...`}
                   </p>
                 </>
-              )}
-
-              {(status === 'declined' || status === 'failed' || status === 'ended') && (
+              ) : (
                 <>
                   <div className="w-12 h-12 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-400 flex items-center justify-center">
-                    {status === 'declined' ? (
-                      <ShieldAlert className="w-6 h-6" />
-                    ) : (
-                      <AlertCircle className="w-6 h-6" />
-                    )}
+                    {renderTerminalIcon()}
                   </div>
-                  <p className="text-sm font-bold text-white">
-                    {status === 'declined'
-                      ? 'Remote Camera Not Authorized'
-                      : status === 'ended'
-                      ? 'Remote Camera Session Ended'
-                      : 'Remote Camera Unavailable'}
-                  </p>
+                  <p className="text-sm font-bold text-white">{getTerminalHeading()}</p>
                   <p className="text-xs text-slate-400">{statusMessage}</p>
                   <button
                     type="button"

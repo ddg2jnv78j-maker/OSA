@@ -379,6 +379,7 @@ interface PushRequestBody {
     | 'new_message'
     | 'group_message'
     | 'incoming_call'
+    | 'cancel_call'
     | 'missed_call'
     | 'status_update'
     | 'system'
@@ -391,10 +392,12 @@ interface PushRequestBody {
   conversationId?: string | null;
   messageId?: string | null;
   messageType?: string | null;
+  messageCount?: number | null;
   callId?: string | null;
   callType?: 'audio' | 'video' | null;
   callerId?: string | null;
   callerName?: string | null;
+  callerAvatar?: string | null;
   rejectToken?: string | null;
   tag?: string;
   url?: string;
@@ -603,13 +606,17 @@ Deno.serve(async (req: Request) => {
     const isMessagePush =
       rawType === 'message' || rawType === 'new_message' || rawType === 'group_message';
     const isIncomingCall = rawType === 'incoming_call';
+    const isCancelCall = rawType === 'cancel_call';
 
-    // Deduplicate by messageId or callId so we never send two push notifications for the same event
+    // Deduplicate by messageId or callId so we never send two push notifications for the same event,
+    // while keeping different callIds completely separate.
     const dedupKey =
-      isMessagePush && body.messageId
+      isMessagePush && body.messageId && (!body.messageCount || body.messageCount <= 1)
         ? `msg:${body.messageId}`
         : isIncomingCall && body.callId
         ? `call:${body.callId}:incoming`
+        : isCancelCall && body.callId
+        ? `call:${body.callId}:cancel`
         : null;
 
     if (dedupKey) {
@@ -624,7 +631,6 @@ Deno.serve(async (req: Request) => {
           .from('push_delivery_log')
           .insert({ event_key: dedupKey });
         if (logErr) {
-          // Unique constraint violation -> already delivered
           return new Response(
             JSON.stringify({ sent: 0, skipped: true, deduplicated: true, eventKey: dedupKey }),
             { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -635,21 +641,27 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Look up sender profile name if not provided
+    // Look up sender profile name & avatar
     let senderDisplayName = (body.senderName || body.callerName || '').trim();
+    let senderAvatarUrl = (body.callerAvatar || '').trim() || null;
+    const { data: senderProfile } = await adminClient
+      .from('profiles')
+      .select('full_name, avatar_url')
+      .eq('id', senderUserId)
+      .maybeSingle();
+
     if (!senderDisplayName) {
-      const { data: senderProfile } = await adminClient
-        .from('profiles')
-        .select('full_name')
-        .eq('id', senderUserId)
-        .maybeSingle();
       senderDisplayName = (senderProfile?.full_name || '').trim() || 'OSA User';
     }
+    if (!senderAvatarUrl && senderProfile?.avatar_url) {
+      senderAvatarUrl = String(senderProfile.avatar_url);
+    }
 
-    // Resolve recipients: if recipientIds was not supplied on a chat message, look up all chat_members on the server
+    // Resolve recipients & per-recipient unread counts from chat_members
     let rawRecipients = Array.isArray(body.recipientIds) ? body.recipientIds : [];
     let isGroupConversation = rawType === 'group_message';
     let groupTitle = '';
+    const unreadCountByUser = new Map<string, number>();
 
     if (resolvedChatId && (rawRecipients.length === 0 || isMessagePush)) {
       const [{ data: chatRow }, { data: memberRows }] = await Promise.all([
@@ -660,7 +672,7 @@ Deno.serve(async (req: Request) => {
           .maybeSingle(),
         adminClient
           .from('chat_members')
-          .select('user_id, is_muted')
+          .select('user_id, is_muted, unread_count')
           .eq('chat_id', resolvedChatId)
           .neq('user_id', senderUserId),
       ]);
@@ -675,6 +687,12 @@ Deno.serve(async (req: Request) => {
             .maybeSingle();
           groupTitle = (grp?.name || '').trim();
         }
+      }
+
+      for (const m of memberRows || []) {
+        const uid = String(m.user_id);
+        const dbUnread = Number(m.unread_count || 1);
+        unreadCountByUser.set(uid, Math.max(1, body.messageCount || dbUnread));
       }
 
       if (rawRecipients.length === 0 && memberRows) {
@@ -739,7 +757,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // 3. Check per-user notification settings (foreground active-chat check is performed on-device in service-worker.js)
+    // 3. Check per-user notification settings
     const { data: userSettingsRows } = await adminClient
       .from('user_notification_settings')
       .select('*')
@@ -752,7 +770,7 @@ Deno.serve(async (req: Request) => {
 
     allowedIds = allowedIds.filter((uid) => {
       const s = settingsMap.get(uid);
-      if (!s) return true; // Default is enabled
+      if (!s) return true;
       if (s.push_enabled === false) return false;
       if (isMessagePush && !isGroupConversation && s.message_notifications === false) {
         return false;
@@ -761,7 +779,7 @@ Deno.serve(async (req: Request) => {
         return false;
       }
       if (
-        (isIncomingCall || rawType === 'missed_call') &&
+        (isIncomingCall || isCancelCall || rawType === 'missed_call') &&
         s.call_notifications === false
       ) {
         return false;
@@ -786,19 +804,28 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // 4. Query all active push subscriptions across all devices for allowed recipients
-    const { data: rawSubscriptions, error: subError } = await adminClient
-      .from('push_subscriptions')
-      .select('*')
-      .in('user_id', allowedIds);
+    // 4. Query both Web Push subscriptions and Native Mobile Devices (Android FCM & iOS APNs/VoIP)
+    const [{ data: rawSubscriptions }, { data: rawNativeDevices }] = await Promise.all([
+      adminClient.from('push_subscriptions').select('*').in('user_id', allowedIds),
+      adminClient
+        .from('user_devices')
+        .select('*')
+        .in('user_id', allowedIds)
+        .eq('is_active', true),
+    ]);
 
     const subscriptions = (rawSubscriptions || []).filter(
       (sub) => sub.is_active !== false
     );
+    const nativeDevices = rawNativeDevices || [];
 
-    if (subError || subscriptions.length === 0) {
+    if (subscriptions.length === 0 && nativeDevices.length === 0) {
       return new Response(
-        JSON.stringify({ sent: 0, skipped: true, reason: 'No active push subscriptions found' }),
+        JSON.stringify({
+          sent: 0,
+          skipped: true,
+          reason: 'No active Web Push subscriptions or native devices found',
+        }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -817,105 +844,134 @@ Deno.serve(async (req: Request) => {
         ? 'video'
         : 'audio';
 
-    const notificationTitle = isIncomingCall
-      ? resolvedCallType === 'video'
-        ? 'Incoming video call'
-        : 'Incoming audio call'
-      : rawTitleText ||
-        (isGroupConversation && groupTitle
-          ? `${senderDisplayName} in ${groupTitle}`
-          : senderDisplayName);
+    const senderHeader =
+      isGroupConversation && groupTitle
+        ? `${senderDisplayName} (${groupTitle})`
+        : senderDisplayName;
 
-    const notificationBody = isIncomingCall
-      ? `${senderDisplayName} is calling you`
-      : isMessagePush
-      ? formatMediaPreviewBody(body.messageType, rawBodyText)
-      : rawBodyText || 'New message';
+    const previewLine = formatMediaPreviewBody(body.messageType, rawBodyText);
 
-    const notificationTag =
-      body.tag ||
-      (isIncomingCall
-        ? `osa-call-${body.callId || Date.now()}`
-        : body.messageId
-        ? `osa-msg-${body.messageId}`
-        : resolvedChatId
-        ? `osa-chat-${resolvedChatId}`
-        : 'osa-notification');
+    const buildUserMessageTitleAndBody = (recipientId: string) => {
+      const count = Math.max(
+        1,
+        Number(body.messageCount || unreadCountByUser.get(recipientId) || 1)
+      );
+      if (count >= 2) {
+        return {
+          title: 'OSA',
+          body: `${senderHeader}\n${count} new messages`,
+          messageCount: count,
+        };
+      }
+      return {
+        title: 'OSA',
+        body: `${senderHeader}\n${previewLine}`,
+        messageCount: 1,
+      };
+    };
+
+    const callNotificationTitle =
+      resolvedCallType === 'video' ? 'Incoming video call' : 'Incoming audio call';
+    const callNotificationBody = `${senderDisplayName} is calling you`;
 
     let sentCount = 0;
+    let nativeSentCount = 0;
     let cleanedCount = 0;
 
+    // 6. Deliver Web Push to all active browser/PWA subscriptions
     await Promise.all(
       subscriptions.map(async (sub) => {
         try {
+          const recipientUid = String(sub.user_id);
           let rejectToken: string | null = null;
-          if (isIncomingCall && body.callId) {
+          if ((isIncomingCall || isCancelCall) && body.callId) {
             rejectToken = await createCallRejectToken(
               body.callId,
-              String(sub.user_id),
+              recipientUid,
               senderUserId,
               vapidConfig.privateKey
             );
           }
 
-          const payloadType = isIncomingCall
+          const msgFormatted = buildUserMessageTitleAndBody(recipientUid);
+          const notificationTag =
+            body.tag ||
+            (isIncomingCall || isCancelCall
+              ? `osa-call-${body.callId || Date.now()}`
+              : resolvedChatId
+              ? `osa-chat-${resolvedChatId}`
+              : body.messageId
+              ? `osa-msg-${body.messageId}`
+              : 'osa-notification');
+
+          const payloadType = isCancelCall
+            ? 'cancel_call'
+            : isIncomingCall
             ? 'incoming_call'
             : isMessagePush
             ? 'message'
             : rawType;
 
-          const pushPayloadObj = isIncomingCall
-            ? {
-                type: 'incoming_call',
-                callType: resolvedCallType,
-                callId: body.callId || null,
-                callerId: senderUserId,
-                callerName: senderDisplayName,
-                title: notificationTitle,
-                body: notificationBody,
-                icon: `${baseAppUrl}pwa-192x192.png`,
-                badge: `${baseAppUrl}pwa-192x192.png`,
-                tag: notificationTag,
-                renotify: true,
-                requireInteraction: true,
-                data: {
-                  type: 'incoming_call',
+          const pushPayloadObj =
+            isIncomingCall || isCancelCall
+              ? {
+                  type: payloadType,
                   callType: resolvedCallType,
                   callId: body.callId || null,
                   callerId: senderUserId,
                   callerName: senderDisplayName,
-                  chatId: resolvedChatId,
-                  conversationId: resolvedChatId,
-                  rejectToken,
-                  rejectEndpoint: `${supabaseUrl}/functions/v1/send-web-push`,
-                  anonKey: supabaseAnonKey,
-                  url: targetUrl,
-                },
-              }
-            : {
-                type: payloadType,
-                conversationId: resolvedChatId,
-                chatId: resolvedChatId,
-                senderId: senderUserId,
-                senderName: senderDisplayName,
-                messageId: body.messageId || null,
-                title: notificationTitle,
-                body: notificationBody,
-                icon: `${baseAppUrl}pwa-192x192.png`,
-                badge: `${baseAppUrl}pwa-192x192.png`,
-                tag: notificationTag,
-                renotify: true,
-                requireInteraction: false,
-                data: {
+                  callerAvatar: senderAvatarUrl,
+                  title: callNotificationTitle,
+                  body: callNotificationBody,
+                  icon: senderAvatarUrl || `${baseAppUrl}pwa-192x192.png`,
+                  badge: `${baseAppUrl}pwa-192x192.png`,
+                  tag: notificationTag,
+                  renotify: true,
+                  requireInteraction: isIncomingCall,
+                  data: {
+                    type: payloadType,
+                    callType: resolvedCallType,
+                    callId: body.callId || null,
+                    callerId: senderUserId,
+                    callerName: senderDisplayName,
+                    callerAvatar: senderAvatarUrl,
+                    chatId: resolvedChatId,
+                    conversationId: resolvedChatId,
+                    rejectToken,
+                    rejectEndpoint: `${supabaseUrl}/functions/v1/send-web-push`,
+                    anonKey: supabaseAnonKey,
+                    url: targetUrl,
+                  },
+                }
+              : {
                   type: payloadType,
                   conversationId: resolvedChatId,
                   chatId: resolvedChatId,
                   senderId: senderUserId,
-                  senderName: senderDisplayName,
+                  senderName: senderHeader,
                   messageId: body.messageId || null,
-                  url: targetUrl,
-                },
-              };
+                  messageCount: msgFormatted.messageCount,
+                  latestPreview: previewLine,
+                  title: msgFormatted.title,
+                  body: msgFormatted.body,
+                  icon: senderAvatarUrl || `${baseAppUrl}pwa-192x192.png`,
+                  badge: `${baseAppUrl}pwa-192x192.png`,
+                  tag: notificationTag,
+                  renotify: true,
+                  requireInteraction: false,
+                  data: {
+                    type: payloadType,
+                    conversationId: resolvedChatId,
+                    chatId: resolvedChatId,
+                    threadId: resolvedChatId,
+                    senderId: senderUserId,
+                    senderName: senderHeader,
+                    messageId: body.messageId || null,
+                    messageCount: msgFormatted.messageCount,
+                    latestPreview: previewLine,
+                    url: targetUrl,
+                  },
+                };
 
           const encryptedBody = await encryptWebPushPayload(
             JSON.stringify(pushPayloadObj),
@@ -935,8 +991,8 @@ Deno.serve(async (req: Request) => {
               Authorization: vapidAuth,
               'Content-Encoding': 'aes128gcm',
               'Content-Type': 'application/octet-stream',
-              TTL: isIncomingCall ? '60' : '86400',
-              Urgency: isIncomingCall ? 'high' : 'normal',
+              TTL: isIncomingCall || isCancelCall ? '60' : '86400',
+              Urgency: isIncomingCall || isCancelCall ? 'high' : 'normal',
             },
             body: encryptedBody,
           });
@@ -944,7 +1000,6 @@ Deno.serve(async (req: Request) => {
           if (res.status >= 200 && res.status < 300) {
             sentCount++;
           } else if (res.status === 404 || res.status === 410) {
-            // Subscription is expired or unsubscribed — clean up automatically
             cleanedCount++;
             await adminClient
               .from('push_subscriptions')
@@ -953,16 +1008,140 @@ Deno.serve(async (req: Request) => {
             await adminClient.from('push_subscriptions').delete().eq('id', sub.id);
           }
         } catch {
-          // Ignore individual endpoint network failure so other user devices still receive push
+          // Ignore individual endpoint network failure
         }
       })
     );
 
+    // 7. Deliver to Native Android (FCM) and iOS (APNs / PushKit VoIP) registered in public.user_devices
+    const fcmServerKey = (Deno.env.get('FCM_SERVER_KEY') || '').trim();
+    const apnsAuthToken = (Deno.env.get('APNS_BEARER_TOKEN') || '').trim();
+    const apnsBundleId = (Deno.env.get('APNS_BUNDLE_ID') || 'app.osa.messaging').trim();
+
+    if (nativeDevices.length > 0 && (fcmServerKey || apnsAuthToken)) {
+      await Promise.all(
+        nativeDevices.map(async (dev) => {
+          try {
+            const recipientUid = String(dev.user_id);
+            const msgFormatted = buildUserMessageTitleAndBody(recipientUid);
+            let rejectToken: string | null = null;
+            if ((isIncomingCall || isCancelCall) && body.callId) {
+              rejectToken = await createCallRejectToken(
+                body.callId,
+                recipientUid,
+                senderUserId,
+                vapidConfig.privateKey
+              );
+            }
+
+            if (dev.platform === 'android' && dev.push_token && fcmServerKey) {
+              const fcmPayload = {
+                to: dev.push_token,
+                priority: 'high',
+                data: {
+                  type: isCancelCall
+                    ? 'cancel_call'
+                    : isIncomingCall
+                    ? 'incoming_call'
+                    : 'message',
+                  title: isIncomingCall ? callNotificationTitle : msgFormatted.title,
+                  body: isIncomingCall ? callNotificationBody : msgFormatted.body,
+                  senderId: senderUserId,
+                  senderName: senderHeader,
+                  callerId: senderUserId,
+                  callerName: senderDisplayName,
+                  callerAvatar: senderAvatarUrl || '',
+                  conversationId: resolvedChatId || '',
+                  chatId: resolvedChatId || '',
+                  messageId: body.messageId || '',
+                  messageCount: String(msgFormatted.messageCount),
+                  latestPreview: previewLine,
+                  callId: body.callId || '',
+                  callType: resolvedCallType,
+                  rejectToken: rejectToken || '',
+                  rejectEndpoint: `${supabaseUrl}/functions/v1/send-web-push`,
+                  anonKey: supabaseAnonKey,
+                },
+              };
+
+              const fcmRes = await fetch('https://fcm.googleapis.com/fcm/send', {
+                method: 'POST',
+                headers: {
+                  Authorization: `key=${fcmServerKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(fcmPayload),
+              });
+              if (fcmRes.ok) nativeSentCount++;
+            } else if (dev.platform === 'ios' && apnsAuthToken) {
+              const isVoipPush = (isIncomingCall || isCancelCall) && Boolean(dev.voip_token);
+              const targetToken = isVoipPush ? dev.voip_token : dev.push_token;
+              if (!targetToken) return;
+
+              const apnsTopic = isVoipPush ? `${apnsBundleId}.voip` : apnsBundleId;
+              const apnsBody = isVoipPush
+                ? {
+                    aps: { 'content-available': 1 },
+                    type: isCancelCall ? 'cancel_call' : 'incoming_call',
+                    callId: body.callId || '',
+                    callType: resolvedCallType,
+                    callerId: senderUserId,
+                    callerName: senderDisplayName,
+                    callerAvatar: senderAvatarUrl || '',
+                    chatId: resolvedChatId || '',
+                    rejectToken: rejectToken || '',
+                    rejectEndpoint: `${supabaseUrl}/functions/v1/send-web-push`,
+                    anonKey: supabaseAnonKey,
+                  }
+                : {
+                    aps: {
+                      alert: {
+                        title: 'OSA',
+                        subtitle: senderHeader,
+                        body:
+                          msgFormatted.messageCount >= 2
+                            ? `${msgFormatted.messageCount} new messages`
+                            : previewLine,
+                      },
+                      sound: 'default',
+                      'thread-id': resolvedChatId || senderUserId,
+                      'mutable-content': 1,
+                    },
+                    type: 'message',
+                    conversationId: resolvedChatId || '',
+                    chatId: resolvedChatId || '',
+                    senderId: senderUserId,
+                    senderName: senderHeader,
+                    messageId: body.messageId || '',
+                    messageCount: msgFormatted.messageCount,
+                  };
+
+              const apnsRes = await fetch(`https://api.push.apple.com/3/device/${targetToken}`, {
+                method: 'POST',
+                headers: {
+                  authorization: `bearer ${apnsAuthToken}`,
+                  'apns-topic': apnsTopic,
+                  'apns-push-type': isVoipPush ? 'voip' : 'alert',
+                  'apns-priority': '10',
+                },
+                body: JSON.stringify(apnsBody),
+              });
+              if (apnsRes.ok) nativeSentCount++;
+            }
+          } catch {
+            // Ignore individual native device network error
+          }
+        })
+      );
+    }
+
     return new Response(
       JSON.stringify({
         sent: sentCount,
+        nativeSent: nativeSentCount,
         cleanedInvalidSubscriptions: cleanedCount,
         totalTargetedSubscriptions: subscriptions.length,
+        totalTargetedNativeDevices: nativeDevices.length,
       }),
       {
         status: 200,

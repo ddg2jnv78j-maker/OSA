@@ -1,6 +1,6 @@
 const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
 const PRODUCTION_APP_URL = 'https://ddg2jnv78j-maker.github.io/OSA/';
-const CACHE_NAME = 'osa-pwa-cache-v8';
+const CACHE_NAME = 'osa-pwa-cache-v9';
 const OFFLINE_URL = `${BASE_PATH}offline.html`;
 const PRECACHE_ASSETS = [
   'offline.html',
@@ -24,6 +24,9 @@ const clientActiveChatMap = new Map();
 
 // Track recently displayed notification keys (messageId / callId) to prevent duplicate notifications
 const deliveredEventKeys = new Map();
+
+// Track unread message count per conversation thread for WhatsApp-style grouping ("2 new messages", "5 new messages")
+const conversationUnreadCountMap = new Map();
 
 function markAndCheckDuplicateEvent(eventKey) {
   if (!eventKey) return false;
@@ -71,8 +74,24 @@ self.addEventListener('message', (event) => {
       visible: Boolean(data.visible),
       updatedAt: Date.now(),
     });
+    if (data.visible && data.chatId) {
+      conversationUnreadCountMap.delete(String(data.chatId));
+      if (self.registration && self.registration.getNotifications) {
+        self.registration
+          .getNotifications({ tag: `osa-chat-${data.chatId}` })
+          .then((list) => list.forEach((n) => n.close()))
+          .catch(() => {});
+      }
+    }
   } else if (data.type === 'OSA_REGISTER_NOTIFICATION_EVENT' && data.eventKey) {
     deliveredEventKeys.set(String(data.eventKey), Date.now());
+  } else if (data.type === 'OSA_DISMISS_CALL_NOTIFICATION' && data.callId) {
+    if (self.registration && self.registration.getNotifications) {
+      self.registration
+        .getNotifications({ tag: `osa-call-${data.callId}` })
+        .then((list) => list.forEach((n) => n.close()))
+        .catch(() => {});
+    }
   } else if (data.type === 'OSA_SKIP_WAITING') {
     self.skipWaiting();
   }
@@ -218,14 +237,44 @@ self.addEventListener('push', (event) => {
     payload.callerName ||
     null;
 
+  // Handle call cancellation push (TEST 8: Caller cancels call before recipient answers)
+  if (rawType === 'cancel_call' && callId) {
+    event.waitUntil(
+      (async () => {
+        if (self.registration && self.registration.getNotifications) {
+          const openCallNotifs = await self.registration.getNotifications({
+            tag: `osa-call-${callId}`,
+          });
+          openCallNotifs.forEach((n) => n.close());
+        }
+        const windowClients = await self.clients.matchAll({
+          type: 'window',
+          includeUncontrolled: true,
+        });
+        for (const client of windowClients) {
+          try {
+            client.postMessage({
+              type: 'OSA_CALL_CANCELLED_PUSH',
+              callId,
+            });
+          } catch {
+            // Ignore
+          }
+        }
+      })()
+    );
+    return;
+  }
+
   const isIncomingCall = rawType === 'incoming_call';
 
-  // Deduplicate by messageId or callId
-  const dedupKey = isIncomingCall && callId
-    ? `call:${callId}`
-    : messageId
-    ? `msg:${messageId}`
-    : null;
+  // Deduplicate by unique callId or unique messageId (different callIds are NEVER deduplicated)
+  const dedupKey =
+    isIncomingCall && callId
+      ? `call:${callId}`
+      : messageId
+      ? `msg:${messageId}`
+      : null;
 
   if (dedupKey && markAndCheckDuplicateEvent(dedupKey)) {
     return;
@@ -234,7 +283,7 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.clients
       .matchAll({ type: 'window', includeUncontrolled: true })
-      .then((windowClients) => {
+      .then(async (windowClients) => {
         // Always wake/notify open client tabs when an incoming call or message arrives
         for (const client of windowClients) {
           try {
@@ -301,12 +350,67 @@ self.addEventListener('push', (event) => {
           'open'
         );
 
+        // Compute WhatsApp-style conversation message grouping ("2 new messages", "5 new messages")
+        let computedTitle = 'OSA';
+        let computedBody = bodyStr || 'New message';
+        let messageCount = Number(
+          (payload.data && payload.data.messageCount) || payload.messageCount || 1
+        );
+
+        if (isIncomingCall) {
+          computedTitle =
+            payload.title ||
+            (callType === 'video' ? 'Incoming video call' : 'Incoming audio call');
+          computedBody =
+            payload.body || `${senderName || 'Someone'} is calling you`;
+        } else {
+          const threadKey = targetChatId || senderId || 'default';
+          let existingOpenCount = 0;
+          if (self.registration && self.registration.getNotifications && targetChatId) {
+            try {
+              const existingList = await self.registration.getNotifications({
+                tag: `osa-chat-${targetChatId}`,
+              });
+              if (existingList && existingList.length > 0) {
+                const prevData = existingList[0].data || {};
+                existingOpenCount = Number(prevData.messageCount || 1);
+              } else {
+                conversationUnreadCountMap.delete(threadKey);
+              }
+            } catch {
+              // Ignore
+            }
+          }
+
+          const trackedCount = (conversationUnreadCountMap.get(threadKey) || existingOpenCount) + 1;
+          messageCount = Math.max(messageCount, trackedCount);
+          conversationUnreadCountMap.set(threadKey, messageCount);
+
+          const displaySender =
+            senderName ||
+            (payload.title && payload.title !== 'OSA' ? payload.title : 'OSA User');
+          const latestPreview =
+            (payload.data && payload.data.latestPreview) ||
+            payload.latestPreview ||
+            bodyStr.replace(new RegExp(`^${displaySender}\\n`), '') ||
+            'New message';
+
+          computedTitle = 'OSA';
+          if (messageCount >= 2) {
+            computedBody = `${displaySender}\n${messageCount} new messages`;
+          } else {
+            computedBody = `${displaySender}\n${latestPreview}`;
+          }
+        }
+
         const notificationData = {
           ...(payload.data || {}),
           type: isIncomingCall ? 'incoming_call' : 'message',
           chatId: targetChatId,
           conversationId: targetChatId,
+          threadId: targetChatId,
           messageId,
+          messageCount,
           callId,
           callType: isIncomingCall ? callType || 'audio' : callType,
           senderId,
@@ -316,28 +420,17 @@ self.addEventListener('push', (event) => {
           url: safeUrl,
         };
 
-        const computedTitle = isIncomingCall
-          ? payload.title ||
-            (callType === 'video' ? 'Incoming video call' : 'Incoming audio call')
-          : payload.title || senderName || 'OSA';
-
-        const computedBody = isIncomingCall
-          ? payload.body || `${senderName || 'Someone'} is calling you`
-          : payload.body || 'New message';
-
         const options = {
           body: computedBody,
-          icon: `${BASE_PATH}pwa-192x192.png`,
+          icon: payload.icon || `${BASE_PATH}pwa-192x192.png`,
           badge: `${BASE_PATH}pwa-192x192.png`,
-          tag:
-            payload.tag ||
-            (isIncomingCall
-              ? `osa-call-${callId || Date.now()}`
-              : messageId
-              ? `osa-msg-${messageId}`
-              : targetChatId
-              ? `osa-chat-${targetChatId}`
-              : 'osa-notification'),
+          tag: isIncomingCall
+            ? `osa-call-${callId || Date.now()}`
+            : targetChatId
+            ? `osa-chat-${targetChatId}`
+            : messageId
+            ? `osa-msg-${messageId}`
+            : 'osa-notification',
           renotify: true,
           requireInteraction: Boolean(payload.requireInteraction || isIncomingCall),
           data: notificationData,
@@ -360,6 +453,10 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const notifData = event.notification.data || {};
   const clickedAction = event.action || 'open';
+  const targetChatId = notifData.conversationId || notifData.chatId || null;
+  if (targetChatId) {
+    conversationUnreadCountMap.delete(String(targetChatId));
+  }
   const targetUrl = buildSafeAppUrl(notifData, clickedAction);
 
   event.waitUntil(

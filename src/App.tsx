@@ -67,7 +67,9 @@ import {
   PresenceManager,
   subscribeToPresenceUpdates,
 } from './services/presenceService';
+import { initializeNativeMobileBridge } from './services/nativeMobileBridge';
 import {
+  dismissIncomingCallSystemNotification,
   ensureUserPushSubscription,
   reportActiveChatForPush,
   showBackgroundSystemNotification,
@@ -584,6 +586,19 @@ export default function App() {
         if (data.callId && !activeCall) {
           resumeIncomingCallFromNotification(String(data.callId), currentUser.id, 'open');
         }
+      } else if (payload.type === 'OSA_CALL_CANCELLED_PUSH') {
+        stopIncomingCallRingtone();
+        if (payload.callId) {
+          dismissIncomingCallSystemNotification(String(payload.callId)).catch(() => {});
+          if (activeCall && activeCall.id === payload.callId) {
+            setCallStatus('ended');
+            callManagerRef.current?.cleanup();
+            setTimeout(() => {
+              setActiveCall(null);
+              callManagerRef.current = null;
+            }, 1200);
+          }
+        }
       } else if (payload.type === 'OSA_PUSH_SUBSCRIPTION_CHANGED') {
         ensureUserPushSubscription(currentUser.id).catch(() => {});
       }
@@ -593,7 +608,38 @@ export default function App() {
     return () => {
       navigator.serviceWorker.removeEventListener('message', handleSWMessage);
     };
-  }, [currentUser, activeCall, resumeIncomingCallFromNotification]);
+  }, [currentUser, activeCall, resumeIncomingCallFromNotification, refreshChatsAndNotifications]);
+
+  // Initialize Native Mobile Bridge (Android FCM / CallNotificationService & iOS APNs / PushKit / CallKit)
+  useEffect(() => {
+    if (!currentUser) return;
+    return initializeNativeMobileBridge(currentUser.id, {
+      onNativeCallAction: (detail) => {
+        if (detail.action === 'end') {
+          stopIncomingCallRingtone();
+          dismissIncomingCallSystemNotification(detail.callId).catch(() => {});
+          if (activeCall && activeCall.id === detail.callId) {
+            callManagerRef.current?.endCall().catch(() => {});
+          }
+        } else {
+          resumeIncomingCallFromNotification(detail.callId, currentUser.id, detail.action);
+        }
+      },
+      onNativeDeepLink: (detail) => {
+        if (detail.callId) {
+          resumeIncomingCallFromNotification(
+            detail.callId,
+            currentUser.id,
+            detail.callAction || 'open'
+          );
+        } else if (detail.chatId) {
+          refreshChatsAndNotifications(currentUser.id).catch(() => {});
+          setActiveTab('chats');
+          setSelectedChatId(detail.chatId);
+        }
+      },
+    });
+  }, [currentUser, activeCall, resumeIncomingCallFromNotification, refreshChatsAndNotifications]);
 
   // Helper to respond to a Remote Location request with real GPS coordinates
   const respondWithDeviceLocation = useCallback(
@@ -681,6 +727,68 @@ export default function App() {
       }
     };
 
+    const handleIncomingRemoteCameraSignal = (sig: RemoteCameraSignalPayload) => {
+      if (!sig || !sig.sessionId || sig.senderId === currentUser.id) return;
+
+      if (sig.type === 'request') {
+        if (handledRemoteCameraSessionsRef.current.has(sig.sessionId)) return;
+        handledRemoteCameraSessionsRef.current.add(sig.sessionId);
+
+        if (remoteCameraStreamerRef.current) {
+          remoteCameraStreamerRef.current.cleanup();
+          remoteCameraStreamerRef.current = null;
+        }
+
+        const streamer = new RemoteCameraSessionManager({
+          sessionId: sig.sessionId,
+          currentUserId: currentUser.id,
+          currentUserName: currentUser.full_name,
+          peerUserId: sig.senderId,
+        });
+        remoteCameraStreamerRef.current = streamer;
+
+        const perm = getStoredPermissionStatus(currentUser.id);
+        if (!perm.allowRemoteCamera) {
+          // Remote Camera Access is OFF in Privacy Settings -> report authorization error immediately
+          streamer
+            .declineRequest(
+              'Authorization required: Allow Remote Camera Access is disabled in peer Privacy settings.',
+              'authorization_required'
+            )
+            .catch(() => {});
+          remoteCameraStreamerRef.current = null;
+          return;
+        }
+
+        if (!perm.cameraEnabled || perm.camera === 'denied') {
+          streamer
+            .declineRequest(
+              'Camera permission required on the remote device.',
+              'camera_permission_required'
+            )
+            .catch(() => {});
+          remoteCameraStreamerRef.current = null;
+          return;
+        }
+
+        streamer.startCameraStreamer(sig.facingMode || 'environment').catch(() => {});
+      } else if (
+        remoteCameraStreamerRef.current &&
+        remoteCameraStreamerRef.current.getSessionId() === sig.sessionId
+      ) {
+        remoteCameraStreamerRef.current.handleIncomingSignal(sig);
+      }
+    };
+
+    const rcamUserChannel = supabase
+      .channel(`osa-rcam-user-${currentUser.id}`)
+      .on('broadcast', { event: 'rcam_signal' }, ({ payload }) => {
+        if (payload?.sessionId) {
+          handleIncomingRemoteCameraSignal(payload as RemoteCameraSignalPayload);
+        }
+      })
+      .subscribe();
+
     const locBroadcastChannel = supabase
       .channel(`osa-remote-loc-tx-${currentUser.id}`)
       .on('broadcast', { event: 'location_request' }, ({ payload }) => {
@@ -749,37 +857,7 @@ export default function App() {
               const sig = JSON.parse(
                 newNotif.body.slice(RCAM_SIG_PREFIX.length)
               ) as RemoteCameraSignalPayload;
-
-              if (sig.type === 'request') {
-                if (handledRemoteCameraSessionsRef.current.has(sig.sessionId)) return;
-                handledRemoteCameraSessionsRef.current.add(sig.sessionId);
-
-                if (remoteCameraStreamerRef.current) {
-                  remoteCameraStreamerRef.current.cleanup();
-                  remoteCameraStreamerRef.current = null;
-                }
-
-                const streamer = new RemoteCameraSessionManager({
-                  sessionId: sig.sessionId,
-                  currentUserId: currentUser.id,
-                  currentUserName: currentUser.full_name,
-                  peerUserId: sig.senderId,
-                });
-                remoteCameraStreamerRef.current = streamer;
-
-                const perm = getStoredPermissionStatus(currentUser.id);
-                if (perm.allowRemoteCamera) {
-                  streamer.startCameraStreamer(sig.facingMode || 'environment');
-                } else {
-                  streamer.notifyWaitingConsent();
-                  setPendingRemoteCameraReq(sig);
-                }
-              } else if (
-                remoteCameraStreamerRef.current &&
-                remoteCameraStreamerRef.current.getSessionId() === sig.sessionId
-              ) {
-                remoteCameraStreamerRef.current.handleIncomingSignal(sig);
-              }
+              handleIncomingRemoteCameraSignal(sig);
             } catch {
               // Ignore malformed signal
             }
@@ -888,6 +966,7 @@ export default function App() {
             updated.status === 'accepted'
           ) {
             stopIncomingCallRingtone();
+            dismissIncomingCallSystemNotification(updated.id).catch(() => {});
           }
           if (
             activeCall &&
@@ -929,6 +1008,7 @@ export default function App() {
       window.removeEventListener('focus', handleFocusOrVisible);
       document.removeEventListener('visibilitychange', handleFocusOrVisible);
       window.clearInterval(callCheckInterval);
+      supabase.removeChannel(rcamUserChannel);
       supabase.removeChannel(locBroadcastChannel);
       supabase.removeChannel(globalChannel);
     };

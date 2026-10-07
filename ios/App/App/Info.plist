@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>OSA</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.osa.messaging</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>OSA</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <!-- Privacy Usage Descriptions -->
+    <key>NSCameraUsageDescription</key>
+    <string>OSA requires Camera access for real-time video calls, photos, and authorized Remote Camera sessions.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OSA requires Microphone access for real-time audio/video calls and voice messages.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>OSA requires Location access to share live GPS coordinates when requested.</string>
+
+    <!-- Background Modes for CallKit VoIP Push, Remote Notifications, and WebRTC Audio -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>voip</string>
+        <string>remote-notification</string>
+        <string>audio</string>
+        <string>fetch</string>
+    </array>
+
+    <!-- Deep Link URL Scheme: osa:// -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>app.osa.messaging</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>osa</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

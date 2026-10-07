@@ -1513,4 +1513,55 @@ CREATE INDEX IF NOT EXISTS idx_push_delivery_log_created_at
 
 ALTER TABLE public.push_delivery_log ENABLE ROW LEVEL SECURITY;
 
+-- ============================================================================
+-- 11. NATIVE MOBILE DEVICES (ANDROID FCM & iOS APNs / VOIP CALLKIT)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public.user_devices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  platform TEXT NOT NULL CHECK (platform IN ('android', 'ios', 'web')),
+  device_id TEXT NOT NULL,
+  push_token TEXT,
+  voip_token TEXT,
+  app_version TEXT DEFAULT '1.0.0',
+  device_model TEXT,
+  os_version TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_devices_user_id
+  ON public.user_devices(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_user_devices_active_user
+  ON public.user_devices(user_id, is_active);
+
+ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own devices" ON public.user_devices;
+CREATE POLICY "Users can view own devices"
+  ON public.user_devices FOR SELECT TO authenticated
+  USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert own devices" ON public.user_devices;
+CREATE POLICY "Users can insert own devices"
+  ON public.user_devices FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update own devices" ON public.user_devices;
+CREATE POLICY "Users can update own devices"
+  ON public.user_devices FOR UPDATE TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete own devices" ON public.user_devices;
+CREATE POLICY "Users can delete own devices"
+  ON public.user_devices FOR DELETE TO authenticated
+  USING (auth.uid() = user_id);
+
+
 

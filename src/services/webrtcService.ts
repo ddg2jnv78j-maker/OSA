@@ -2,7 +2,12 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import { getIceServers, supabase } from '../lib/supabase';
 import { CallRecord, CallSignal, CallStatus, CallType, SignalType } from '../types/osa';
 import { createCallRecord, createNotification, updateCallRecordStatus } from './osaService';
+import { notifyNativeCallConnected } from './nativeMobileBridge';
 import { checkNativePermissions, saveStoredPermissionStatus } from './permissionService';
+import {
+  dismissIncomingCallSystemNotification,
+  dispatchWebPushNotification,
+} from './pushNotificationService';
 
 export interface WebRTCCallCallbacks {
   onLocalStream: (stream: MediaStream | null) => void;
@@ -95,6 +100,16 @@ export class WebRTCCallManager {
           await updateCallRecordStatus(callRecord.id, 'missed', {
             ended_at: new Date().toISOString(),
           });
+          dispatchWebPushNotification({
+            senderId: this.currentUserId,
+            recipientIds: [params.receiverId],
+            type: 'cancel_call',
+            title: 'Call Missed',
+            body: 'Call ended',
+            chatId: params.chatId || null,
+            callId: callRecord.id,
+            callType: params.callType,
+          }).catch(() => {});
           await createNotification({
             userId: params.receiverId,
             actorId: this.currentUserId,
@@ -143,6 +158,28 @@ export class WebRTCCallManager {
 
   public async acceptIncomingCall(callRecord: CallRecord): Promise<void> {
     try {
+      await dismissIncomingCallSystemNotification(callRecord.id);
+
+      // Verify the call still exists in Supabase and has not already been ended, rejected, or missed
+      const { data: latestCall } = await supabase
+        .from('calls')
+        .select('id, status, caller_id, receiver_id, call_type')
+        .eq('id', callRecord.id)
+        .maybeSingle();
+
+      if (
+        !latestCall ||
+        latestCall.status === 'ended' ||
+        latestCall.status === 'rejected' ||
+        latestCall.status === 'missed' ||
+        latestCall.status === 'failed'
+      ) {
+        const finalState = (latestCall?.status as CallStatus) || 'ended';
+        this.callbacks.onStatusChange(finalState, 'This call has already ended.');
+        this.cleanup();
+        return;
+      }
+
       this.currentCall = callRecord;
       this.currentCall.status = 'accepted';
       this.callbacks.onStatusChange('accepted');
@@ -252,6 +289,7 @@ export class WebRTCCallManager {
   }
 
   public async rejectIncomingCall(callRecord: CallRecord): Promise<void> {
+    await dismissIncomingCallSystemNotification(callRecord.id);
     await updateCallRecordStatus(callRecord.id, 'rejected', {
       ended_at: new Date().toISOString(),
     });
@@ -262,10 +300,15 @@ export class WebRTCCallManager {
 
   public async endCall(): Promise<void> {
     if (this.currentCall) {
-      const peerId =
-        this.currentCall.caller_id === this.currentUserId
-          ? this.currentCall.receiver_id
-          : this.currentCall.caller_id;
+      await dismissIncomingCallSystemNotification(this.currentCall.id);
+      const isCaller = this.currentCall.caller_id === this.currentUserId;
+      const peerId = isCaller
+        ? this.currentCall.receiver_id
+        : this.currentCall.caller_id;
+
+      const wasUnanswered =
+        !this.connectedAtMs &&
+        (this.currentCall.status === 'calling' || this.currentCall.status === 'ringing');
 
       const durationSeconds = this.connectedAtMs
         ? Math.max(1, Math.round((Date.now() - this.connectedAtMs) / 1000))
@@ -279,6 +322,19 @@ export class WebRTCCallManager {
       await this.sendSignal(this.currentCall.id, peerId, 'hangup', {
         duration_seconds: durationSeconds,
       });
+
+      if (isCaller && wasUnanswered) {
+        dispatchWebPushNotification({
+          senderId: this.currentUserId,
+          recipientIds: [peerId],
+          type: 'cancel_call',
+          title: 'Call Ended',
+          body: 'Caller ended the call',
+          chatId: this.currentCall.chat_id || null,
+          callId: this.currentCall.id,
+          callType: this.currentCall.call_type,
+        }).catch(() => {});
+      }
     }
     this.callbacks.onStatusChange('ended');
     this.cleanup();
@@ -467,6 +523,7 @@ export class WebRTCCallManager {
       await updateCallRecordStatus(callId, 'connected', {
         answered_at: new Date().toISOString(),
       });
+      notifyNativeCallConnected(callId);
       this.callbacks.onStatusChange('connected');
       this.emitUpdatedRemoteStream();
     };
