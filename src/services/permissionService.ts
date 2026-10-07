@@ -248,23 +248,64 @@ export async function requestNotificationPermission(
   }
 }
 
+let inFlightOnboardingPromise: Promise<OSAPermissionStatus> | null = null;
+
 /**
- * Requests all 4 core permissions in sequence for first-time registration / onboarding.
+ * Requests all 4 core permissions ONE BY ONE in sequence using native browser/OS prompts:
+ * 1. Camera -> 2. Microphone -> 3. Location -> 4. Notifications
+ * Guards against concurrent invocations during login/auth state transitions.
  */
 export async function requestAllOSAPermissions(userId?: string): Promise<OSAPermissionStatus> {
-  await requestCameraAndMicPermissions(userId);
-  await requestLocationPermission(userId);
-  await requestNotificationPermission(userId);
-  const finalStatus = await checkNativePermissions(userId);
-  const completed = saveStoredPermissionStatus(
-    {
-      ...finalStatus,
-      onboardingCompleted: true,
-    },
-    userId
-  );
-  await syncPermissionsToSupabase(userId, completed);
-  return completed;
+  if (inFlightOnboardingPromise) {
+    return inFlightOnboardingPromise;
+  }
+
+  inFlightOnboardingPromise = (async () => {
+    try {
+      const initial = await checkNativePermissions(userId);
+
+      // 1. CAMERA — Native prompt: Allow / Deny
+      if (initial.camera !== 'granted' && initial.camera !== 'unsupported') {
+        await requestCameraPermission(userId);
+      }
+
+      // 2. MICROPHONE — After camera permission result is handled, Native prompt: Allow / Deny
+      if (initial.microphone !== 'granted' && initial.microphone !== 'unsupported') {
+        await requestMicrophonePermission(userId);
+      }
+
+      // 3. LOCATION — After microphone permission result is handled, Native prompt: Allow / Deny
+      if (initial.location !== 'granted' && initial.location !== 'unsupported') {
+        await requestLocationPermission(userId);
+      }
+
+      // 4. NOTIFICATIONS — After location permission result is handled, Native prompt: Allow / Don't Allow
+      if (initial.notifications !== 'granted' && initial.notifications !== 'unsupported') {
+        await requestNotificationPermission(userId);
+      }
+
+      try {
+        localStorage.removeItem('osa_needs_permission_onboarding');
+      } catch {
+        // Ignore storage error
+      }
+
+      const finalStatus = await checkNativePermissions(userId);
+      const completed = saveStoredPermissionStatus(
+        {
+          ...finalStatus,
+          onboardingCompleted: true,
+        },
+        userId
+      );
+      await syncPermissionsToSupabase(userId, completed);
+      return completed;
+    } finally {
+      inFlightOnboardingPromise = null;
+    }
+  })();
+
+  return inFlightOnboardingPromise;
 }
 
 /**

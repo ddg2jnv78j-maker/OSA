@@ -57,6 +57,7 @@ import {
   getCurrentDeviceLocation,
   getStoredPermissionStatus,
   LiveLocationPayload,
+  requestAllOSAPermissions,
 } from './services/permissionService';
 import {
   RCAM_SIG_PREFIX,
@@ -223,7 +224,8 @@ export default function App() {
       syncUserRingtoneFromSupabase(profile.id).catch(() => {});
       syncChatTranslationLanguageFromSupabase(profile.id, profile.language).catch(() => {});
 
-      // Show Permission Setup screen on first-time registration / onboarding
+      // Request native permissions ONE BY ONE (1. Camera -> 2. Microphone -> 3. Location -> 4. Notifications)
+      // on first-time registration / login without opening any separate Permission Setup page/modal
       const permStatus = getStoredPermissionStatus(profile.id);
       let needsOnboarding = !permStatus.onboardingCompleted;
       try {
@@ -234,8 +236,7 @@ export default function App() {
         // Ignore
       }
       if (needsOnboarding) {
-        setIsFirstTimePermissionSetup(true);
-        setShowPermissionSetupModal(true);
+        requestAllOSAPermissions(profile.id).catch(() => {});
       }
 
       await setUserOnlineStatus(profile.id, true);

@@ -174,15 +174,6 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
     state: PermissionStateValue;
   }> = [
     {
-      key: 'microphone',
-      title: 'Microphone Access',
-      subtitleBn: 'অডিও/ভিডিও কল এবং ভয়েস মেসেজের জন্য প্রয়োজন',
-      description:
-        'Required for real-time WebRTC Audio Calls, Video Calls, and Voice Messages.',
-      icon: <Mic className="w-5 h-5 text-blue-600 dark:text-blue-400" />,
-      state: status.microphone,
-    },
-    {
       key: 'camera',
       title: 'Camera Access',
       subtitleBn: 'ভিডিও কল, স্ট্যাটাস এবং রিমোট ক্যামেরার জন্য প্রয়োজন',
@@ -190,6 +181,15 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
         'Required for HD Video Calls, Status photo/video capture, and authorized Remote Camera streaming.',
       icon: <Camera className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />,
       state: status.camera,
+    },
+    {
+      key: 'microphone',
+      title: 'Microphone Access',
+      subtitleBn: 'অডিও/ভিডিও কল এবং ভয়েস মেসেজের জন্য প্রয়োজন',
+      description:
+        'Required for real-time WebRTC Audio Calls, Video Calls, and Voice Messages.',
+      icon: <Mic className="w-5 h-5 text-blue-600 dark:text-blue-400" />,
+      state: status.microphone,
     },
     {
       key: 'location',

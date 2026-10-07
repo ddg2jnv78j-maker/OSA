@@ -12,7 +12,6 @@ import {
   User,
 } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
-import { PermissionSetupModal } from '../components/PermissionSetupModal';
 import { TranslationDictionary } from '../lib/i18n';
 import { getSupabaseConfig } from '../lib/supabase';
 import {
@@ -50,8 +49,6 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
-  const [showPermissionOnboarding, setShowPermissionOnboarding] = useState(false);
-  const [registeredUserId, setRegisteredUserId] = useState<string | undefined>(undefined);
 
   const sbConfig = getSupabaseConfig();
 
@@ -143,8 +140,6 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
       if (result.session) {
         onAuthenticated();
       } else {
-        setRegisteredUserId(result.user?.id);
-        setShowPermissionOnboarding(true);
         setSuccessMessage(
           'Your OSA account has been created! Please check your email inbox to verify your account before logging in.'
         );
@@ -559,21 +554,6 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
       <footer className="w-full shrink-0 z-20 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800/80 px-4 py-2.5 pb-safe text-center text-xs text-slate-400">
         OSA &middot; Real-Time Encrypted Messaging &amp; Calling
       </footer>
-
-      <PermissionSetupModal
-        isOpen={showPermissionOnboarding}
-        userId={registeredUserId}
-        isFirstTimeOnboarding
-        onComplete={() => {
-          setShowPermissionOnboarding(false);
-          try {
-            localStorage.removeItem('osa_needs_permission_onboarding');
-          } catch {
-            // Ignore
-          }
-        }}
-        onClose={() => setShowPermissionOnboarding(false)}
-      />
     </div>
   );
 };
