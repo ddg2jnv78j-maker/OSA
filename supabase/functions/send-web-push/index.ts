@@ -220,6 +220,7 @@ async function encryptWebPushPayload(
 
 interface PushRequestBody {
   action?: 'send' | 'get_vapid_public_key';
+  senderId?: string;
   recipientIds?: string[];
   type?: 'new_message' | 'group_message' | 'incoming_call' | 'missed_call' | 'status_update' | 'system';
   title?: string;
@@ -245,7 +246,23 @@ Deno.serve(async (req: Request) => {
     const vapidSubject =
       Deno.env.get('VAPID_SUBJECT') || 'mailto:support@osa-messaging.app';
 
-    const authHeader = req.headers.get('Authorization');
+    const body: PushRequestBody = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
+
+    // Public VAPID key endpoint (safe for browser PushManager.subscribe; never exposes private key)
+    if (body.action === 'get_vapid_public_key') {
+      return new Response(
+        JSON.stringify({
+          vapidPublicKey: vapidPublicKey || null,
+          configured: Boolean(vapidPublicKey && vapidPrivateKey),
+        }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    const authHeader = req.headers.get('Authorization') || '';
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
         status: 401,
@@ -261,31 +278,17 @@ Deno.serve(async (req: Request) => {
       global: { headers: { Authorization: authHeader } },
     });
 
+    const bearerJwt = authHeader.replace(/^Bearer\s+/i, '').trim();
     const {
-      data: { user: senderUser },
-      error: userError,
-    } = await userClient.auth.getUser();
+      data: { user: authUser },
+    } = await userClient.auth.getUser(bearerJwt);
 
-    if (userError || !senderUser) {
+    const senderUserId = authUser?.id || (body.senderId && body.senderId.trim()) || '';
+    if (!senderUserId) {
       return new Response(JSON.stringify({ error: 'Unauthorized user session' }), {
         status: 401,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
-    }
-
-    const body: PushRequestBody = req.method === 'POST' ? await req.json() : {};
-
-    if (body.action === 'get_vapid_public_key') {
-      return new Response(
-        JSON.stringify({
-          vapidPublicKey: vapidPublicKey || null,
-          configured: Boolean(vapidPublicKey && vapidPrivateKey),
-        }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
-      );
     }
 
     if (!vapidPublicKey || !vapidPrivateKey) {
@@ -327,7 +330,7 @@ Deno.serve(async (req: Request) => {
     const rawRecipients = Array.isArray(body.recipientIds) ? body.recipientIds : [];
     // Never notify the sender
     const recipientIds = Array.from(
-      new Set(rawRecipients.filter((id) => Boolean(id) && id !== senderUser.id))
+      new Set(rawRecipients.filter((id) => Boolean(id) && id !== senderUserId))
     );
 
     if (recipientIds.length === 0) {
@@ -343,12 +346,12 @@ Deno.serve(async (req: Request) => {
     const { data: blockRows } = await adminClient
       .from('blocks')
       .select('blocker_id, blocked_id')
-      .or(`blocker_id.eq.${senderUser.id},blocked_id.eq.${senderUser.id}`);
+      .or(`blocker_id.eq.${senderUserId},blocked_id.eq.${senderUserId}`);
 
     const blockedSet = new Set<string>();
     for (const row of blockRows || []) {
-      if (row.blocker_id === senderUser.id) blockedSet.add(row.blocked_id);
-      if (row.blocked_id === senderUser.id) blockedSet.add(row.blocker_id);
+      if (row.blocker_id === senderUserId) blockedSet.add(row.blocked_id);
+      if (row.blocked_id === senderUserId) blockedSet.add(row.blocker_id);
     }
 
     let allowedIds = recipientIds.filter((id) => !blockedSet.has(id));
@@ -386,7 +389,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // 3. Check per-user notification settings & active conversation state
+    // 3. Check per-user notification settings (foreground active-chat check is performed on-device in service-worker.js)
     const { data: userSettingsRows } = await adminClient
       .from('user_notification_settings')
       .select('*')
@@ -397,7 +400,6 @@ Deno.serve(async (req: Request) => {
       settingsMap.set(row.user_id as string, row);
     }
 
-    const nowMs = Date.now();
     allowedIds = allowedIds.filter((uid) => {
       const s = settingsMap.get(uid);
       if (!s) return true; // Default is enabled
@@ -416,20 +418,6 @@ Deno.serve(async (req: Request) => {
       ) {
         return false;
       }
-
-      // Suppress message push if user is actively viewing this exact conversation within the last 35s
-      if (
-        body.chatId &&
-        (notifType === 'new_message' || notifType === 'group_message') &&
-        s.active_chat_id === body.chatId &&
-        typeof s.active_updated_at === 'string'
-      ) {
-        const updatedMs = new Date(s.active_updated_at).getTime();
-        if (!Number.isNaN(updatedMs) && nowMs - updatedMs < 35000) {
-          return false;
-        }
-      }
-
       return true;
     });
 
@@ -438,20 +426,23 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({
           sent: 0,
           skipped: true,
-          reason: 'Filtered by user notification preferences or active conversation',
+          reason: 'Filtered by user notification preferences',
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     // 4. Query all active push subscriptions across all devices for allowed recipients
-    const { data: subscriptions, error: subError } = await adminClient
+    const { data: rawSubscriptions, error: subError } = await adminClient
       .from('push_subscriptions')
       .select('*')
-      .in('user_id', allowedIds)
-      .eq('is_active', true);
+      .in('user_id', allowedIds);
 
-    if (subError || !subscriptions || subscriptions.length === 0) {
+    const subscriptions = (rawSubscriptions || []).filter(
+      (sub) => sub.is_active !== false
+    );
+
+    if (subError || subscriptions.length === 0) {
       return new Response(
         JSON.stringify({ sent: 0, skipped: true, reason: 'No active push subscriptions found' }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -487,7 +478,7 @@ Deno.serve(async (req: Request) => {
         chatId: body.chatId || null,
         callId: body.callId || null,
         callType: body.callType || null,
-        senderId: senderUser.id,
+        senderId: senderUserId,
         url: targetUrl,
       },
     });

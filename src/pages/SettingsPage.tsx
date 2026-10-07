@@ -39,7 +39,19 @@ import {
   RINGTONE_CHANGED_EVENT,
   stopRingtonePreview,
 } from '../services/ringtoneService';
-import { requestNotificationPermission } from '../services/permissionService';
+import {
+  checkNativePermissions,
+  getStoredPermissionStatus,
+  OSA_PERMISSIONS_UPDATED_EVENT,
+  OSAPermissionStatus,
+  requestCameraPermission,
+  requestLocationPermission,
+  requestMicrophonePermission,
+  requestNotificationPermission,
+  saveStoredPermissionStatus,
+  syncPermissionsFromSupabase,
+  syncPermissionsToSupabase,
+} from '../services/permissionService';
 import {
   ensureUserPushSubscription,
   fetchMyPushSubscriptions,
@@ -172,11 +184,27 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [notifPrefs, setNotifPrefs] = useState<OSANotificationPreferences>(() =>
     getNotificationPreferences(currentUser.id)
   );
+  const [permState, setPermState] = useState<OSAPermissionStatus>(() =>
+    getStoredPermissionStatus(currentUser.id)
+  );
   const [browserPermState, setBrowserPermState] = useState<
     NotificationPermission | 'unsupported'
   >(() => getWebPushSupportInfo().permission);
   const [myPushSubs, setMyPushSubs] = useState<StoredPushSubscriptionRow[]>([]);
   const [syncingPush, setSyncingPush] = useState(false);
+
+  useEffect(() => {
+    syncPermissionsFromSupabase(currentUser.id)
+      .then((res) => setPermState(res))
+      .catch(() => {});
+    const handlePermUpdated = () => {
+      setPermState(getStoredPermissionStatus(currentUser.id));
+    };
+    window.addEventListener(OSA_PERMISSIONS_UPDATED_EVENT, handlePermUpdated);
+    return () => {
+      window.removeEventListener(OSA_PERMISSIONS_UPDATED_EVENT, handlePermUpdated);
+    };
+  }, [currentUser.id]);
 
   useEffect(() => {
     setSelectedRingtoneId(getSelectedRingtoneId(currentUser.id));
@@ -1069,6 +1097,199 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       className={`w-12 h-7 rounded-full p-1 transition-colors ${
                         checked ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'
                       }`}
+                    >
+                      <span
+                        className={`block w-5 h-5 rounded-full bg-white transition-transform ${
+                          checked ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Device Permissions & Remote Access Controls inside Settings -> Privacy */}
+          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-5 space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Permissions &amp; Remote Access Controls
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Manually enable or disable device permissions and remote access without repeated prompts.
+                </p>
+              </div>
+              {onOpenPermissionSetup && (
+                <button
+                  type="button"
+                  onClick={onOpenPermissionSetup}
+                  className="px-3 py-1.5 rounded-xl bg-blue-600/10 text-blue-600 dark:text-blue-400 text-xs font-semibold shrink-0"
+                >
+                  Full Setup
+                </button>
+              )}
+            </div>
+
+            <div className="divide-y divide-slate-100 dark:divide-slate-800">
+              {(
+                [
+                  {
+                    permKey: 'camera' as const,
+                    enabledKey: 'cameraEnabled' as const,
+                    label: 'Camera',
+                    sub: 'Video Calls, Status capture, and Remote Camera',
+                    requestFn: () => requestCameraPermission(currentUser.id, true),
+                  },
+                  {
+                    permKey: 'microphone' as const,
+                    enabledKey: 'microphoneEnabled' as const,
+                    label: 'Microphone',
+                    sub: 'Audio Calls and Video Calls',
+                    requestFn: () => requestMicrophonePermission(currentUser.id, true),
+                  },
+                  {
+                    permKey: 'location' as const,
+                    enabledKey: 'locationEnabled' as const,
+                    label: 'Location (GPS)',
+                    sub: 'Live location sharing and Remote Location',
+                    requestFn: async () => (await requestLocationPermission(currentUser.id, true)).state,
+                  },
+                  {
+                    permKey: 'notifications' as const,
+                    enabledKey: 'notificationsEnabled' as const,
+                    label: 'Notifications',
+                    sub: 'Background message and incoming call alerts',
+                    requestFn: () => requestNotificationPermission(currentUser.id),
+                  },
+                ]
+              ).map((item) => {
+                const browserStatus = permState[item.permKey];
+                const isEnabled = Boolean(permState[item.enabledKey]) && browserStatus !== 'denied';
+                return (
+                  <div key={item.permKey} className="py-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-slate-900 dark:text-white">
+                            {item.label}
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${
+                              browserStatus === 'granted'
+                                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                                : browserStatus === 'denied'
+                                ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                                : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                            }`}
+                          >
+                            {browserStatus}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">{item.sub}</p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {browserStatus === 'prompt' && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await item.requestFn();
+                              const updated = await checkNativePermissions(currentUser.id);
+                              setPermState(updated);
+                              await syncPermissionsToSupabase(currentUser.id, updated);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-blue-600 text-white text-xs font-semibold"
+                          >
+                            Allow
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const latest = await checkNativePermissions(currentUser.id);
+                            if (!isEnabled && latest[item.permKey] === 'denied') {
+                              setPermState(latest);
+                              setStatusBanner({
+                                type: 'error',
+                                text: `${item.label} is blocked by your browser/device. Open browser/device settings to allow ${item.label}.`,
+                              });
+                              return;
+                            }
+                            const nextVal = !permState[item.enabledKey];
+                            const updated = saveStoredPermissionStatus(
+                              { [item.enabledKey]: nextVal },
+                              currentUser.id
+                            );
+                            setPermState(updated);
+                            await syncPermissionsToSupabase(currentUser.id, updated);
+                          }}
+                          className={`w-12 h-7 rounded-full p-1 transition-colors ${
+                            isEnabled ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'
+                          }`}
+                          aria-label={`Toggle ${item.label}`}
+                        >
+                          <span
+                            className={`block w-5 h-5 rounded-full bg-white transition-transform ${
+                              isEnabled ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+
+                    {browserStatus === 'denied' && (
+                      <div className="rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/70 px-3 py-2 text-[11px] text-red-700 dark:text-red-300">
+                        <strong>Open browser/device settings:</strong> {item.label} is blocked by your browser or OS. Tap the lock/tune icon in your browser address bar or open device App Settings &rarr; Permissions to allow {item.label}.
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {(
+                [
+                  {
+                    field: 'allowRemoteCamera' as const,
+                    label: 'Remote Camera Access',
+                    sub: 'Allow authorized OSA contacts to connect live Remote Camera stream',
+                  },
+                  {
+                    field: 'allowRemoteLocation' as const,
+                    label: 'Remote Location Access',
+                    sub: 'Allow authorized OSA contacts to request live Remote GPS Location',
+                  },
+                ]
+              ).map((remoteItem) => {
+                const checked = Boolean(permState[remoteItem.field]);
+                return (
+                  <div
+                    key={remoteItem.field}
+                    className="py-3 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                        {remoteItem.label}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {remoteItem.sub}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const updated = saveStoredPermissionStatus(
+                          { [remoteItem.field]: !checked },
+                          currentUser.id
+                        );
+                        setPermState(updated);
+                        await syncPermissionsToSupabase(currentUser.id, updated);
+                      }}
+                      className={`w-12 h-7 rounded-full p-1 transition-colors shrink-0 ${
+                        checked ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'
+                      }`}
+                      aria-label={`Toggle ${remoteItem.label}`}
                     >
                       <span
                         className={`block w-5 h-5 rounded-full bg-white transition-transform ${

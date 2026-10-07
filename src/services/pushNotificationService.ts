@@ -163,8 +163,11 @@ export async function resolveVapidPublicKey(): Promise<string | null> {
   }
 
   try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
     const { data, error } = await supabase.functions.invoke('send-web-push', {
       body: { action: 'get_vapid_public_key' },
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
     });
     if (!error && data && typeof data.vapidPublicKey === 'string' && data.vapidPublicKey.trim()) {
       const resolvedKey = data.vapidPublicKey.trim();
@@ -576,9 +579,13 @@ export async function dispatchWebPushNotification(params: {
   if (targetIds.length === 0) return;
 
   try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+
     await supabase.functions.invoke('send-web-push', {
       body: {
         action: 'send',
+        senderId: params.senderId,
         recipientIds: targetIds,
         type: params.type,
         title: cleanTitle || 'OSA',
@@ -587,8 +594,110 @@ export async function dispatchWebPushNotification(params: {
         callId: params.callId || null,
         callType: params.callType || null,
       },
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
     });
   } catch {
     // Fail gracefully if Edge Function is not yet deployed
+  }
+}
+
+/**
+ * Shows a native system notification via the unified OSA Service Worker when OSA is in another
+ * browser tab or backgrounded PWA, using deterministic tags so Web Push and Realtime deduplicate cleanly.
+ */
+export async function showBackgroundSystemNotification(params: {
+  userId: string;
+  type: 'new_message' | 'group_message' | 'incoming_call' | 'missed_call' | 'status_update' | 'system';
+  title: string;
+  body: string;
+  chatId?: string | null;
+  callId?: string | null;
+  callType?: 'audio' | 'video' | null;
+}): Promise<void> {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+
+  const cleanBody = (params.body || '').trim();
+  const cleanTitle = (params.title || '').trim();
+  if (
+    REMOTE_SIGNAL_PREFIXES.some(
+      (prefix) => cleanBody.startsWith(prefix) || cleanTitle.startsWith(prefix)
+    )
+  ) {
+    return;
+  }
+
+  const prefs = getNotificationPreferences(params.userId);
+  if (!prefs.pushEnabled) return;
+  if (params.type === 'new_message' && !prefs.messageNotifications) return;
+  if (params.type === 'group_message' && !prefs.groupNotifications) return;
+  if (
+    (params.type === 'incoming_call' || params.type === 'missed_call') &&
+    !prefs.callNotifications
+  ) {
+    return;
+  }
+  if (
+    (params.type === 'status_update' || params.type === 'system') &&
+    !prefs.statusNotifications
+  ) {
+    return;
+  }
+
+  const isCall = params.type === 'incoming_call';
+  const baseUrl = import.meta.env.BASE_URL || '/';
+  const tag = isCall
+    ? `osa-call-${params.callId || 'incoming'}`
+    : params.chatId
+    ? `osa-chat-${params.chatId}`
+    : 'osa-notification';
+
+  const notifData = {
+    type: params.type,
+    chatId: params.chatId || null,
+    callId: params.callId || null,
+    callType: params.callType || null,
+  };
+
+  try {
+    const reg = await getOrRegisterOSAServiceWorker();
+    if (reg && reg.showNotification) {
+      await reg.showNotification(cleanTitle || 'OSA', {
+        body: cleanBody || 'You have a new message',
+        icon: `${baseUrl}pwa-192x192.png`,
+        badge: `${baseUrl}pwa-192x192.png`,
+        tag,
+        renotify: true,
+        requireInteraction: isCall,
+        data: notifData,
+        ...(isCall
+          ? {
+              actions: [
+                { action: 'accept', title: 'Accept Call' },
+                { action: 'reject', title: 'Reject' },
+              ],
+            }
+          : {}),
+      } as NotificationOptions);
+      return;
+    }
+  } catch {
+    // Fallback to window Notification if SW showNotification is unavailable
+  }
+
+  try {
+    const n = new Notification(cleanTitle || 'OSA', {
+      body: cleanBody || 'You have a new message',
+      icon: `${baseUrl}pwa-192x192.png`,
+      tag,
+      requireInteraction: isCall,
+      data: notifData,
+    });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+    };
+  } catch {
+    // Ignore
   }
 }

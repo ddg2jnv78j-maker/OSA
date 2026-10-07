@@ -8,6 +8,10 @@ export interface OSAPermissionStatus {
   camera: PermissionStateValue;
   location: PermissionStateValue;
   notifications: PermissionStateValue;
+  cameraEnabled: boolean;
+  microphoneEnabled: boolean;
+  locationEnabled: boolean;
+  notificationsEnabled: boolean;
   onboardingCompleted: boolean;
   allowRemoteCamera: boolean;
   allowRemoteLocation: boolean;
@@ -28,6 +32,7 @@ export interface LiveLocationPayload {
   timestamp: string;
 }
 
+export const OSA_PERMISSIONS_UPDATED_EVENT = 'osa:permissions-updated';
 const PERMISSION_STORAGE_KEY = 'osa_device_permissions_v1';
 
 const DEFAULT_PERMISSION_STATUS: OSAPermissionStatus = {
@@ -35,24 +40,61 @@ const DEFAULT_PERMISSION_STATUS: OSAPermissionStatus = {
   camera: 'prompt',
   location: 'prompt',
   notifications: 'prompt',
+  cameraEnabled: true,
+  microphoneEnabled: true,
+  locationEnabled: true,
+  notificationsEnabled: true,
   onboardingCompleted: false,
   allowRemoteCamera: true,
   allowRemoteLocation: true,
   updatedAt: new Date().toISOString(),
 };
 
+// In-memory cache keyed by userId (or 'default') for instant synchronous reads
+const memoryPermissionCache = new Map<string, OSAPermissionStatus>();
+
+function emitPermissionsUpdated(status: OSAPermissionStatus, userId?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent(OSA_PERMISSIONS_UPDATED_EVENT, {
+        detail: { userId, status },
+      })
+    );
+  } catch {
+    // Ignore dispatch errors
+  }
+}
+
 export function getStoredPermissionStatus(userId?: string): OSAPermissionStatus {
+  const cacheKey = userId || 'default';
   try {
     const key = userId ? `${PERMISSION_STORAGE_KEY}_${userId}` : PERMISSION_STORAGE_KEY;
-    const raw = localStorage.getItem(key) || localStorage.getItem(PERMISSION_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_PERMISSION_STATUS };
-    const parsed = JSON.parse(raw) as Partial<OSAPermissionStatus>;
-    return {
+    const rawUser = userId ? localStorage.getItem(key) : null;
+    const rawGlobal = localStorage.getItem(PERMISSION_STORAGE_KEY);
+    const raw = rawUser || rawGlobal;
+
+    if (!raw) {
+      const cached = memoryPermissionCache.get(cacheKey);
+      if (cached) return { ...cached };
+      return { ...DEFAULT_PERMISSION_STATUS };
+    }
+
+    const parsedUser = rawUser ? (JSON.parse(rawUser) as Partial<OSAPermissionStatus>) : {};
+    const parsedGlobal = rawGlobal ? (JSON.parse(rawGlobal) as Partial<OSAPermissionStatus>) : {};
+    const merged: OSAPermissionStatus = {
       ...DEFAULT_PERMISSION_STATUS,
-      ...parsed,
+      ...parsedGlobal,
+      ...parsedUser,
+      // Once onboarding has completed for this device or user, keep it true permanently
+      onboardingCompleted: Boolean(
+        parsedUser.onboardingCompleted || parsedGlobal.onboardingCompleted
+      ),
     };
+    memoryPermissionCache.set(cacheKey, merged);
+    return merged;
   } catch {
-    return { ...DEFAULT_PERMISSION_STATUS };
+    return memoryPermissionCache.get(cacheKey) || { ...DEFAULT_PERMISSION_STATUS };
   }
 }
 
@@ -64,8 +106,14 @@ export function saveStoredPermissionStatus(
   const next: OSAPermissionStatus = {
     ...current,
     ...status,
+    onboardingCompleted: Boolean(status.onboardingCompleted ?? current.onboardingCompleted),
     updatedAt: new Date().toISOString(),
   };
+
+  const cacheKey = userId || 'default';
+  memoryPermissionCache.set(cacheKey, next);
+  memoryPermissionCache.set('default', next);
+
   try {
     const serialized = JSON.stringify(next);
     localStorage.setItem(PERMISSION_STORAGE_KEY, serialized);
@@ -75,11 +123,13 @@ export function saveStoredPermissionStatus(
   } catch {
     // Ignore storage quota errors
   }
+
+  emitPermissionsUpdated(next, userId);
   return next;
 }
 
 /**
- * Queries the browser/OS native Permissions API without triggering prompts.
+ * Queries the browser/OS native Permissions API without triggering any browser prompts.
  */
 export async function checkNativePermissions(userId?: string): Promise<OSAPermissionStatus> {
   const stored = getStoredPermissionStatus(userId);
@@ -94,7 +144,7 @@ export async function checkNativePermissions(userId?: string): Promise<OSAPermis
     next.notifications = 'unsupported';
   }
 
-  // 2. Geolocation via navigator.permissions
+  // 2. Geolocation, Microphone, Camera via navigator.permissions (never triggers prompts)
   if (typeof navigator !== 'undefined' && 'permissions' in navigator) {
     try {
       const geoPerm = await navigator.permissions.query({ name: 'geolocation' });
@@ -122,21 +172,105 @@ export async function checkNativePermissions(userId?: string): Promise<OSAPermis
     }
   }
 
+  // If all four permissions have already been decided in the browser (none in 'prompt' state),
+  // mark onboardingCompleted = true automatically so the user is never prompted again.
+  const allDecided =
+    next.camera !== 'prompt' &&
+    next.microphone !== 'prompt' &&
+    next.location !== 'prompt' &&
+    next.notifications !== 'prompt';
+  if (allDecided) {
+    next.onboardingCompleted = true;
+  }
+
   return saveStoredPermissionStatus(next, userId);
 }
 
 /**
- * Requests real Microphone permission from the browser/OS and immediately releases the track.
+ * Syncs centralized permission state from Supabase `user_permissions` table and merges with native browser state.
  */
-export async function requestMicrophonePermission(userId?: string): Promise<PermissionStateValue> {
+export async function syncPermissionsFromSupabase(
+  userId?: string
+): Promise<OSAPermissionStatus> {
+  const local = await checkNativePermissions(userId);
+  if (!userId) return local;
+
+  try {
+    const { data, error } = await supabase
+      .from('user_permissions')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!error && data) {
+      const merged = saveStoredPermissionStatus(
+        {
+          camera:
+            local.camera !== 'prompt'
+              ? local.camera
+              : (data.camera_status as PermissionStateValue) || local.camera,
+          microphone:
+            local.microphone !== 'prompt'
+              ? local.microphone
+              : (data.microphone_status as PermissionStateValue) || local.microphone,
+          location:
+            local.location !== 'prompt'
+              ? local.location
+              : (data.location_status as PermissionStateValue) || local.location,
+          notifications:
+            local.notifications !== 'prompt'
+              ? local.notifications
+              : (data.notification_status as PermissionStateValue) || local.notifications,
+          allowRemoteCamera:
+            typeof data.allow_remote_camera === 'boolean'
+              ? data.allow_remote_camera
+              : local.allowRemoteCamera,
+          allowRemoteLocation:
+            typeof data.allow_remote_location === 'boolean'
+              ? data.allow_remote_location
+              : local.allowRemoteLocation,
+          onboardingCompleted: Boolean(
+            local.onboardingCompleted || data.onboarding_completed
+          ),
+        },
+        userId
+      );
+      return merged;
+    }
+  } catch {
+    // Table is optional
+  }
+
+  return local;
+}
+
+/**
+ * Requests real Microphone permission from the browser/OS and immediately releases the track.
+ * Respects existing granted/denied browser permission state without re-prompting if already decided.
+ */
+export async function requestMicrophonePermission(
+  userId?: string,
+  forceManualFromSettings = false
+): Promise<PermissionStateValue> {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     saveStoredPermissionStatus({ microphone: 'unsupported' }, userId);
     return 'unsupported';
   }
+
+  const current = await checkNativePermissions(userId);
+  if (current.microphone === 'denied') {
+    saveStoredPermissionStatus({ microphone: 'denied' }, userId);
+    return 'denied';
+  }
+  if (current.microphone === 'granted' && !forceManualFromSettings) {
+    saveStoredPermissionStatus({ microphone: 'granted', microphoneEnabled: true }, userId);
+    return 'granted';
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     stream.getTracks().forEach((track) => track.stop());
-    saveStoredPermissionStatus({ microphone: 'granted' }, userId);
+    saveStoredPermissionStatus({ microphone: 'granted', microphoneEnabled: true }, userId);
     return 'granted';
   } catch (err) {
     const isDenied =
@@ -150,16 +284,31 @@ export async function requestMicrophonePermission(userId?: string): Promise<Perm
 
 /**
  * Requests real Camera permission from the browser/OS and immediately releases the track.
+ * Respects existing granted/denied browser permission state without re-prompting if already decided.
  */
-export async function requestCameraPermission(userId?: string): Promise<PermissionStateValue> {
+export async function requestCameraPermission(
+  userId?: string,
+  forceManualFromSettings = false
+): Promise<PermissionStateValue> {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     saveStoredPermissionStatus({ camera: 'unsupported' }, userId);
     return 'unsupported';
   }
+
+  const current = await checkNativePermissions(userId);
+  if (current.camera === 'denied') {
+    saveStoredPermissionStatus({ camera: 'denied' }, userId);
+    return 'denied';
+  }
+  if (current.camera === 'granted' && !forceManualFromSettings) {
+    saveStoredPermissionStatus({ camera: 'granted', cameraEnabled: true }, userId);
+    return 'granted';
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
     stream.getTracks().forEach((track) => track.stop());
-    saveStoredPermissionStatus({ camera: 'granted' }, userId);
+    saveStoredPermissionStatus({ camera: 'granted', cameraEnabled: true }, userId);
     return 'granted';
   } catch (err) {
     const isDenied =
@@ -172,33 +321,25 @@ export async function requestCameraPermission(userId?: string): Promise<Permissi
 }
 
 /**
- * Requests both Camera and Microphone together in a single prompt when possible,
- * falling back to individual requests if one hardware device is missing.
+ * Requests both Camera and Microphone together when explicitly requested.
  */
 export async function requestCameraAndMicPermissions(userId?: string): Promise<{
   microphone: PermissionStateValue;
   camera: PermissionStateValue;
 }> {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    saveStoredPermissionStatus({ microphone: 'unsupported', camera: 'unsupported' }, userId);
-    return { microphone: 'unsupported', camera: 'unsupported' };
-  }
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-    stream.getTracks().forEach((track) => track.stop());
-    saveStoredPermissionStatus({ microphone: 'granted', camera: 'granted' }, userId);
-    return { microphone: 'granted', camera: 'granted' };
-  } catch {
-    const microphone = await requestMicrophonePermission(userId);
-    const camera = await requestCameraPermission(userId);
-    return { microphone, camera };
-  }
+  const camera = await requestCameraPermission(userId);
+  const microphone = await requestMicrophonePermission(userId);
+  return { microphone, camera };
 }
 
 /**
  * Requests real Geolocation permission from the browser/OS.
+ * Respects existing granted/denied browser permission state.
  */
-export async function requestLocationPermission(userId?: string): Promise<{
+export async function requestLocationPermission(
+  userId?: string,
+  forceManualFromSettings = false
+): Promise<{
   state: PermissionStateValue;
   coords?: GeolocationCoordinates;
 }> {
@@ -207,10 +348,20 @@ export async function requestLocationPermission(userId?: string): Promise<{
     return { state: 'unsupported' };
   }
 
+  const current = await checkNativePermissions(userId);
+  if (current.location === 'denied') {
+    saveStoredPermissionStatus({ location: 'denied' }, userId);
+    return { state: 'denied' };
+  }
+  if (current.location === 'granted' && !forceManualFromSettings) {
+    saveStoredPermissionStatus({ location: 'granted', locationEnabled: true }, userId);
+    return { state: 'granted' };
+  }
+
   return new Promise((resolve) => {
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        saveStoredPermissionStatus({ location: 'granted' }, userId);
+        saveStoredPermissionStatus({ location: 'granted', locationEnabled: true }, userId);
         resolve({ state: 'granted', coords: position.coords });
       },
       (err) => {
@@ -243,7 +394,10 @@ export async function requestNotificationPermission(
     return 'denied';
   }
   if (Notification.permission === 'granted') {
-    saveStoredPermissionStatus({ notifications: 'granted' }, userId);
+    saveStoredPermissionStatus(
+      { notifications: 'granted', notificationsEnabled: true },
+      userId
+    );
     await ensureUserPushSubscription(userId);
     return 'granted';
   }
@@ -251,7 +405,13 @@ export async function requestNotificationPermission(
     const result = await Notification.requestPermission();
     const state: PermissionStateValue =
       result === 'granted' ? 'granted' : result === 'denied' ? 'denied' : 'prompt';
-    saveStoredPermissionStatus({ notifications: state }, userId);
+    saveStoredPermissionStatus(
+      {
+        notifications: state,
+        ...(state === 'granted' ? { notificationsEnabled: true } : {}),
+      },
+      userId
+    );
     if (state === 'granted') {
       await ensureUserPushSubscription(userId);
     }
@@ -266,7 +426,7 @@ let inFlightOnboardingPromise: Promise<OSAPermissionStatus> | null = null;
 /**
  * Requests all 4 core permissions ONE BY ONE in sequence using native browser/OS prompts:
  * 1. Camera -> 2. Microphone -> 3. Location -> 4. Notifications
- * Guards against concurrent invocations during login/auth state transitions.
+ * Marks onboardingCompleted = true immediately so OSA NEVER automatically shows permission prompts again.
  */
 export async function requestAllOSAPermissions(userId?: string): Promise<OSAPermissionStatus> {
   if (inFlightOnboardingPromise) {
@@ -275,50 +435,45 @@ export async function requestAllOSAPermissions(userId?: string): Promise<OSAPerm
 
   inFlightOnboardingPromise = (async () => {
     try {
+      // Lock onboardingCompleted = true immediately before awaiting prompts so concurrent
+      // auth/navigation events never re-trigger automatic onboarding.
       const initial = await checkNativePermissions(userId);
-
-      // 1. CAMERA — Native prompt: Allow / Deny
-      if (
-        initial.camera !== 'granted' &&
-        initial.camera !== 'denied' &&
-        initial.camera !== 'unsupported'
-      ) {
-        await requestCameraPermission(userId);
-      }
-
-      // 2. MICROPHONE — After camera permission result is handled, Native prompt: Allow / Deny
-      if (
-        initial.microphone !== 'granted' &&
-        initial.microphone !== 'denied' &&
-        initial.microphone !== 'unsupported'
-      ) {
-        await requestMicrophonePermission(userId);
-      }
-
-      // 3. LOCATION — After microphone permission result is handled, Native prompt: Allow / Deny
-      if (
-        initial.location !== 'granted' &&
-        initial.location !== 'denied' &&
-        initial.location !== 'unsupported'
-      ) {
-        await requestLocationPermission(userId);
-      }
-
-      // 4. NOTIFICATIONS — After location permission result is handled, Native prompt: Allow / Don't Allow
-      if (
-        initial.notifications !== 'granted' &&
-        initial.notifications !== 'denied' &&
-        initial.notifications !== 'unsupported'
-      ) {
-        await requestNotificationPermission(userId);
-      } else if (initial.notifications === 'granted') {
-        await ensureUserPushSubscription(userId);
-      }
-
+      saveStoredPermissionStatus(
+        {
+          ...initial,
+          onboardingCompleted: true,
+        },
+        userId
+      );
       try {
         localStorage.removeItem('osa_needs_permission_onboarding');
       } catch {
         // Ignore storage error
+      }
+
+      // 1. CAMERA — Native prompt: Allow / Deny (only if not already granted/denied)
+      if (initial.camera === 'prompt') {
+        await requestCameraPermission(userId);
+      }
+
+      // 2. MICROPHONE — Native prompt: Allow / Deny (only if not already granted/denied)
+      const afterCam = await checkNativePermissions(userId);
+      if (afterCam.microphone === 'prompt') {
+        await requestMicrophonePermission(userId);
+      }
+
+      // 3. LOCATION — Native prompt: Allow / Deny (only if not already granted/denied)
+      const afterMic = await checkNativePermissions(userId);
+      if (afterMic.location === 'prompt') {
+        await requestLocationPermission(userId);
+      }
+
+      // 4. NOTIFICATIONS — Native prompt: Allow / Don't Allow (only if not already granted/denied)
+      const afterLoc = await checkNativePermissions(userId);
+      if (afterLoc.notifications === 'prompt') {
+        await requestNotificationPermission(userId);
+      } else if (afterLoc.notifications === 'granted') {
+        await ensureUserPushSubscription(userId);
       }
 
       const finalStatus = await checkNativePermissions(userId);
@@ -340,20 +495,43 @@ export async function requestAllOSAPermissions(userId?: string): Promise<OSAPerm
 }
 
 /**
- * Gets current GPS coordinates from the device.
+ * Gets current GPS coordinates from the device using the already-established permission state.
+ * NEVER triggers a new automatic browser permission prompt if Location was denied, disabled, or not granted after onboarding.
  */
-export async function getCurrentDeviceLocation(): Promise<GeolocationPosition> {
+export async function getCurrentDeviceLocation(userId?: string): Promise<GeolocationPosition> {
   if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
     throw new Error('Geolocation is not supported on this browser/device.');
   }
+
+  const perm = await checkNativePermissions(userId);
+  if (!perm.locationEnabled) {
+    throw new Error(
+      'Location access is disabled in OSA Settings. You can enable it in Settings → Privacy / Permissions.'
+    );
+  }
+  if (perm.location === 'denied') {
+    throw new Error(
+      'Location permission is blocked by your browser/device. Open your browser/device settings to allow Location access.'
+    );
+  }
+  if (perm.onboardingCompleted && perm.location !== 'granted') {
+    throw new Error(
+      'Location permission was not granted during setup. You can enable Location manually in Settings → Privacy / Permissions.'
+    );
+  }
+
   return new Promise((resolve, reject) => {
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve(pos),
+      (pos) => {
+        saveStoredPermissionStatus({ location: 'granted' }, userId);
+        resolve(pos);
+      },
       (err) => {
         if (err.code === err.PERMISSION_DENIED) {
+          saveStoredPermissionStatus({ location: 'denied' }, userId);
           reject(
             new Error(
-              'Location permission was denied. Please allow Location access in your browser/device settings.'
+              'Location permission was denied. Please open your browser/device settings to allow Location access.'
             )
           );
         } else if (err.code === err.TIMEOUT) {

@@ -54,12 +54,6 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
     onRefresh();
   };
 
-  const handleRequestPushPermission = async () => {
-    if ('Notification' in window) {
-      await Notification.requestPermission();
-    }
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl max-h-dvh-modal flex flex-col overflow-hidden">
@@ -98,21 +92,6 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
             </button>
           </div>
         </div>
-
-        {'Notification' in window && Notification.permission === 'default' && (
-          <div className="shrink-0 px-4 py-2.5 bg-blue-50 dark:bg-blue-950/50 border-b border-blue-100 dark:border-blue-900 flex items-center justify-between gap-2">
-            <span className="text-xs text-blue-800 dark:text-blue-200">
-              Enable browser push alerts for incoming messages &amp; calls
-            </span>
-            <button
-              type="button"
-              onClick={handleRequestPushPermission}
-              className="px-3 py-1 rounded-lg bg-blue-600 text-white text-xs font-semibold shrink-0"
-            >
-              Enable
-            </button>
-          </div>
-        )}
 
         <div className="flex-1 min-h-0 overflow-y-auto pb-4 divide-y divide-slate-100 dark:divide-slate-800">
           {notifications.length === 0 ? (

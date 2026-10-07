@@ -18,7 +18,6 @@ import {
   ChatLocationData,
   getCurrentDeviceLocation,
   LiveLocationPayload,
-  requestLocationPermission,
 } from '../services/permissionService';
 import { Profile } from '../types/osa';
 import { OSAAvatar } from './OSAAvatar';
@@ -239,8 +238,7 @@ export const RemoteLocationModal: React.FC<RemoteLocationModalProps> = ({
     setLoading(true);
     setError('');
     try {
-      await requestLocationPermission(currentUser.id);
-      const pos = await getCurrentDeviceLocation();
+      const pos = await getCurrentDeviceLocation(currentUser.id);
       setMyFix({
         requestId: `self_${Date.now()}`,
         senderId: currentUser.id,

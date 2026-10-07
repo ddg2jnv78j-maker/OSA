@@ -2,6 +2,7 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import { getIceServers, supabase } from '../lib/supabase';
 import { CallRecord, CallSignal, CallStatus, CallType, SignalType } from '../types/osa';
 import { createCallRecord, createNotification, updateCallRecordStatus } from './osaService';
+import { checkNativePermissions, saveStoredPermissionStatus } from './permissionService';
 
 export interface WebRTCCallCallbacks {
   onLocalStream: (stream: MediaStream | null) => void;
@@ -286,6 +287,9 @@ export class WebRTCCallManager {
 
   public async switchCamera(): Promise<void> {
     if (!this.localStream || !this.currentCall || this.currentCall.call_type !== 'video') return;
+    const perm = await checkNativePermissions(this.currentUserId);
+    if (!perm.cameraEnabled || perm.camera !== 'granted') return;
+
     this.facingMode = this.facingMode === 'user' ? 'environment' : 'user';
 
     const newStream = await navigator.mediaDevices.getUserMedia({
@@ -316,6 +320,43 @@ export class WebRTCCallManager {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw new Error('Your browser does not support WebRTC audio/video access (HTTPS is required).');
     }
+
+    // Read from centralized permission service so calls NEVER trigger unexpected browser permission prompts
+    const perm = await checkNativePermissions(this.currentUserId);
+    if (!perm.microphoneEnabled) {
+      throw new Error(
+        'Microphone access is disabled in OSA Settings. Please enable Microphone in Settings → Privacy / Permissions.'
+      );
+    }
+    if (perm.microphone === 'denied') {
+      throw new Error(
+        'Microphone permission is blocked by your browser/device. Open browser/device settings to allow Microphone.'
+      );
+    }
+    if (perm.onboardingCompleted && perm.microphone !== 'granted') {
+      throw new Error(
+        'Microphone permission was not granted during setup. Please allow Microphone in Settings → Privacy / Permissions.'
+      );
+    }
+
+    if (callType === 'video') {
+      if (!perm.cameraEnabled) {
+        throw new Error(
+          'Camera access is disabled in OSA Settings. Please enable Camera in Settings → Privacy / Permissions.'
+        );
+      }
+      if (perm.camera === 'denied') {
+        throw new Error(
+          'Camera permission is blocked by your browser/device. Open browser/device settings to allow Camera.'
+        );
+      }
+      if (perm.onboardingCompleted && perm.camera !== 'granted') {
+        throw new Error(
+          'Camera permission was not granted during setup. Please allow Camera in Settings → Privacy / Permissions.'
+        );
+      }
+    }
+
     const constraints: MediaStreamConstraints = {
       audio: {
         echoCancellation: true,
@@ -331,7 +372,15 @@ export class WebRTCCallManager {
             }
           : false,
     };
-    return await navigator.mediaDevices.getUserMedia(constraints);
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    saveStoredPermissionStatus(
+      {
+        microphone: 'granted',
+        ...(callType === 'video' ? { camera: 'granted' } : {}),
+      },
+      this.currentUserId
+    );
+    return stream;
   }
 
   private emitUpdatedRemoteStream(): void {
@@ -428,11 +477,31 @@ export class WebRTCCallManager {
 
   private async pollCallSignals(callId: string): Promise<void> {
     try {
-      const { data: rows } = await supabase
-        .from('call_signals')
-        .select('*')
-        .eq('call_id', callId)
-        .order('created_at', { ascending: true });
+      const [{ data: rows }, { data: callRow }] = await Promise.all([
+        supabase
+          .from('call_signals')
+          .select('*')
+          .eq('call_id', callId)
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('calls')
+          .select('id, status')
+          .eq('id', callId)
+          .maybeSingle(),
+      ]);
+
+      if (callRow) {
+        if (callRow.status === 'rejected') {
+          this.callbacks.onStatusChange('rejected', 'Call was declined.');
+          this.cleanup();
+          return;
+        }
+        if (callRow.status === 'ended' || callRow.status === 'missed' || callRow.status === 'failed') {
+          this.callbacks.onStatusChange(callRow.status as CallStatus);
+          this.cleanup();
+          return;
+        }
+      }
 
       for (const sig of (rows || []) as CallSignal[]) {
         if (sig.sender_id === this.currentUserId) continue;
@@ -463,6 +532,30 @@ export class WebRTCCallManager {
             if (signal.id && this.processedSignalIds.has(signal.id)) return;
             if (signal.id) this.processedSignalIds.add(signal.id);
             await this.handleIncomingSignal(signal);
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'calls',
+            filter: `id=eq.${callId}`,
+          },
+          (payload) => {
+            const updated = payload.new as CallRecord;
+            if (!updated) return;
+            if (updated.status === 'rejected') {
+              this.callbacks.onStatusChange('rejected', 'Call was declined.');
+              this.cleanup();
+            } else if (
+              updated.status === 'ended' ||
+              updated.status === 'missed' ||
+              updated.status === 'failed'
+            ) {
+              this.callbacks.onStatusChange(updated.status);
+              this.cleanup();
+            }
           }
         )
         .on('broadcast', { event: 'call_signal' }, async ({ payload }) => {

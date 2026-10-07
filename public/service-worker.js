@@ -1,6 +1,6 @@
 const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
 const PRODUCTION_APP_URL = 'https://ddg2jnv78j-maker.github.io/OSA/';
-const CACHE_NAME = 'osa-pwa-cache-v6';
+const CACHE_NAME = 'osa-pwa-cache-v7';
 const OFFLINE_URL = `${BASE_PATH}offline.html`;
 const PRECACHE_ASSETS = [
   'offline.html',
@@ -99,7 +99,7 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-function buildSafeAppUrl(data) {
+function buildSafeAppUrl(data, action) {
   const originBase =
     self.location && self.location.origin
       ? `${self.location.origin}${BASE_PATH}`
@@ -109,12 +109,12 @@ function buildSafeAppUrl(data) {
   if (data && data.chatId) params.set('chatId', String(data.chatId));
   if (data && data.callId) params.set('callId', String(data.callId));
   if (data && data.callType) params.set('callType', String(data.callType));
+  if (action && action !== 'open') params.set('callAction', String(action));
   const query = params.toString() ? `?${params.toString()}` : '';
 
-  if (data && typeof data.url === 'string' && data.url.trim()) {
+  if (data && typeof data.url === 'string' && data.url.trim() && (!action || action === 'open')) {
     try {
       const parsed = new URL(data.url, originBase);
-      // Ensure GitHub Pages /OSA/ path is preserved
       if (
         parsed.hostname === 'ddg2jnv78j-maker.github.io' &&
         !parsed.pathname.startsWith('/OSA/')
@@ -180,13 +180,28 @@ self.addEventListener('push', (event) => {
         const targetChatId = payload.data && payload.data.chatId ? payload.data.chatId : null;
         const isIncomingCall = notifType === 'incoming_call';
 
-        // Check if any client window is currently focused & visible and actively viewing this exact chat
+        // Always wake/notify open client tabs when an incoming call arrives
+        if (isIncomingCall) {
+          for (const client of windowClients) {
+            try {
+              client.postMessage({
+                type: 'OSA_INCOMING_CALL_PUSH',
+                data: payload.data || {},
+              });
+            } catch {
+              // Ignore
+            }
+          }
+        }
+
+        // Check if any client window is currently focused & visible in the foreground
         for (const client of windowClients) {
-          const isFocused = Boolean(client.focused) || client.visibilityState === 'visible';
-          if (!isFocused) continue;
+          const isActivelyFocused =
+            Boolean(client.focused) && client.visibilityState === 'visible';
+          if (!isActivelyFocused) continue;
 
           if (isIncomingCall) {
-            // If app is already open and focused in foreground, CallOverlay handles the call directly
+            // App is actively focused in foreground — CallOverlay is already visible
             return;
           }
 
@@ -196,20 +211,20 @@ self.addEventListener('push', (event) => {
               tracked &&
               tracked.visible &&
               tracked.chatId === targetChatId &&
-              Date.now() - tracked.updatedAt < 60000
+              Date.now() - tracked.updatedAt < 45000
             ) {
               return;
             }
           }
         }
 
-        const safeUrl = buildSafeAppUrl(payload.data);
+        const safeUrl = buildSafeAppUrl(payload.data, 'open');
         const notificationData = {
           ...(payload.data || {}),
           url: safeUrl,
         };
 
-        return self.registration.showNotification(payload.title || 'OSA', {
+        const options = {
           body: payload.body || 'You have a new message',
           icon: `${BASE_PATH}pwa-192x192.png`,
           badge: `${BASE_PATH}pwa-192x192.png`,
@@ -224,7 +239,16 @@ self.addEventListener('push', (event) => {
           requireInteraction: Boolean(payload.requireInteraction || isIncomingCall),
           data: notificationData,
           vibrate: isIncomingCall ? [300, 150, 300, 150, 400] : [150, 80, 150],
-        });
+        };
+
+        if (isIncomingCall) {
+          options.actions = [
+            { action: 'accept', title: 'Accept Call' },
+            { action: 'reject', title: 'Reject' },
+          ];
+        }
+
+        return self.registration.showNotification(payload.title || 'OSA', options);
       })
   );
 });
@@ -232,7 +256,8 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const notifData = event.notification.data || {};
-  const targetUrl = buildSafeAppUrl(notifData);
+  const clickedAction = event.action || 'open';
+  const targetUrl = buildSafeAppUrl(notifData, clickedAction);
 
   event.waitUntil(
     self.clients
@@ -242,14 +267,18 @@ self.addEventListener('notificationclick', (event) => {
           if ('focus' in client) {
             client.postMessage({
               type: 'OSA_NOTIFICATION_CLICK',
-              action: event.action || 'open',
+              action: clickedAction,
               data: notifData,
             });
-            try {
-              await client.focus();
+            if (clickedAction !== 'reject') {
+              try {
+                await client.focus();
+                return;
+              } catch {
+                // Continue to next client or openWindow
+              }
+            } else {
               return;
-            } catch {
-              // Continue to next client or openWindow
             }
           }
         }

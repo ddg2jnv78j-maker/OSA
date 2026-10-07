@@ -64,32 +64,41 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
     setBusyKey(key);
     setInfoMessage('');
     try {
+      const latest = await checkNativePermissions(userId);
+      if (latest[key] === 'denied') {
+        setInfoMessage(
+          `${key.charAt(0).toUpperCase() + key.slice(1)} access is blocked by your browser/device. Open browser/device settings (tap the lock/tune icon in your browser address bar or phone app settings) to allow it.`
+        );
+        setStatus(latest);
+        return;
+      }
+
       if (key === 'microphone') {
-        const res = await requestMicrophonePermission(userId);
+        const res = await requestMicrophonePermission(userId, true);
         if (res === 'denied') {
           setInfoMessage(
-            'Microphone access is blocked by your browser/device. Tap the lock/settings icon in your browser address bar to allow Microphone.'
+            'Microphone access is blocked by your browser/device. Open browser/device settings (lock icon in address bar) to allow Microphone.'
           );
         }
       } else if (key === 'camera') {
-        const res = await requestCameraPermission(userId);
+        const res = await requestCameraPermission(userId, true);
         if (res === 'denied') {
           setInfoMessage(
-            'Camera access is blocked by your browser/device. Tap the lock/settings icon in your browser address bar to allow Camera.'
+            'Camera access is blocked by your browser/device. Open browser/device settings (lock icon in address bar) to allow Camera.'
           );
         }
       } else if (key === 'location') {
-        const res = await requestLocationPermission(userId);
+        const res = await requestLocationPermission(userId, true);
         if (res.state === 'denied') {
           setInfoMessage(
-            'Location access is blocked by your browser/device. Please enable Location/GPS in your device and browser settings.'
+            'Location access is blocked by your browser/device. Open browser/device settings to allow Location/GPS.'
           );
         }
       } else if (key === 'notifications') {
         const res = await requestNotificationPermission(userId);
         if (res === 'denied') {
           setInfoMessage(
-            'Notification access is blocked by your browser/device. Enable Notifications in site settings to receive call and message alerts.'
+            'Notification access is blocked by your browser/device. Open browser/device settings to allow Notifications.'
           );
         }
       }
@@ -98,6 +107,23 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
     } finally {
       setBusyKey(null);
     }
+  };
+
+  const handleToggleFeatureEnabled = async (
+    key: 'camera' | 'microphone' | 'location' | 'notifications',
+    enabledKey: 'cameraEnabled' | 'microphoneEnabled' | 'locationEnabled' | 'notificationsEnabled',
+    nextVal: boolean
+  ) => {
+    setInfoMessage('');
+    const currentPerm = status[key];
+    if (nextVal && currentPerm === 'denied') {
+      setInfoMessage(
+        `${key.charAt(0).toUpperCase() + key.slice(1)} is blocked by your browser/device. Open browser/device settings to unblock it.`
+      );
+    }
+    const updated = saveStoredPermissionStatus({ [enabledKey]: nextVal }, userId);
+    setStatus(updated);
+    await syncPermissionsToSupabase(userId, updated);
   };
 
   const handleAllowAll = async () => {
@@ -167,47 +193,57 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
 
   const permissionItems: Array<{
     key: 'microphone' | 'camera' | 'location' | 'notifications';
+    enabledKey: 'microphoneEnabled' | 'cameraEnabled' | 'locationEnabled' | 'notificationsEnabled';
     title: string;
     subtitleBn: string;
     description: string;
     icon: React.ReactNode;
     state: PermissionStateValue;
+    enabled: boolean;
   }> = [
     {
       key: 'camera',
+      enabledKey: 'cameraEnabled',
       title: 'Camera Access',
       subtitleBn: 'ভিডিও কল, স্ট্যাটাস এবং রিমোট ক্যামেরার জন্য প্রয়োজন',
       description:
         'Required for HD Video Calls, Status photo/video capture, and authorized Remote Camera streaming.',
       icon: <Camera className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />,
       state: status.camera,
+      enabled: status.cameraEnabled,
     },
     {
       key: 'microphone',
+      enabledKey: 'microphoneEnabled',
       title: 'Microphone Access',
       subtitleBn: 'অডিও/ভিডিও কল এবং ভয়েস মেসেজের জন্য প্রয়োজন',
       description:
         'Required for real-time WebRTC Audio Calls, Video Calls, and Voice Messages.',
       icon: <Mic className="w-5 h-5 text-blue-600 dark:text-blue-400" />,
       state: status.microphone,
+      enabled: status.microphoneEnabled,
     },
     {
       key: 'location',
+      enabledKey: 'locationEnabled',
       title: 'Location (GPS) Access',
       subtitleBn: 'লাইভ লোকেশন শেয়ার এবং রিমোট লোকেশনের জন্য প্রয়োজন',
       description:
         'Required for sharing your live GPS position in chat and responding to authorized Remote Location requests.',
       icon: <MapPin className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />,
       state: status.location,
+      enabled: status.locationEnabled,
     },
     {
       key: 'notifications',
+      enabledKey: 'notificationsEnabled',
       title: 'Push Notifications',
       subtitleBn: 'ইনকামিং কল এবং নতুন মেসেজ অ্যালার্টের জন্য প্রয়োজন',
       description:
-        'Required to alert you immediately when a call, message, or remote access request arrives.',
+        'Required to alert you immediately when a call or message arrives in background.',
       icon: <Bell className="w-5 h-5 text-amber-600 dark:text-amber-400" />,
       state: status.notifications,
+      enabled: status.notificationsEnabled,
     },
   ];
 
@@ -264,37 +300,57 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
             {permissionItems.map((item) => (
               <div
                 key={item.key}
-                className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800 p-3.5 flex items-center justify-between gap-3"
+                className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800 p-3.5 space-y-2"
               >
-                <div className="flex items-start gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 flex items-center justify-center shrink-0 mt-0.5">
-                    {item.icon}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm font-bold text-slate-900 dark:text-white">
-                        {item.title}
-                      </p>
-                      {renderBadge(item.state)}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 flex items-center justify-center shrink-0 mt-0.5">
+                      {item.icon}
                     </div>
-                    <p className="text-[11px] font-medium text-blue-600 dark:text-blue-400 mt-0.5">
-                      {item.subtitleBn}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
-                      {item.description}
-                    </p>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-bold text-slate-900 dark:text-white">
+                          {item.title}
+                        </p>
+                        {renderBadge(item.state)}
+                      </div>
+                      <p className="text-[11px] font-medium text-blue-600 dark:text-blue-400 mt-0.5">
+                        {item.subtitleBn}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                        {item.description}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {item.state === 'prompt' && (
+                      <button
+                        type="button"
+                        disabled={busyKey === item.key || requestingAll}
+                        onClick={() => handleRequestSingle(item.key)}
+                        className="px-3 py-1.5 min-h-[34px] rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
+                      >
+                        {busyKey === item.key ? 'Requesting...' : 'Allow'}
+                      </button>
+                    )}
+
+                    <input
+                      type="checkbox"
+                      checked={item.enabled}
+                      onChange={(e) =>
+                        handleToggleFeatureEnabled(item.key, item.enabledKey, e.target.checked)
+                      }
+                      aria-label={`Toggle ${item.title}`}
+                      className="w-5 h-5 accent-blue-600 rounded cursor-pointer shrink-0"
+                    />
                   </div>
                 </div>
 
-                {item.state !== 'granted' && item.state !== 'unsupported' && (
-                  <button
-                    type="button"
-                    disabled={busyKey === item.key || requestingAll}
-                    onClick={() => handleRequestSingle(item.key)}
-                    className="px-3.5 py-2 min-h-[38px] rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold shrink-0 transition-colors"
-                  >
-                    {busyKey === item.key ? 'Requesting...' : 'Allow'}
-                  </button>
+                {item.state === 'denied' && (
+                  <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-700 dark:text-red-300">
+                    <strong>Blocked by browser/device:</strong> Open browser/device settings (tap the lock/tune icon in the address bar or phone app permissions) to allow {item.title}.
+                  </div>
                 )}
               </div>
             ))}

@@ -58,7 +58,6 @@ import {
   formatLocationChatMessage,
   getCurrentDeviceLocation,
   parseLocationChatMessage,
-  requestLocationPermission,
 } from '../services/permissionService';
 import {
   addMembersToGroup,
@@ -1575,8 +1574,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 setSharingLocation(true);
                 setError('');
                 try {
-                  await requestLocationPermission(currentUser.id);
-                  const pos = await getCurrentDeviceLocation();
+                  const pos = await getCurrentDeviceLocation(currentUser.id);
                   const content = formatLocationChatMessage({
                     latitude: pos.coords.latitude,
                     longitude: pos.coords.longitude,

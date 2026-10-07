@@ -58,10 +58,12 @@ import {
   getStoredPermissionStatus,
   LiveLocationPayload,
   requestAllOSAPermissions,
+  syncPermissionsFromSupabase,
 } from './services/permissionService';
 import {
   ensureUserPushSubscription,
   reportActiveChatForPush,
+  showBackgroundSystemNotification,
   syncNotificationPreferencesFromSupabase,
 } from './services/pushNotificationService';
 import {
@@ -190,10 +192,65 @@ export default function App() {
     }
   }, []);
 
+  // Present incoming Audio or Video Call UI and optionally auto-accept if user clicked ACCEPT on notification
+  const presentIncomingCall = useCallback(
+    async (incoming: CallRecord, uid: string, autoAccept = false) => {
+      if (!incoming || !uid) return;
+      if (activeCall && activeCall.id === incoming.id) {
+        if (autoAccept && callManagerRef.current) {
+          stopIncomingCallRingtone();
+          await callManagerRef.current.acceptIncomingCall(incoming);
+        }
+        return;
+      }
+      if (activeCall) return;
+
+      const callerProfile = await fetchMyProfile(incoming.caller_id);
+      setCallPeerProfile(callerProfile);
+      setActiveCall(incoming);
+      setCallError(undefined);
+      if (!autoAccept) {
+        startIncomingCallRingtone(uid, incoming.id);
+      }
+
+      const manager = new WebRTCCallManager(uid, {
+        onLocalStream: setLocalStream,
+        onRemoteStream: setRemoteStream,
+        onStatusChange: (status, errMsg) => {
+          setCallStatus(status);
+          if (status !== 'calling' && status !== 'ringing') {
+            stopIncomingCallRingtone();
+          }
+          if (errMsg) setCallError(errMsg);
+          if (
+            status === 'ended' ||
+            status === 'rejected' ||
+            status === 'missed' ||
+            status === 'failed'
+          ) {
+            stopIncomingCallRingtone();
+            setTimeout(() => {
+              setActiveCall(null);
+              callManagerRef.current = null;
+            }, 1800);
+          }
+        },
+      });
+      callManagerRef.current = manager;
+      await manager.prepareIncomingCall(incoming);
+
+      if (autoAccept) {
+        stopIncomingCallRingtone();
+        await manager.acceptIncomingCall(incoming);
+      }
+    },
+    [activeCall]
+  );
+
   // Resume an incoming Audio or Video Call when the user clicks a Web Push call notification
   const resumeIncomingCallFromNotification = useCallback(
-    async (callId: string, uid: string) => {
-      if (!callId || !uid || activeCall) return;
+    async (callId: string, uid: string, action?: string) => {
+      if (!callId || !uid) return;
       try {
         const { data: callRow } = await supabase
           .from('calls')
@@ -202,51 +259,73 @@ export default function App() {
           .maybeSingle();
 
         const incoming = callRow as CallRecord | null;
-        if (
-          !incoming ||
-          incoming.receiver_id !== uid ||
-          (incoming.status !== 'calling' && incoming.status !== 'ringing')
-        ) {
+        if (!incoming || incoming.receiver_id !== uid) {
           setActiveTab('calls');
           return;
         }
 
-        const callerProfile = await fetchMyProfile(incoming.caller_id);
-        setCallPeerProfile(callerProfile);
-        setActiveCall(incoming);
-        setCallError(undefined);
-        startIncomingCallRingtone(uid, incoming.id);
+        if (action === 'reject') {
+          stopIncomingCallRingtone();
+          await supabase
+            .from('calls')
+            .update({
+              status: 'rejected',
+              ended_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', incoming.id);
+          await supabase.from('call_signals').insert({
+            call_id: incoming.id,
+            sender_id: uid,
+            receiver_id: incoming.caller_id,
+            signal_type: 'reject',
+            payload: {},
+          });
+          if (activeCall && activeCall.id === incoming.id) {
+            callManagerRef.current?.cleanup();
+            setActiveCall(null);
+            callManagerRef.current = null;
+          }
+          return;
+        }
 
-        const manager = new WebRTCCallManager(uid, {
-          onLocalStream: setLocalStream,
-          onRemoteStream: setRemoteStream,
-          onStatusChange: (status, errMsg) => {
-            setCallStatus(status);
-            if (status !== 'calling' && status !== 'ringing') {
-              stopIncomingCallRingtone();
-            }
-            if (errMsg) setCallError(errMsg);
-            if (
-              status === 'ended' ||
-              status === 'rejected' ||
-              status === 'missed' ||
-              status === 'failed'
-            ) {
-              stopIncomingCallRingtone();
-              setTimeout(() => {
-                setActiveCall(null);
-                callManagerRef.current = null;
-              }, 1800);
-            }
-          },
-        });
-        callManagerRef.current = manager;
-        await manager.prepareIncomingCall(incoming);
+        if (incoming.status !== 'calling' && incoming.status !== 'ringing') {
+          setActiveTab('calls');
+          return;
+        }
+
+        await presentIncomingCall(incoming, uid, action === 'accept');
       } catch {
         setActiveTab('calls');
       }
     },
-    [activeCall]
+    [activeCall, presentIncomingCall]
+  );
+
+  // Check for any active ringing/calling incoming call so background tabs & PWAs never miss calls
+  const checkPendingIncomingCall = useCallback(
+    async (uid: string) => {
+      if (!uid || activeCall) return;
+      try {
+        const cutoff = new Date(Date.now() - 60 * 1000).toISOString();
+        const { data: rows } = await supabase
+          .from('calls')
+          .select('*')
+          .eq('receiver_id', uid)
+          .in('status', ['calling', 'ringing'])
+          .gte('created_at', cutoff)
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (rows && rows.length > 0) {
+          const incoming = rows[0] as CallRecord;
+          await presentIncomingCall(incoming, uid, false);
+        }
+      } catch {
+        // Ignore transient network errors
+      }
+    },
+    [activeCall, presentIncomingCall]
   );
 
   const loadAuthenticatedUser = useCallback(async () => {
@@ -291,35 +370,43 @@ export default function App() {
         .then(() => ensureUserPushSubscription(profile.id))
         .catch(() => {});
 
-      // Request native permissions ONE BY ONE (1. Camera -> 2. Microphone -> 3. Location -> 4. Notifications)
-      // on first-time registration / login without opening any separate Permission Setup page/modal
-      const permStatus = getStoredPermissionStatus(profile.id);
-      let needsOnboarding = !permStatus.onboardingCompleted;
-      try {
-        if (localStorage.getItem('osa_needs_permission_onboarding') === 'true') {
-          needsOnboarding = true;
-        }
-      } catch {
-        // Ignore
-      }
-      if (needsOnboarding) {
-        requestAllOSAPermissions(profile.id).catch(() => {});
-      }
+      // Sync centralized permission state from Supabase + browser Permissions API first,
+      // then run the ONE-TIME permission onboarding sequence (Camera -> Microphone -> Location -> Notifications)
+      // ONLY if onboarding has not completed for this user/device.
+      syncPermissionsFromSupabase(profile.id)
+        .then((syncedPerm) => {
+          let needsOnboarding = !syncedPerm.onboardingCompleted;
+          try {
+            if (localStorage.getItem('osa_needs_permission_onboarding') === 'true') {
+              needsOnboarding = true;
+            }
+          } catch {
+            // Ignore
+          }
+          if (needsOnboarding) {
+            return requestAllOSAPermissions(profile.id);
+          }
+          return syncedPerm;
+        })
+        .catch(() => {});
 
       await setUserOnlineStatus(profile.id, true);
       await refreshChatsAndNotifications(profile.id);
 
-      // Handle URL query deep-links from Web Push notification clicks (?chatId=... or ?callId=...)
+      // Handle URL query deep-links from Web Push notification clicks (?chatId=... or ?callId=...&callAction=...)
       const urlParams = new URLSearchParams(window.location.search);
       const deepChatId = urlParams.get('chatId');
       const deepCallId = urlParams.get('callId');
+      const deepCallAction = urlParams.get('callAction') || undefined;
       if (deepCallId) {
-        resumeIncomingCallFromNotification(deepCallId, profile.id);
+        resumeIncomingCallFromNotification(deepCallId, profile.id, deepCallAction);
       } else if (deepChatId) {
         setActiveTab('chats');
         setSelectedChatId(deepChatId);
+      } else {
+        checkPendingIncomingCall(profile.id);
       }
-      if (deepChatId || deepCallId) {
+      if (deepChatId || deepCallId || deepCallAction) {
         try {
           const cleanUrl = window.location.pathname;
           window.history.replaceState({}, document.title, cleanUrl);
@@ -332,7 +419,7 @@ export default function App() {
     } finally {
       setBootstrapping(false);
     }
-  }, [refreshChatsAndNotifications]);
+  }, [refreshChatsAndNotifications, resumeIncomingCallFromNotification, checkPendingIncomingCall]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -404,9 +491,10 @@ export default function App() {
 
       if (payload.type === 'OSA_NOTIFICATION_CLICK') {
         const data = payload.data || {};
+        const action = typeof payload.action === 'string' ? payload.action : undefined;
         if (data.callId || data.type === 'incoming_call') {
           if (data.callId) {
-            resumeIncomingCallFromNotification(String(data.callId), currentUser.id);
+            resumeIncomingCallFromNotification(String(data.callId), currentUser.id, action);
           } else if (!activeCall) {
             setActiveTab('calls');
           }
@@ -435,7 +523,7 @@ export default function App() {
     }) => {
       if (!currentUser) return;
       try {
-        const pos = await getCurrentDeviceLocation();
+        const pos = await getCurrentDeviceLocation(currentUser.id);
         const locPayload: LiveLocationPayload = {
           requestId: req.requestId,
           senderId: currentUser.id,
@@ -623,6 +711,24 @@ export default function App() {
           }
 
           setNotifications((prev) => [newNotif, ...prev]);
+
+          // Show OS / Service Worker notification when OSA is in background, another tab, or viewing a different chat
+          const isSameActiveChat =
+            document.visibilityState === 'visible' &&
+            document.hasFocus() &&
+            activeTab === 'chats' &&
+            Boolean(selectedChatId) &&
+            newNotif.chat_id === selectedChatId;
+
+          if (!isSameActiveChat && newNotif.type !== 'incoming_call') {
+            showBackgroundSystemNotification({
+              userId: currentUser.id,
+              title: newNotif.title || 'OSA',
+              body: newNotif.body || 'New message on OSA',
+              chatId: newNotif.chat_id || null,
+              type: newNotif.type === 'mention' ? 'group_message' : newNotif.type,
+            }).catch(() => {});
+          }
         }
       )
       .on(
@@ -639,37 +745,21 @@ export default function App() {
           if (activeCall) return; // Already in a call
 
           const callerProfile = await fetchMyProfile(incoming.caller_id);
-          setCallPeerProfile(callerProfile);
-          setActiveCall(incoming);
-          setCallError(undefined);
-          startIncomingCallRingtone(currentUser.id, incoming.id);
+          await presentIncomingCall(incoming, currentUser.id, false);
 
-          const manager = new WebRTCCallManager(currentUser.id, {
-            onLocalStream: setLocalStream,
-            onRemoteStream: setRemoteStream,
-            onStatusChange: (status, errMsg) => {
-              setCallStatus(status);
-              if (status !== 'calling' && status !== 'ringing') {
-                stopIncomingCallRingtone();
-              }
-              if (errMsg) setCallError(errMsg);
-              if (
-                status === 'ended' ||
-                status === 'rejected' ||
-                status === 'missed' ||
-                status === 'failed'
-              ) {
-                stopIncomingCallRingtone();
-                setTimeout(() => {
-                  setActiveCall(null);
-                  callManagerRef.current = null;
-                }, 1800);
-              }
-            },
-          });
-          callManagerRef.current = manager;
-
-          await manager.prepareIncomingCall(incoming);
+          // If tab is in background or unfocused, also show OS incoming call notification with Accept/Decline
+          if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+            const callLabel = incoming.call_type === 'video' ? 'Video Call' : 'Audio Call';
+            showBackgroundSystemNotification({
+              userId: currentUser.id,
+              title: `Incoming ${callLabel}`,
+              body: `${callerProfile?.full_name || 'Someone'} is calling you on OSA`,
+              chatId: incoming.chat_id || null,
+              callId: incoming.id,
+              callType: incoming.call_type,
+              type: 'incoming_call',
+            }).catch(() => {});
+          }
         }
       )
       .on(
@@ -715,14 +805,37 @@ export default function App() {
     const handleBeforeUnload = () => {
       setUserOnlineStatus(currentUser.id, false);
     };
+    const handleFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        checkPendingIncomingCall(currentUser.id);
+      }
+    };
     window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('focus', handleFocusOrVisible);
+    document.addEventListener('visibilitychange', handleFocusOrVisible);
+
+    const callCheckInterval = window.setInterval(() => {
+      checkPendingIncomingCall(currentUser.id);
+    }, 4000);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('focus', handleFocusOrVisible);
+      document.removeEventListener('visibilitychange', handleFocusOrVisible);
+      window.clearInterval(callCheckInterval);
       supabase.removeChannel(locBroadcastChannel);
       supabase.removeChannel(globalChannel);
     };
-  }, [currentUser, activeCall, refreshChatsAndNotifications, respondWithDeviceLocation]);
+  }, [
+    currentUser,
+    activeCall,
+    activeTab,
+    selectedChatId,
+    refreshChatsAndNotifications,
+    respondWithDeviceLocation,
+    presentIncomingCall,
+    checkPendingIncomingCall,
+  ]);
 
   // Live user directory search when typing in the Home Search bar
   useEffect(() => {

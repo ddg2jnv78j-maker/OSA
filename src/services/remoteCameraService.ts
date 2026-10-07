@@ -1,6 +1,7 @@
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { getIceServers, supabase } from '../lib/supabase';
 import { createNotification } from './osaService';
+import { checkNativePermissions, saveStoredPermissionStatus } from './permissionService';
 
 export const RCAM_SIG_PREFIX = '[OSA_RCAM_SIG]';
 
@@ -208,8 +209,19 @@ export class RemoteCameraSessionManager {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw new Error('Camera access is not supported on the remote browser/device.');
     }
+
+    const perm = await checkNativePermissions(this.currentUserId);
+    if (!perm.allowRemoteCamera || !perm.cameraEnabled) {
+      throw new Error('Remote Camera access is disabled in the peer device settings.');
+    }
+    if (perm.camera !== 'granted') {
+      throw new Error(
+        'Camera permission is not granted on the remote device. The user can enable Camera in Settings → Privacy / Permissions.'
+      );
+    }
+
     try {
-      return await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
           facingMode: { ideal: facing },
@@ -217,12 +229,16 @@ export class RemoteCameraSessionManager {
           height: { ideal: 720 },
         },
       });
+      saveStoredPermissionStatus({ camera: 'granted' }, this.currentUserId);
+      return stream;
     } catch {
       // Fallback to any available video device
-      return await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: true,
       });
+      saveStoredPermissionStatus({ camera: 'granted' }, this.currentUserId);
+      return stream;
     }
   }
 
