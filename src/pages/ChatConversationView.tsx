@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Eye,
   FileText,
+  Globe,
   Info,
   MapPin,
   MoreVertical,
@@ -40,6 +41,18 @@ import { RingtoneModal } from '../components/RingtoneSelector';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
 import { generateSmartDraftOrReply } from '../services/aiService';
+import {
+  CHAT_TRANSLATION_LANG_CHANGED_EVENT,
+  CHAT_TRANSLATION_LANGUAGES,
+  ChatTranslationLanguageCode,
+  detectMessageLanguage,
+  getCachedTranslation,
+  getChatTranslationLanguage,
+  getTranslationLanguageOption,
+  isMessageTranslatable,
+  saveChatTranslationLanguage,
+  translateChatMessageText,
+} from '../services/translationService';
 import {
   ChatLocationData,
   formatLocationChatMessage,
@@ -123,8 +136,27 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [showRemoteCameraModal, setShowRemoteCameraModal] = useState(false);
   const [showRemoteLocationModal, setShowRemoteLocationModal] = useState(false);
   const [showRingtoneModal, setShowRingtoneModal] = useState(false);
+  const [showTranslationModal, setShowTranslationModal] = useState(false);
   const [selectedLocationCard, setSelectedLocationCard] = useState<ChatLocationData | null>(null);
   const [sharingLocation, setSharingLocation] = useState(false);
+
+  // Per-user Automatic Chat Message Translation state
+  const [chatTranslationLang, setChatTranslationLang] =
+    useState<ChatTranslationLanguageCode>(() =>
+      getChatTranslationLanguage(currentUser.id, currentUser.language)
+    );
+  const [translationsMap, setTranslationsMap] = useState<
+    Record<
+      string,
+      {
+        status: 'translating' | 'translated' | 'same-language' | 'failed';
+        translatedText: string | null;
+        targetLang: ChatTranslationLanguageCode;
+        sourceContent: string;
+      }
+    >
+  >({});
+  const [showOriginalMap, setShowOriginalMap] = useState<Record<string, boolean>>({});
 
   // Realtime & Typing state
   const [peerIsTyping, setPeerIsTyping] = useState(false);
@@ -215,6 +247,108 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   useEffect(() => {
     scrollToBottom();
   }, [messages.length, peerIsTyping]);
+
+  // Listen for changes to the user's preferred Chat Translation Language
+  useEffect(() => {
+    setChatTranslationLang(
+      getChatTranslationLanguage(currentUser.id, currentUser.language)
+    );
+    const handleTransLangChange = () => {
+      setChatTranslationLang(
+        getChatTranslationLanguage(currentUser.id, currentUser.language)
+      );
+    };
+    window.addEventListener(
+      CHAT_TRANSLATION_LANG_CHANGED_EVENT,
+      handleTransLangChange
+    );
+    return () => {
+      window.removeEventListener(
+        CHAT_TRANSLATION_LANG_CHANGED_EVENT,
+        handleTransLangChange
+      );
+    };
+  }, [currentUser.id, currentUser.language]);
+
+  // Asynchronously translate incoming messages from other users into currentUser's preferred language
+  useEffect(() => {
+    if (chatTranslationLang === 'off' || messages.length === 0) return;
+
+    let cancelled = false;
+
+    for (const msg of messages) {
+      if (!isMessageTranslatable(msg, currentUser.id)) continue;
+
+      const detected = detectMessageLanguage(msg.content);
+      if (detected === chatTranslationLang) continue;
+
+      const existing = translationsMap[msg.id];
+      if (
+        existing &&
+        existing.targetLang === chatTranslationLang &&
+        existing.sourceContent === msg.content &&
+        (existing.status === 'translated' ||
+          existing.status === 'same-language' ||
+          existing.status === 'translating')
+      ) {
+        continue;
+      }
+
+      const syncCached = getCachedTranslation(msg.content, chatTranslationLang);
+      if (syncCached) {
+        setTranslationsMap((prev) => ({
+          ...prev,
+          [msg.id]: {
+            status: 'translated',
+            translatedText: syncCached,
+            targetLang: chatTranslationLang,
+            sourceContent: msg.content,
+          },
+        }));
+        continue;
+      }
+
+      setTranslationsMap((prev) => ({
+        ...prev,
+        [msg.id]: {
+          status: 'translating',
+          translatedText: null,
+          targetLang: chatTranslationLang,
+          sourceContent: msg.content,
+        },
+      }));
+
+      translateChatMessageText(msg.content, chatTranslationLang)
+        .then((res) => {
+          if (cancelled) return;
+          setTranslationsMap((prev) => ({
+            ...prev,
+            [msg.id]: {
+              status: res.status,
+              translatedText: res.translatedText,
+              targetLang: chatTranslationLang,
+              sourceContent: msg.content,
+            },
+          }));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setTranslationsMap((prev) => ({
+            ...prev,
+            [msg.id]: {
+              status: 'failed',
+              translatedText: null,
+              targetLang: chatTranslationLang,
+              sourceContent: msg.content,
+            },
+          }));
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messages, chatTranslationLang, currentUser.id]);
 
   // Realtime subscription for messages, attachments, and typing broadcast
   useEffect(() => {
@@ -989,14 +1123,98 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       );
                     }
 
+                    if (msg.is_deleted_for_everyone) {
+                      return (
+                        <p className="text-xs italic opacity-75 whitespace-pre-wrap break-words leading-relaxed">
+                          {t.messageDeleted}
+                        </p>
+                      );
+                    }
+
+                    const activeTargetLang =
+                      chatTranslationLang !== 'off' ? chatTranslationLang : null;
+                    const canTranslate =
+                      activeTargetLang !== null &&
+                      isMessageTranslatable(msg, currentUser.id);
+                    const detectedLang = canTranslate
+                      ? detectMessageLanguage(msg.content)
+                      : null;
+                    const needsTranslation =
+                      canTranslate &&
+                      activeTargetLang !== null &&
+                      detectedLang !== null &&
+                      detectedLang !== activeTargetLang;
+
+                    const tState =
+                      needsTranslation &&
+                      activeTargetLang !== null &&
+                      translationsMap[msg.id]?.targetLang === activeTargetLang &&
+                      translationsMap[msg.id]?.sourceContent === msg.content
+                        ? translationsMap[msg.id]
+                        : null;
+
+                    const instantCached =
+                      needsTranslation && !tState && activeTargetLang !== null
+                        ? getCachedTranslation(msg.content, activeTargetLang)
+                        : null;
+
+                    const resolvedTranslatedText =
+                      tState?.status === 'translated'
+                        ? tState.translatedText
+                        : instantCached;
+
+                    const isBanglaUi =
+                      chatTranslationLang === 'bn' || currentUser.language === 'bn';
+                    const originalLabel = isBanglaUi ? 'মূল বার্তা' : 'Original';
+                    const translatingLabel = isBanglaUi
+                      ? 'অনুবাদ করা হচ্ছে…'
+                      : 'Translating…';
+
+                    if (needsTranslation && resolvedTranslatedText) {
+                      const isOriginalExpanded = Boolean(showOriginalMap[msg.id]);
+                      return (
+                        <div>
+                          <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+                            {resolvedTranslatedText}
+                          </p>
+                          <div className="mt-1.5 pt-1 border-t border-slate-200/70 dark:border-slate-800/80">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShowOriginalMap((prev) => ({
+                                  ...prev,
+                                  [msg.id]: !prev[msg.id],
+                                }));
+                              }}
+                              className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-1"
+                            >
+                              <Globe className="w-3 h-3 shrink-0" />
+                              <span>{originalLabel}</span>
+                            </button>
+                            {isOriginalExpanded && (
+                              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 whitespace-pre-wrap break-words leading-relaxed">
+                                <span className="font-semibold">{originalLabel}:</span>{' '}
+                                {msg.content}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
-                      <p
-                        className={`text-sm whitespace-pre-wrap break-words leading-relaxed ${
-                          msg.is_deleted_for_everyone ? 'italic opacity-75 text-xs' : ''
-                        }`}
-                      >
-                        {msg.is_deleted_for_everyone ? t.messageDeleted : msg.content}
-                      </p>
+                      <div>
+                        <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+                          {msg.content}
+                        </p>
+                        {needsTranslation && tState?.status === 'translating' && (
+                          <p className="mt-1 text-[10px] italic text-slate-400 dark:text-slate-500 flex items-center gap-1">
+                            <Globe className="w-3 h-3 animate-pulse shrink-0" />
+                            <span>{translatingLabel}</span>
+                          </p>
+                        )}
+                      </div>
                     );
                   })()}
 
@@ -1547,6 +1765,23 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
                 <button
                   type="button"
+                  onClick={() => {
+                    setShowChatInfo(false);
+                    setShowTranslationModal(true);
+                  }}
+                  className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-sm text-slate-700 dark:text-slate-200"
+                >
+                  <span className="flex items-center gap-3">
+                    <Globe className="w-4 h-4 text-blue-600" />
+                    <span>Chat Translation Language</span>
+                  </span>
+                  <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">
+                    {getTranslationLanguageOption(chatTranslationLang).badge}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={handleClearChat}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-sm text-amber-600"
                 >
@@ -1856,6 +2091,78 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         userId={currentUser.id}
         onClose={() => setShowRingtoneModal(false)}
       />
+
+      {/* Quick Chat Translation Language Modal */}
+      {showTranslationModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 overflow-hidden">
+          <div className="w-full max-w-md max-h-dvh-modal rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col overflow-hidden">
+            <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-600/10 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                  <Globe className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    Chat Translation Language
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Auto-translate incoming messages into your language
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTranslationModal(false)}
+                className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-6 space-y-2">
+              {CHAT_TRANSLATION_LANGUAGES.map((opt) => {
+                const active = chatTranslationLang === opt.code;
+                return (
+                  <button
+                    key={opt.code}
+                    type="button"
+                    onClick={async () => {
+                      const saved = await saveChatTranslationLanguage(
+                        currentUser.id,
+                        opt.code
+                      );
+                      setChatTranslationLang(saved);
+                    }}
+                    className={`w-full flex items-center justify-between p-3.5 rounded-2xl border transition-colors text-left ${
+                      active
+                        ? 'border-blue-600 bg-blue-50/70 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400'
+                        : 'border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                    }`}
+                  >
+                    <div>
+                      <p className="text-sm font-semibold">{opt.nativeName}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {opt.name}
+                      </p>
+                    </div>
+                    {active && <Check className="w-5 h-5 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="shrink-0 px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowTranslationModal(false)}
+                className="w-full sm:w-auto px-6 py-2.5 min-h-[42px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

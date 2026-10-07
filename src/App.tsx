@@ -69,6 +69,11 @@ import {
   stopIncomingCallRingtone,
   syncUserRingtoneFromSupabase,
 } from './services/ringtoneService';
+import {
+  getChatTranslationLanguage,
+  saveChatTranslationLanguage,
+  syncChatTranslationLanguageFromSupabase,
+} from './services/translationService';
 import { WebRTCCallManager } from './services/webrtcService';
 import {
   CallRecord,
@@ -152,6 +157,10 @@ export default function App() {
   const handleLanguageChange = (nextLang: LanguageCode) => {
     setLanguage(nextLang);
     saveLanguagePreference(nextLang);
+    const currentTrans = getChatTranslationLanguage(currentUser?.id, nextLang);
+    if (currentTrans === 'en' || currentTrans === 'bn') {
+      saveChatTranslationLanguage(currentUser?.id, nextLang).catch(() => {});
+    }
   };
 
   const refreshChatsAndNotifications = useCallback(async (uid: string) => {
@@ -212,6 +221,7 @@ export default function App() {
       if (profile.theme) handleThemeChange(profile.theme);
       if (profile.language) handleLanguageChange(profile.language);
       syncUserRingtoneFromSupabase(profile.id).catch(() => {});
+      syncChatTranslationLanguageFromSupabase(profile.id, profile.language).catch(() => {});
 
       // Show Permission Setup screen on first-time registration / onboarding
       const permStatus = getStoredPermissionStatus(profile.id);

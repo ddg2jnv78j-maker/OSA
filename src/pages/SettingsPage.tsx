@@ -40,6 +40,14 @@ import {
   stopRingtonePreview,
 } from '../services/ringtoneService';
 import {
+  CHAT_TRANSLATION_LANG_CHANGED_EVENT,
+  CHAT_TRANSLATION_LANGUAGES,
+  ChatTranslationLanguageCode,
+  getChatTranslationLanguage,
+  getTranslationLanguageOption,
+  saveChatTranslationLanguage,
+} from '../services/translationService';
+import {
   blockUser,
   deleteUserAccount,
   deleteUserUploadedAttachment,
@@ -81,6 +89,7 @@ export type SettingsSubPage =
   | 'notifications'
   | 'appearance'
   | 'language'
+  | 'language_translation'
   | 'storage'
   | 'blocked'
   | 'help'
@@ -145,18 +154,34 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [selectedRingtoneId, setSelectedRingtoneId] = useState<OSARingtoneId>(() =>
     getSelectedRingtoneId(currentUser.id)
   );
+  const [chatTranslationLang, setChatTranslationLang] =
+    useState<ChatTranslationLanguageCode>(() =>
+      getChatTranslationLanguage(currentUser.id, language)
+    );
 
   useEffect(() => {
     setSelectedRingtoneId(getSelectedRingtoneId(currentUser.id));
+    setChatTranslationLang(getChatTranslationLanguage(currentUser.id, language));
     const handleRingtoneChanged = () => {
       setSelectedRingtoneId(getSelectedRingtoneId(currentUser.id));
     };
+    const handleTranslationLangChanged = () => {
+      setChatTranslationLang(getChatTranslationLanguage(currentUser.id, language));
+    };
     window.addEventListener(RINGTONE_CHANGED_EVENT, handleRingtoneChanged);
+    window.addEventListener(
+      CHAT_TRANSLATION_LANG_CHANGED_EVENT,
+      handleTranslationLangChanged
+    );
     return () => {
       window.removeEventListener(RINGTONE_CHANGED_EVENT, handleRingtoneChanged);
+      window.removeEventListener(
+        CHAT_TRANSLATION_LANG_CHANGED_EVENT,
+        handleTranslationLangChanged
+      );
       stopRingtonePreview();
     };
-  }, [currentUser.id]);
+  }, [currentUser.id, language]);
 
   useEffect(() => {
     stopRingtonePreview();
@@ -627,7 +652,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               },
               { id: 'notifications', icon: Bell, label: t.notifications, sub: 'Alerts, unread, push notifications' },
               { id: 'appearance', icon: Palette, label: t.appearance, sub: `Current: ${theme.toUpperCase()}` },
-              { id: 'language', icon: Globe, label: t.language, sub: language === 'bn' ? 'বাংলা' : 'English' },
+              {
+                id: 'language',
+                icon: Globe,
+                label: t.language,
+                sub: `${language === 'bn' ? 'বাংলা' : 'English'} · Chat Translation: ${
+                  getTranslationLanguageOption(chatTranslationLang).nativeName
+                }`,
+              },
               { id: 'storage', icon: HardDrive, label: t.storageAndData, sub: 'Media, files & storage cleanup' },
               { id: 'blocked', icon: Ban, label: t.blockedContacts, sub: 'Manage blocked OSA users' },
               { id: 'help', icon: HelpCircle, label: t.helpAndSupport, sub: 'FAQ, guide, contact support, report bug' },
@@ -1202,13 +1234,46 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       )}
 
       {/* ================================================================= */}
-      {/* 31. LANGUAGE (ENGLISH / বাংলা)                                    */}
+      {/* 31. LANGUAGE & CHAT TRANSLATION LANGUAGE                          */}
       {/* ================================================================= */}
       {subPage === 'language' && (
         <div className="space-y-5">
           {renderSubHeader(t.language)}
 
+          {/* Navigate to dedicated Chat Translation Language sub-screen */}
+          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setSubPage('language_translation')}
+              className="w-full flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors text-left"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-blue-600/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                  <Globe className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                    {language === 'bn'
+                      ? 'চ্যাট অনুবাদ ভাষা (Chat Translation Language)'
+                      : 'Chat Translation Language'}
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                    {getTranslationLanguageOption(chatTranslationLang).nativeName} &middot;{' '}
+                    {language === 'bn'
+                      ? 'ইনকামিং মেসেজ স্বয়ংক্রিয়ভাবে অনুবাদ হবে'
+                      : 'Auto-translate incoming chat messages'}
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-4.5 h-4.5 text-slate-400 shrink-0" />
+            </button>
+          </div>
+
+          {/* App Interface Language */}
           <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 space-y-2">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 px-1 mb-1">
+              {language === 'bn' ? 'অ্যাপের ভাষা (App Language)' : 'App Interface Language'}
+            </p>
             {(
               [
                 { value: 'en', label: t.english },
@@ -1222,6 +1287,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   type="button"
                   onClick={async () => {
                     onLanguageChange(opt.value);
+                    if (chatTranslationLang === 'en' || chatTranslationLang === 'bn') {
+                      const saved = await saveChatTranslationLanguage(
+                        currentUser.id,
+                        opt.value
+                      );
+                      setChatTranslationLang(saved);
+                    }
                     try {
                       const updated = await updateMyProfile(currentUser.id, {
                         language: opt.value,
@@ -1239,6 +1311,117 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 >
                   <span className="text-sm font-semibold">{opt.label}</span>
                   {active && <Check className="w-5 h-5" />}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Direct Chat Translation Language Selector */}
+          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 space-y-2">
+            <div className="px-1 mb-1">
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                {language === 'bn'
+                  ? 'চ্যাট অনুবাদ ভাষা (Chat Translation Language)'
+                  : 'Chat Translation Language'}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                {language === 'bn'
+                  ? 'অন্য ব্যবহারকারীর পাঠানো বার্তা আপনার পছন্দের ভাষায় দেখানো হবে। মূল বার্তা অপরিবর্তিত থাকবে।'
+                  : 'Incoming messages from other users will be displayed in your preferred language while preserving the original message.'}
+              </p>
+            </div>
+
+            {CHAT_TRANSLATION_LANGUAGES.map((opt) => {
+              const active = chatTranslationLang === opt.code;
+              return (
+                <button
+                  key={opt.code}
+                  type="button"
+                  onClick={async () => {
+                    const saved = await saveChatTranslationLanguage(
+                      currentUser.id,
+                      opt.code
+                    );
+                    setChatTranslationLang(saved);
+                    setStatusBanner({
+                      type: 'success',
+                      text:
+                        language === 'bn'
+                          ? `চ্যাট অনুবাদ ভাষা নির্ধারণ করা হয়েছে: ${opt.nativeName}`
+                          : `Chat Translation Language set to ${opt.nativeName}`,
+                    });
+                  }}
+                  className={`w-full flex items-center justify-between p-3.5 rounded-2xl border transition-colors text-left ${
+                    active
+                      ? 'border-blue-600 bg-blue-50/60 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400'
+                      : 'border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                  }`}
+                >
+                  <div>
+                    <p className="text-sm font-semibold">{opt.nativeName}</p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {opt.name}
+                    </p>
+                  </div>
+                  {active && <Check className="w-5 h-5 shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {subPage === 'language_translation' && (
+        <div className="space-y-5">
+          {renderSubHeader('Chat Translation Language', 'language')}
+
+          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 space-y-2">
+            <div className="px-1 mb-2">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                {language === 'bn'
+                  ? 'আপনার পছন্দের চ্যাট ভাষা নির্বাচন করুন'
+                  : 'Choose Your Preferred Chat Language'}
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                {language === 'bn'
+                  ? 'যখন অন্য কোনো ব্যবহারকারী ভিন্ন ভাষায় মেসেজ পাঠাবে, OSA সেটি স্বয়ংক্রিয়ভাবে আপনার выбран ভাষায় অনুবাদ করে দেখাবে। মেসেজের নিচে "মূল বার্তা" ট্যাপ করে আসল মেসেজ দেখা যাবে।'
+                  : 'When another user sends a message in a different language, OSA automatically translates it into your preferred language. You can tap "Original" under any translated message to view the original text.'}
+              </p>
+            </div>
+
+            {CHAT_TRANSLATION_LANGUAGES.map((opt) => {
+              const active = chatTranslationLang === opt.code;
+              return (
+                <button
+                  key={opt.code}
+                  type="button"
+                  onClick={async () => {
+                    const saved = await saveChatTranslationLanguage(
+                      currentUser.id,
+                      opt.code
+                    );
+                    setChatTranslationLang(saved);
+                    setStatusBanner({
+                      type: 'success',
+                      text:
+                        language === 'bn'
+                          ? `চ্যাট অনুবাদ ভাষা নির্ধারণ করা হয়েছে: ${opt.nativeName}`
+                          : `Chat Translation Language set to ${opt.nativeName}`,
+                    });
+                  }}
+                  className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-colors text-left ${
+                    active
+                      ? 'border-blue-600 bg-blue-50/60 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400'
+                      : 'border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                  }`}
+                >
+                  <div>
+                    <p className="text-sm font-semibold">{opt.nativeName}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {opt.name}
+                    </p>
+                  </div>
+                  {active && <Check className="w-5 h-5 shrink-0" />}
                 </button>
               );
             })}
