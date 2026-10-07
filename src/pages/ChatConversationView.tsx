@@ -186,6 +186,8 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [candidateUsers, setCandidateUsers] = useState<Profile[]>([]);
   const [memberSearch, setMemberSearch] = useState('');
 
+  const chatViewportRef = useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const groupPhotoInputRef = useRef<HTMLInputElement | null>(null);
@@ -204,9 +206,40 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     !isGroup && peer && (!peerPrivacy || peerPrivacy.last_seen_visibility !== 'nobody');
   const hidePeerPhoto = !isGroup && peerPrivacy?.profile_photo_visibility === 'nobody';
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = (smooth = true) => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto',
+    });
   };
+
+  // Keep mobile visualViewport (iPhone/Android virtual keyboard) synced without breaking fixed header/composer
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const handleViewportChange = () => {
+      if (window.scrollY !== 0 || window.scrollX !== 0) {
+        window.scrollTo(0, 0);
+      }
+      const rootEl = chatViewportRef.current;
+      if (!rootEl) return;
+      if (window.innerWidth < 768 && vv.height > 0 && vv.height < window.innerHeight) {
+        rootEl.style.setProperty('--osa-vv-height', `${Math.round(vv.height)}px`);
+      } else {
+        rootEl.style.removeProperty('--osa-vv-height');
+      }
+    };
+
+    vv.addEventListener('resize', handleViewportChange);
+    vv.addEventListener('scroll', handleViewportChange);
+    return () => {
+      vv.removeEventListener('resize', handleViewportChange);
+      vv.removeEventListener('scroll', handleViewportChange);
+    };
+  }, []);
 
   const loadMessagesAndMeta = async () => {
     try {
@@ -787,176 +820,185 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     });
 
   return (
-    <div className="flex flex-col h-full min-h-0 w-full bg-slate-50 dark:bg-slate-950 relative overflow-hidden">
-      {/* Reconnect Banner */}
-      {realtimeStatus === 'RECONNECTING' && (
-        <div className="shrink-0 bg-amber-500 text-white text-xs font-medium px-4 py-1.5 text-center">
-          {t.reconnecting}
-        </div>
-      )}
+    <div
+      ref={chatViewportRef}
+      className="osa-chat-viewport bg-slate-50 dark:bg-slate-950"
+    >
+      {/* Fixed Top Header Zone (Header + Reconnect/Search/Error Bars) */}
+      <div className="osa-chat-header-zone bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-2xs">
+        {/* Reconnect Banner */}
+        {realtimeStatus === 'RECONNECTING' && (
+          <div className="shrink-0 bg-amber-500 text-white text-xs font-medium px-4 py-1.5 text-center">
+            {t.reconnecting}
+          </div>
+        )}
 
-      {/* Top Conversation Header */}
-      <header className="z-20 flex items-center justify-between px-3 sm:px-5 h-16 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <button
-            type="button"
-            onClick={onBack}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
-            aria-label="Back to chats"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowChatInfo(true)}
-            className="flex items-center gap-3 min-w-0 text-left"
-          >
-            <OSAAvatar
-              name={chatTitle}
-              avatarUrl={chatAvatar}
-              size="sm"
-              isOnline={Boolean(canShowPeerOnline && peer?.is_online)}
-              showOnlineStatus={Boolean(canShowPeerOnline)}
-              isGroup={isGroup}
-              hidePhotoForPrivacy={hidePeerPhoto}
-            />
-            <div className="min-w-0">
-              <h2 className="text-sm font-bold text-slate-900 dark:text-white truncate">
-                {chatTitle}
-              </h2>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                {peerIsTyping ? (
-                  <span className="text-green-600 dark:text-green-400 font-semibold">
-                    {t.typing}
-                  </span>
-                ) : isGroup ? (
-                  `${groupMembers.length || chat.members?.length || 1} members`
-                ) : canShowPeerOnline && peer?.is_online ? (
-                  <span className="text-green-600 dark:text-green-400 font-medium">
-                    {t.online}
-                  </span>
-                ) : canShowPeerLastSeen && peer?.last_seen ? (
-                  `${t.lastSeen} ${new Date(peer.last_seen).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}`
-                ) : (
-                  t.offline
-                )}
-              </p>
-            </div>
-          </button>
-        </div>
-
-        {/* Right Header Actions: Audio Call, Video Call, Remote Camera, Remote Location, Search, Chat Info */}
-        <div className="flex items-center gap-1 shrink-0">
-          {!isGroup && peer && !blockState.anyBlock && (
-            <>
-              <button
-                type="button"
-                onClick={() => onStartCall(peer, 'audio', chat.id)}
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                title={t.audioCall}
-              >
-                <Phone className="w-4.5 h-4.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => onStartCall(peer, 'video', chat.id)}
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                title={t.videoCall}
-              >
-                <Video className="w-5 h-5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowRemoteCameraModal(true)}
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors"
-                title="Remote Camera Live Stream"
-              >
-                <Eye className="w-4.5 h-4.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedLocationCard(null);
-                  setShowRemoteLocationModal(true);
-                }}
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors"
-                title="Remote Location & Live GPS"
-              >
-                <MapPin className="w-4.5 h-4.5" />
-              </button>
-            </>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setSearchInChatOpen((prev) => !prev)}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            title={t.searchInConversation}
-          >
-            <Search className="w-4.5 h-4.5" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowChatInfo(true)}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            title={t.chatInfo}
-          >
-            <Info className="w-5 h-5" />
-          </button>
-        </div>
-      </header>
-
-      {/* Search in Conversation Bar */}
-      {searchInChatOpen && (
-        <div className="shrink-0 px-4 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2 z-10">
-          <Search className="w-4 h-4 text-slate-400 shrink-0" />
-          <input
-            type="text"
-            value={chatSearchQuery}
-            onChange={(e) => setChatSearchQuery(e.target.value)}
-            placeholder={t.searchInConversation}
-            autoFocus
-            className="flex-1 bg-transparent text-sm text-slate-900 dark:text-white focus:outline-none"
-          />
-          {chatSearchQuery && (
+        {/* Top Conversation Header */}
+        <header className="flex items-center justify-between gap-1 px-2 sm:px-5 min-h-16 pt-safe bg-white dark:bg-slate-900 shrink-0 w-full max-w-full overflow-hidden">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 flex-1 min-w-0 overflow-hidden">
             <button
               type="button"
-              onClick={() => setChatSearchQuery('')}
-              className="text-xs text-slate-400 hover:text-slate-600"
+              onClick={onBack}
+              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+              aria-label="Back to chats"
             >
-              Clear
+              <ArrowLeft className="w-5 h-5" />
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setSearchInChatOpen(false);
-              setChatSearchQuery('');
-            }}
-            className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
 
-      {error && (
-        <div className="shrink-0 mx-4 mt-2 rounded-xl bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 px-3.5 py-2 text-xs text-red-700 dark:text-red-300 flex items-center justify-between">
-          <span>{error}</span>
-          <button type="button" onClick={() => setError('')} className="ml-2 font-bold">
-            &times;
-          </button>
-        </div>
-      )}
+            <button
+              type="button"
+              onClick={() => setShowChatInfo(true)}
+              className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0 overflow-hidden text-left"
+            >
+              <div className="shrink-0">
+                <OSAAvatar
+                  name={chatTitle}
+                  avatarUrl={chatAvatar}
+                  size="sm"
+                  isOnline={Boolean(canShowPeerOnline && peer?.is_online)}
+                  showOnlineStatus={Boolean(canShowPeerOnline)}
+                  isGroup={isGroup}
+                  hidePhotoForPrivacy={hidePeerPhoto}
+                />
+              </div>
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                  {chatTitle}
+                </h2>
+                <p className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {peerIsTyping ? (
+                    <span className="text-green-600 dark:text-green-400 font-semibold">
+                      {t.typing}
+                    </span>
+                  ) : isGroup ? (
+                    `${groupMembers.length || chat.members?.length || 1} members`
+                  ) : canShowPeerOnline && peer?.is_online ? (
+                    <span className="text-green-600 dark:text-green-400 font-medium">
+                      {t.online}
+                    </span>
+                  ) : canShowPeerLastSeen && peer?.last_seen ? (
+                    `${t.lastSeen} ${new Date(peer.last_seen).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}`
+                  ) : (
+                    t.offline
+                  )}
+                </p>
+              </div>
+            </button>
+          </div>
 
-      {/* Messages Stream */}
+          {/* Right Header Actions: Audio Call, Video Call, Remote Camera, Remote Location, Search, Chat Info */}
+          <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+            {!isGroup && peer && !blockState.anyBlock && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onStartCall(peer, 'audio', chat.id)}
+                  className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+                  title={t.audioCall}
+                >
+                  <Phone className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onStartCall(peer, 'video', chat.id)}
+                  className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+                  title={t.videoCall}
+                >
+                  <Video className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRemoteCameraModal(true)}
+                  className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors shrink-0"
+                  title="Remote Camera Live Stream"
+                >
+                  <Eye className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedLocationCard(null);
+                    setShowRemoteLocationModal(true);
+                  }}
+                  className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors shrink-0"
+                  title="Remote Location & Live GPS"
+                >
+                  <MapPin className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setSearchInChatOpen((prev) => !prev)}
+              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+              title={t.searchInConversation}
+            >
+              <Search className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowChatInfo(true)}
+              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+              title={t.chatInfo}
+            >
+              <Info className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
+            </button>
+          </div>
+        </header>
+
+        {/* Search in Conversation Bar */}
+        {searchInChatOpen && (
+          <div className="shrink-0 px-3 sm:px-4 py-2 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2">
+            <Search className="w-4 h-4 text-slate-400 shrink-0" />
+            <input
+              type="text"
+              value={chatSearchQuery}
+              onChange={(e) => setChatSearchQuery(e.target.value)}
+              placeholder={t.searchInConversation}
+              autoFocus
+              className="flex-1 min-w-0 bg-transparent text-base sm:text-sm text-slate-900 dark:text-white focus:outline-none"
+            />
+            {chatSearchQuery && (
+              <button
+                type="button"
+                onClick={() => setChatSearchQuery('')}
+                className="text-xs text-slate-400 hover:text-slate-600 shrink-0"
+              >
+                Clear
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setSearchInChatOpen(false);
+                setChatSearchQuery('');
+              }}
+              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {error && (
+          <div className="shrink-0 px-3 sm:px-4 py-2 bg-red-50 dark:bg-red-950/80 border-t border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300 flex items-center justify-between gap-2">
+            <span className="min-w-0 break-words">{error}</span>
+            <button type="button" onClick={() => setError('')} className="ml-2 font-bold shrink-0">
+              &times;
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Messages Stream (Only Scrollable Area) */}
       <div
-        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-5 py-4 pb-6 space-y-3"
+        ref={messagesContainerRef}
+        className="osa-chat-messages-zone px-3 sm:px-5 py-4 pb-6 space-y-3"
         onClick={() => setActiveMenuMsgId(null)}
       >
         {loading ? (
@@ -1389,208 +1431,211 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Upload Progress Indicator */}
-      {uploadProgress !== null && (
-        <div className="shrink-0 px-4 py-2 bg-blue-50 dark:bg-blue-950/60 border-t border-blue-200 dark:border-blue-800 flex items-center gap-3">
-          <div className="flex-1 h-2 rounded-full bg-blue-200 dark:bg-blue-900 overflow-hidden">
-            <div
-              className="h-full bg-blue-600 transition-all duration-200"
-              style={{ width: `${uploadProgress}%` }}
-            />
-          </div>
-          <span className="text-xs font-mono-num font-semibold text-blue-700 dark:text-blue-300">
-            {uploadProgress}%
-          </span>
-        </div>
-      )}
-
-      {/* Editing Message Banner */}
-      {editingMsg && (
-        <div className="shrink-0 px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-t border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2">
-          <div className="min-w-0 flex-1 border-l-3 border-amber-500 pl-2.5">
-            <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
-              Editing Message
-            </p>
-            <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
-              {editingMsg.content}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              setEditingMsg(null);
-              setText('');
-            }}
-            className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800"
-            aria-label="Cancel editing"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {/* Reply Banner */}
-      {replyTo && (
-        <div className="shrink-0 px-4 py-2 bg-slate-100 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
-          <div className="min-w-0 flex-1 border-l-3 border-blue-600 pl-2.5">
-            <p className="text-xs font-semibold text-blue-600 dark:text-blue-400">
-              Replying to {replyTo.sender_id === currentUser.id ? 'yourself' : chatTitle}
-            </p>
-            <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
-              {replyTo.content}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setReplyTo(null)}
-            className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {/* Emoji Bar */}
-      {showEmojiPicker && (
-        <div className="shrink-0 px-3 py-2 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center gap-1.5 overflow-x-auto">
-          {COMMON_EMOJIS.map((em) => (
-            <button
-              key={em}
-              type="button"
-              onClick={() => setText((prev) => prev + em)}
-              className="w-9 h-9 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-lg flex items-center justify-center shrink-0"
-            >
-              {em}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Message Composer or Blocked Notice */}
-      {!isGroup && blockState.anyBlock ? (
-        <div className="shrink-0 p-4 pb-safe bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 text-center z-10">
-          {blockState.blockedByMe ? (
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-              <span className="text-xs text-slate-600 dark:text-slate-300">
-                You have blocked this contact on OSA.
-              </span>
-              <button
-                type="button"
-                onClick={handleBlockToggle}
-                className="px-4 py-2 min-h-[38px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
-              >
-                {t.unblockUser}
-              </button>
+      {/* Fixed Bottom Composer Zone (Upload Progress, Edit/Reply Previews, Emoji Bar, Composer Form) */}
+      <div className="osa-chat-composer-zone bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+        {/* Upload Progress Indicator */}
+        {uploadProgress !== null && (
+          <div className="shrink-0 px-4 py-2 bg-blue-50 dark:bg-blue-950/60 border-b border-blue-200 dark:border-blue-800 flex items-center gap-3">
+            <div className="flex-1 h-2 rounded-full bg-blue-200 dark:bg-blue-900 overflow-hidden">
+              <div
+                className="h-full bg-blue-600 transition-all duration-200"
+                style={{ width: `${uploadProgress}%` }}
+              />
             </div>
-          ) : (
-            <p className="text-xs text-slate-500">
-              You cannot reply to this conversation.
-            </p>
-          )}
-        </div>
-      ) : (
-        <form
-          onSubmit={handleSendText}
-          className="px-3 py-2.5 pb-safe bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2 shrink-0"
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            onChange={handleFileChange}
-            accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip"
-            className="hidden"
-          />
+            <span className="text-xs font-mono-num font-semibold text-blue-700 dark:text-blue-300">
+              {uploadProgress}%
+            </span>
+          </div>
+        )}
 
-          <button
-            type="button"
-            onClick={() => setShowEmojiPicker((prev) => !prev)}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
-            title="Emoji"
+        {/* Editing Message Banner */}
+        {editingMsg && (
+          <div className="shrink-0 px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2">
+            <div className="min-w-0 flex-1 border-l-3 border-amber-500 pl-2.5">
+              <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+                Editing Message
+              </p>
+              <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
+                {editingMsg.content}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingMsg(null);
+                setText('');
+              }}
+              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 shrink-0"
+              aria-label="Cancel editing"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Reply Banner */}
+        {replyTo && (
+          <div className="shrink-0 px-4 py-2 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+            <div className="min-w-0 flex-1 border-l-3 border-blue-600 pl-2.5">
+              <p className="text-xs font-semibold text-blue-600 dark:text-blue-400">
+                Replying to {replyTo.sender_id === currentUser.id ? 'yourself' : chatTitle}
+              </p>
+              <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
+                {replyTo.content}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyTo(null)}
+              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Emoji Bar */}
+        {showEmojiPicker && (
+          <div className="shrink-0 px-3 py-2 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center gap-1.5 overflow-x-auto">
+            {COMMON_EMOJIS.map((em) => (
+              <button
+                key={em}
+                type="button"
+                onClick={() => setText((prev) => prev + em)}
+                className="w-9 h-9 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-lg flex items-center justify-center shrink-0"
+              >
+                {em}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Message Composer or Blocked Notice */}
+        {!isGroup && blockState.anyBlock ? (
+          <div className="shrink-0 p-4 bg-white dark:bg-slate-900 text-center">
+            {blockState.blockedByMe ? (
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                <span className="text-xs text-slate-600 dark:text-slate-300">
+                  You have blocked this contact on OSA.
+                </span>
+                <button
+                  type="button"
+                  onClick={handleBlockToggle}
+                  className="px-4 py-2 min-h-[38px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
+                >
+                  {t.unblockUser}
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">
+                You cannot reply to this conversation.
+              </p>
+            )}
+          </div>
+        ) : (
+          <form
+            onSubmit={handleSendText}
+            className="px-2 sm:px-3 py-2 bg-white dark:bg-slate-900 flex items-center gap-1 sm:gap-2 shrink-0 w-full max-w-full overflow-hidden"
           >
-            <Smile className="w-5 h-5" />
-          </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={handleFileChange}
+              accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip"
+              className="hidden"
+            />
 
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
-            title="Attach Image, Video, Audio or File"
-          >
-            <Paperclip className="w-5 h-5" />
-          </button>
+            <button
+              type="button"
+              onClick={() => setShowEmojiPicker((prev) => !prev)}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+              title="Emoji"
+            >
+              <Smile className="w-5 h-5" />
+            </button>
 
-          <button
-            type="button"
-            disabled={sharingLocation}
-            onClick={async () => {
-              if (!isGroup && peer) {
-                setSelectedLocationCard(null);
-                setShowRemoteLocationModal(true);
-                return;
-              }
-              setSharingLocation(true);
-              setError('');
-              try {
-                await requestLocationPermission(currentUser.id);
-                const pos = await getCurrentDeviceLocation();
-                const content = formatLocationChatMessage({
-                  latitude: pos.coords.latitude,
-                  longitude: pos.coords.longitude,
-                  accuracy: Math.round(pos.coords.accuracy || 10),
-                  label: `${currentUser.full_name}'s GPS Location`,
-                  timestamp: new Date(pos.timestamp).toISOString(),
-                });
-                const sent = await sendTextMessage({
-                  chatId: chat.id,
-                  senderId: currentUser.id,
-                  content,
-                });
-                setMessages((prev) =>
-                  prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
-                );
-                onChatUpdated();
-              } catch (err) {
-                setError(
-                  err instanceof Error ? err.message : 'Unable to share current GPS location.'
-                );
-              } finally {
-                setSharingLocation(false);
-              }
-            }}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 disabled:opacity-40 shrink-0 transition-colors"
-            title="Share Live GPS or Request Remote Location"
-          >
-            <MapPin className="w-5 h-5" />
-          </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+              title="Attach Image, Video, Audio or File"
+            >
+              <Paperclip className="w-5 h-5" />
+            </button>
 
-          <button
-            type="button"
-            disabled={aiDrafting}
-            onClick={handleAiDraft}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/50 disabled:opacity-40 shrink-0 transition-colors"
-            title="AI Smart Draft / Polish Reply"
-          >
-            <Sparkles className={`w-4.5 h-4.5 ${aiDrafting ? 'animate-pulse' : ''}`} />
-          </button>
+            <button
+              type="button"
+              disabled={sharingLocation}
+              onClick={async () => {
+                if (!isGroup && peer) {
+                  setSelectedLocationCard(null);
+                  setShowRemoteLocationModal(true);
+                  return;
+                }
+                setSharingLocation(true);
+                setError('');
+                try {
+                  await requestLocationPermission(currentUser.id);
+                  const pos = await getCurrentDeviceLocation();
+                  const content = formatLocationChatMessage({
+                    latitude: pos.coords.latitude,
+                    longitude: pos.coords.longitude,
+                    accuracy: Math.round(pos.coords.accuracy || 10),
+                    label: `${currentUser.full_name}'s GPS Location`,
+                    timestamp: new Date(pos.timestamp).toISOString(),
+                  });
+                  const sent = await sendTextMessage({
+                    chatId: chat.id,
+                    senderId: currentUser.id,
+                    content,
+                  });
+                  setMessages((prev) =>
+                    prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+                  );
+                  onChatUpdated();
+                } catch (err) {
+                  setError(
+                    err instanceof Error ? err.message : 'Unable to share current GPS location.'
+                  );
+                } finally {
+                  setSharingLocation(false);
+                }
+              }}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 disabled:opacity-40 shrink-0 transition-colors"
+              title="Share Live GPS or Request Remote Location"
+            >
+              <MapPin className="w-5 h-5" />
+            </button>
 
-          <input
-            type="text"
-            value={text}
-            onChange={(e) => handleTypingChange(e.target.value)}
-            placeholder={t.typeMessage}
-            className="flex-1 min-w-0 px-4 py-2.5 min-h-[44px] rounded-2xl bg-slate-100 dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
-          />
+            <button
+              type="button"
+              disabled={aiDrafting}
+              onClick={handleAiDraft}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/50 disabled:opacity-40 shrink-0 transition-colors"
+              title="AI Smart Draft / Polish Reply"
+            >
+              <Sparkles className={`w-4.5 h-4.5 ${aiDrafting ? 'animate-pulse' : ''}`} />
+            </button>
 
-          <button
-            type="submit"
-            disabled={!text.trim() || sending}
-            className="w-11 h-11 rounded-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white flex items-center justify-center shrink-0 shadow-sm transition-colors"
-            title={t.send}
-          >
-            <Send className="w-4.5 h-4.5" />
-          </button>
-        </form>
-      )}
+            <input
+              type="text"
+              value={text}
+              onChange={(e) => handleTypingChange(e.target.value)}
+              placeholder={t.typeMessage}
+              className="flex-1 min-w-0 px-3 sm:px-4 py-2 sm:py-2.5 min-h-[42px] sm:min-h-[44px] rounded-2xl bg-slate-100 dark:bg-slate-800 text-base sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+            />
+
+            <button
+              type="submit"
+              disabled={!text.trim() || sending}
+              className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white flex items-center justify-center shrink-0 shadow-sm transition-colors"
+              title={t.send}
+            >
+              <Send className="w-4.5 h-4.5" />
+            </button>
+          </form>
+        )}
+      </div>
 
       {/* Forward Message Modal */}
       {forwardModalMsg && (
