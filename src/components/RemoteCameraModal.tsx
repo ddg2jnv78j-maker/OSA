@@ -306,7 +306,7 @@ export const RemoteCameraModal: React.FC<RemoteCameraModalProps> = ({
                     className="mt-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center gap-1.5"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Request Again</span>
+                    <span>Retry Connection</span>
                   </button>
                 </>
               )}

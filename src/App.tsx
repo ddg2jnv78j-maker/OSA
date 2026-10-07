@@ -730,7 +730,7 @@ export default function App() {
     const handleIncomingRemoteCameraSignal = (sig: RemoteCameraSignalPayload) => {
       if (!sig || !sig.sessionId || sig.senderId === currentUser.id) return;
 
-      if (sig.type === 'request') {
+      if (sig.type === 'request' || sig.type === 'RC_REQUEST') {
         if (handledRemoteCameraSessionsRef.current.has(sig.sessionId)) return;
         handledRemoteCameraSessionsRef.current.add(sig.sessionId);
 

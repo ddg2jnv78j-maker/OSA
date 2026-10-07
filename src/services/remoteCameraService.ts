@@ -34,11 +34,23 @@ export interface RemoteCameraSignalPayload {
   receiverId: string;
   type:
     | 'request'
+    | 'RC_REQUEST'
+    | 'ringing'
+    | 'RC_RINGING'
+    | 'accept'
+    | 'RC_ACCEPT'
+    | 'permission_granted'
+    | 'RC_PERMISSION_GRANTED'
+    | 'ready'
+    | 'RC_READY'
     | 'authorized'
     | 'waiting_consent'
     | 'offer'
+    | 'RC_OFFER'
     | 'answer'
+    | 'RC_ANSWER'
     | 'ice-candidate'
+    | 'RC_ICE'
     | 'switch-camera'
     | 'decline'
     | 'hangup';
@@ -138,6 +150,12 @@ export class RemoteCameraSessionManager {
       await this.ensureChannelsSubscribed();
       this.startSignalPolling();
 
+      // 0. Emit RC_RINGING immediately to confirm target device is reachable
+      await this.sendSignal({
+        type: 'RC_RINGING',
+        facingMode: this.facingMode,
+      });
+
       // 1. Verify OSA Privacy -> Allow Remote Camera Access = ON and Camera Permission = granted
       const perm = await checkNativePermissions(this.currentUserId);
       if (!perm.allowRemoteCamera) {
@@ -162,19 +180,32 @@ export class RemoteCameraSessionManager {
         return;
       }
 
-      // Notify viewer that authorization succeeded and camera is initializing
+      // Emit RC_ACCEPT -> RC_PERMISSION_GRANTED -> RC_READY (plus legacy 'authorized' for compatibility)
+      await this.sendSignal({
+        type: 'RC_ACCEPT',
+        facingMode: this.facingMode,
+      });
+      await this.sendSignal({
+        type: 'RC_PERMISSION_GRANTED',
+        facingMode: this.facingMode,
+      });
       await this.sendSignal({
         type: 'authorized',
         facingMode: this.facingMode,
       });
 
-      // 2. Acquire camera hardware stream
+      // 2. Acquire camera hardware stream (reuses existing granted permission without repeated prompt)
       const stream = await this.acquireCameraOnlyStream(this.facingMode);
       if (this.isCleanedUp) {
         stream.getTracks().forEach((t) => t.stop());
         return;
       }
       this.localCameraStream = stream;
+
+      await this.sendSignal({
+        type: 'RC_READY',
+        facingMode: this.facingMode,
+      });
 
       // 3. Create RTCPeerConnection, attach video track, and send SDP Offer
       this.initPeerConnection('streamer');
@@ -578,6 +609,17 @@ export class RemoteCameraSessionManager {
 
     try {
       switch (sig.type) {
+        case 'ringing':
+        case 'RC_RINGING': {
+          this.onStatusChange?.('requesting', 'Target device reachable (Ringing)...');
+          break;
+        }
+        case 'accept':
+        case 'RC_ACCEPT':
+        case 'permission_granted':
+        case 'RC_PERMISSION_GRANTED':
+        case 'ready':
+        case 'RC_READY':
         case 'authorized': {
           this.onStatusChange?.('connecting', 'Connecting to remote camera...');
           this.resetTimeout(15000, () => {
@@ -597,7 +639,8 @@ export class RemoteCameraSessionManager {
           );
           break;
         }
-        case 'offer': {
+        case 'offer':
+        case 'RC_OFFER': {
           if (!sig.sdp) break;
           this.onStatusChange?.('connecting', 'Connecting live Remote Camera stream...');
           this.resetTimeout(15000, () => {
@@ -637,7 +680,8 @@ export class RemoteCameraSessionManager {
           });
           break;
         }
-        case 'answer': {
+        case 'answer':
+        case 'RC_ANSWER': {
           if (!sig.sdp || !this.pc) break;
           await this.pc.setRemoteDescription(
             new RTCSessionDescription({
@@ -655,7 +699,8 @@ export class RemoteCameraSessionManager {
           this.pendingCandidates = [];
           break;
         }
-        case 'ice-candidate': {
+        case 'ice-candidate':
+        case 'RC_ICE': {
           if (!sig.candidate) break;
           if (this.pc && this.pc.remoteDescription) {
             try {
