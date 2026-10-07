@@ -644,9 +644,14 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       setReplyTo(null);
 
       // Notify recipients of attachment message
-      const previewBody = sent.content
-        ? `[${sent.message_type.toUpperCase()}] ${sent.content.slice(0, 80)}`
-        : `Sent a ${sent.message_type}`;
+      const previewBody =
+        sent.message_type === 'image'
+          ? 'Photo'
+          : sent.message_type === 'video'
+          ? 'Video'
+          : sent.message_type === 'audio'
+          ? 'Voice message'
+          : 'File';
       if (!isGroup && peer) {
         await createNotification({
           userId: peer.id,

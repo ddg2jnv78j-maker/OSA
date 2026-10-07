@@ -43,6 +43,39 @@ const DEFAULT_NOTIFICATION_PREFS: OSANotificationPreferences = {
 
 let cachedVapidPublicKey: string | null = null;
 let inFlightSubscribePromise: Promise<StoredPushSubscriptionRow | null> | null = null;
+const deliveredEventKeys = new Map<string, number>();
+
+export function markNotificationEventDelivered(eventKey: string | null | undefined): boolean {
+  if (!eventKey) return false;
+  const now = Date.now();
+  for (const [k, ts] of deliveredEventKeys.entries()) {
+    if (now - ts > 120_000) deliveredEventKeys.delete(k);
+  }
+  if (deliveredEventKeys.has(eventKey)) {
+    return true;
+  }
+  deliveredEventKeys.set(eventKey, now);
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.ready
+      .then((reg) => {
+        reg.active?.postMessage({
+          type: 'OSA_REGISTER_NOTIFICATION_EVENT',
+          eventKey,
+        });
+      })
+      .catch(() => {});
+  }
+  return false;
+}
+
+if (typeof window !== 'undefined' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    const data = event.data;
+    if (data && data.type === 'OSA_PUSH_DELIVERED' && data.eventKey) {
+      deliveredEventKeys.set(String(data.eventKey), Date.now());
+    }
+  });
+}
 
 /**
  * Converts a URL-safe base64 VAPID public key string into a Uint8Array for PushManager.subscribe.
@@ -181,6 +214,22 @@ export async function resolveVapidPublicKey(): Promise<string | null> {
     }
   } catch {
     // Edge Function not yet deployed or unreachable
+  }
+
+  try {
+    const { data: rpcKey, error: rpcErr } = await supabase.rpc('get_public_vapid_key');
+    if (!rpcErr && typeof rpcKey === 'string' && rpcKey.trim()) {
+      const resolvedKey = rpcKey.trim();
+      cachedVapidPublicKey = resolvedKey;
+      try {
+        localStorage.setItem(VAPID_PUB_CACHE_KEY, resolvedKey);
+      } catch {
+        // Ignore
+      }
+      return resolvedKey;
+    }
+  } catch {
+    // Ignore if RPC not yet created
   }
 
   return null;
@@ -344,10 +393,22 @@ export async function ensureUserPushSubscription(
           return null;
         }
         const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: applicationServerKey as unknown as BufferSource,
-        });
+        try {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: applicationServerKey as unknown as BufferSource,
+          });
+        } catch {
+          // If an old subscription with a mismatched applicationServerKey exists, reset and resubscribe
+          const staleSub = await registration.pushManager.getSubscription();
+          if (staleSub) {
+            await staleSub.unsubscribe().catch(() => {});
+          }
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: applicationServerKey as unknown as BufferSource,
+          });
+        }
       }
 
       return await savePushSubscriptionToSupabase(userId, subscription, true);
@@ -553,11 +614,22 @@ export async function reportActiveChatForPush(
  */
 export async function dispatchWebPushNotification(params: {
   senderId: string;
-  recipientIds: string[];
-  type: 'new_message' | 'group_message' | 'incoming_call' | 'missed_call' | 'status_update' | 'system';
+  senderName?: string;
+  recipientIds?: string[];
+  type:
+    | 'message'
+    | 'new_message'
+    | 'group_message'
+    | 'incoming_call'
+    | 'missed_call'
+    | 'status_update'
+    | 'system';
   title: string;
   body: string;
   chatId?: string | null;
+  conversationId?: string | null;
+  messageId?: string | null;
+  messageType?: string | null;
   callId?: string | null;
   callType?: 'audio' | 'video' | null;
 }): Promise<void> {
@@ -573,10 +645,13 @@ export async function dispatchWebPushNotification(params: {
     return;
   }
 
+  const resolvedChatId = params.conversationId || params.chatId || null;
   const targetIds = Array.from(
     new Set((params.recipientIds || []).filter((id) => Boolean(id) && id !== params.senderId))
   );
-  if (targetIds.length === 0) return;
+
+  // Allow server-side recipient resolution via chat_members when resolvedChatId is present
+  if (targetIds.length === 0 && !resolvedChatId) return;
 
   try {
     const { data: sessionData } = await supabase.auth.getSession();
@@ -586,11 +661,15 @@ export async function dispatchWebPushNotification(params: {
       body: {
         action: 'send',
         senderId: params.senderId,
+        senderName: params.senderName || cleanTitle || undefined,
         recipientIds: targetIds,
         type: params.type,
         title: cleanTitle || 'OSA',
-        body: cleanBody || 'You have a new message',
-        chatId: params.chatId || null,
+        body: cleanBody || 'New message',
+        chatId: resolvedChatId,
+        conversationId: resolvedChatId,
+        messageId: params.messageId || null,
+        messageType: params.messageType || null,
         callId: params.callId || null,
         callType: params.callType || null,
       },
@@ -607,10 +686,18 @@ export async function dispatchWebPushNotification(params: {
  */
 export async function showBackgroundSystemNotification(params: {
   userId: string;
-  type: 'new_message' | 'group_message' | 'incoming_call' | 'missed_call' | 'status_update' | 'system';
+  type:
+    | 'message'
+    | 'new_message'
+    | 'group_message'
+    | 'incoming_call'
+    | 'missed_call'
+    | 'status_update'
+    | 'system';
   title: string;
   body: string;
   chatId?: string | null;
+  messageId?: string | null;
   callId?: string | null;
   callType?: 'audio' | 'video' | null;
 }): Promise<void> {
@@ -629,7 +716,12 @@ export async function showBackgroundSystemNotification(params: {
 
   const prefs = getNotificationPreferences(params.userId);
   if (!prefs.pushEnabled) return;
-  if (params.type === 'new_message' && !prefs.messageNotifications) return;
+  if (
+    (params.type === 'new_message' || params.type === 'message') &&
+    !prefs.messageNotifications
+  ) {
+    return;
+  }
   if (params.type === 'group_message' && !prefs.groupNotifications) return;
   if (
     (params.type === 'incoming_call' || params.type === 'missed_call') &&
@@ -645,16 +737,30 @@ export async function showBackgroundSystemNotification(params: {
   }
 
   const isCall = params.type === 'incoming_call';
+  const eventKey = isCall && params.callId
+    ? `call:${params.callId}`
+    : params.messageId
+    ? `msg:${params.messageId}`
+    : null;
+
+  if (eventKey && markNotificationEventDelivered(eventKey)) {
+    return;
+  }
+
   const baseUrl = import.meta.env.BASE_URL || '/';
   const tag = isCall
     ? `osa-call-${params.callId || 'incoming'}`
+    : params.messageId
+    ? `osa-msg-${params.messageId}`
     : params.chatId
     ? `osa-chat-${params.chatId}`
     : 'osa-notification';
 
   const notifData = {
-    type: params.type,
+    type: isCall ? 'incoming_call' : 'message',
     chatId: params.chatId || null,
+    conversationId: params.chatId || null,
+    messageId: params.messageId || null,
     callId: params.callId || null,
     callType: params.callType || null,
   };
@@ -663,7 +769,7 @@ export async function showBackgroundSystemNotification(params: {
     const reg = await getOrRegisterOSAServiceWorker();
     if (reg && reg.showNotification) {
       await reg.showNotification(cleanTitle || 'OSA', {
-        body: cleanBody || 'You have a new message',
+        body: cleanBody || 'New message',
         icon: `${baseUrl}pwa-192x192.png`,
         badge: `${baseUrl}pwa-192x192.png`,
         tag,
@@ -673,7 +779,7 @@ export async function showBackgroundSystemNotification(params: {
         ...(isCall
           ? {
               actions: [
-                { action: 'accept', title: 'Accept Call' },
+                { action: 'accept', title: 'Accept' },
                 { action: 'reject', title: 'Reject' },
               ],
             }

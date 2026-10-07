@@ -706,7 +706,29 @@ export async function sendTextMessage(params: {
     })
     .eq('id', params.chatId);
 
-  return data as Message;
+  const sentMsg = data as Message;
+  const isRemoteSignal =
+    cleanContent.startsWith('[OSA_RCAM_SIG]') ||
+    cleanContent.startsWith('[OSA_LOC_REQ]') ||
+    cleanContent.startsWith('[OSA_LOC_RES]') ||
+    cleanContent.startsWith('[OSA_LOC_ERR]');
+
+  if (!isRemoteSignal) {
+    const senderObj = Array.isArray(sentMsg.sender) ? sentMsg.sender[0] : sentMsg.sender;
+    dispatchWebPushNotification({
+      senderId: params.senderId,
+      senderName: senderObj?.full_name || undefined,
+      type: 'message',
+      title: senderObj?.full_name || 'OSA',
+      body: cleanContent.slice(0, 120),
+      chatId: params.chatId,
+      conversationId: params.chatId,
+      messageId: sentMsg.id,
+      messageType: 'text',
+    }).catch(() => {});
+  }
+
+  return sentMsg;
 }
 
 export async function sendMediaAttachmentMessage(params: {
@@ -791,7 +813,34 @@ export async function sendMediaAttachmentMessage(params: {
     .eq('id', msgData.id)
     .single();
 
-  return (fullMsg || { ...msgData, attachments: [attData as MessageAttachment] }) as Message;
+  const finalMsg = (fullMsg || {
+    ...msgData,
+    attachments: [attData as MessageAttachment],
+  }) as Message;
+
+  const mediaBodyLabel =
+    fileCategory === 'image'
+      ? 'Photo'
+      : fileCategory === 'video'
+      ? 'Video'
+      : fileCategory === 'audio'
+      ? 'Voice message'
+      : 'File';
+
+  const senderObj = Array.isArray(finalMsg.sender) ? finalMsg.sender[0] : finalMsg.sender;
+  dispatchWebPushNotification({
+    senderId,
+    senderName: senderObj?.full_name || undefined,
+    type: 'message',
+    title: senderObj?.full_name || 'OSA',
+    body: mediaBodyLabel,
+    chatId,
+    conversationId: chatId,
+    messageId: finalMsg.id,
+    messageType: fileCategory,
+  }).catch(() => {});
+
+  return finalMsg;
 }
 
 export async function markChatAsRead(chatId: string, currentUserId: string, sendReadReceipt = true): Promise<void> {
@@ -1300,16 +1349,20 @@ export async function createNotification(params: {
     cleanTitle.startsWith('[OSA_LOC_RES]') ||
     cleanTitle.startsWith('[OSA_LOC_ERR]');
 
-  await supabase.from('notifications').insert({
-    user_id: params.userId,
-    actor_id: params.actorId || null,
-    type: params.type,
-    title: params.title,
-    body: params.body,
-    reference_id: params.referenceId || null,
-    chat_id: params.chatId || null,
-    is_read: false,
-  });
+  try {
+    await supabase.from('notifications').insert({
+      user_id: params.userId,
+      actor_id: params.actorId || null,
+      type: params.type,
+      title: params.title,
+      body: params.body,
+      reference_id: params.referenceId || null,
+      chat_id: params.chatId || null,
+      is_read: false,
+    });
+  } catch {
+    // Ignore if already created by database trigger
+  }
 
   // Deliver real Web Push notification via Supabase Edge Function for non-remote-signal events
   if (!isRemoteSignal && params.actorId) {
@@ -1320,6 +1373,11 @@ export async function createNotification(params: {
           ? 'video'
           : 'audio'
         : null);
+
+    const isMsgNotif =
+      params.type === 'new_message' ||
+      params.type === 'group_message' ||
+      params.type === 'mention';
 
     dispatchWebPushNotification({
       senderId: params.actorId,
@@ -1335,8 +1393,10 @@ export async function createNotification(params: {
               | 'status_update'
               | 'system'),
       title: cleanTitle || 'OSA',
-      body: cleanBody || 'You have a new message',
+      body: cleanBody || 'New message',
       chatId: params.chatId || null,
+      conversationId: params.chatId || null,
+      messageId: isMsgNotif ? params.referenceId || null : null,
       callId:
         params.type === 'incoming_call' || params.type === 'missed_call'
           ? params.referenceId || null

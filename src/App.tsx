@@ -567,15 +567,22 @@ export default function App() {
       if (payload.type === 'OSA_NOTIFICATION_CLICK') {
         const data = payload.data || {};
         const action = typeof payload.action === 'string' ? payload.action : undefined;
+        const targetChatId = data.conversationId || data.chatId;
         if (data.callId || data.type === 'incoming_call') {
           if (data.callId) {
             resumeIncomingCallFromNotification(String(data.callId), currentUser.id, action);
           } else if (!activeCall) {
             setActiveTab('calls');
           }
-        } else if (data.chatId) {
+        } else if (targetChatId) {
+          refreshChatsAndNotifications(currentUser.id).catch(() => {});
           setActiveTab('chats');
-          setSelectedChatId(String(data.chatId));
+          setSelectedChatId(String(targetChatId));
+        }
+      } else if (payload.type === 'OSA_INCOMING_CALL_PUSH') {
+        const data = payload.data || {};
+        if (data.callId && !activeCall) {
+          resumeIncomingCallFromNotification(String(data.callId), currentUser.id, 'open');
         }
       } else if (payload.type === 'OSA_PUSH_SUBSCRIPTION_CHANGED') {
         ensureUserPushSubscription(currentUser.id).catch(() => {});
@@ -814,8 +821,9 @@ export default function App() {
             showBackgroundSystemNotification({
               userId: currentUser.id,
               title: newNotif.title || 'OSA',
-              body: newNotif.body || 'New message on OSA',
+              body: newNotif.body || 'New message',
               chatId: newNotif.chat_id || null,
+              messageId: newNotif.reference_id || null,
               type: newNotif.type === 'mention' ? 'group_message' : newNotif.type,
             }).catch(() => {});
           }

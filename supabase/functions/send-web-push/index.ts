@@ -1,13 +1,13 @@
 // ============================================================================
 // OSA — Supabase Edge Function: send-web-push
 // Deploy with: supabase functions deploy send-web-push
-// Required Server-Side Secrets (Supabase Dashboard -> Edge Functions -> Secrets):
+// Server-Side Secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   - VAPID_PUBLIC_KEY (or VITE_VAPID_PUBLIC_KEY)
 //   - VAPID_PRIVATE_KEY (NEVER exposed to browser)
 //   - VAPID_SUBJECT (e.g., mailto:support@osa-messaging.app)
 // ============================================================================
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -21,9 +21,24 @@ const REMOTE_SIGNAL_PREFIXES = [
   '[OSA_LOC_ERR]',
 ];
 
+const recentEventKeys = new Map<string, number>();
+
+function isEventRecentlyProcessed(eventKey: string): boolean {
+  const now = Date.now();
+  for (const [k, ts] of recentEventKeys.entries()) {
+    if (now - ts > 120_000) recentEventKeys.delete(k);
+  }
+  if (recentEventKeys.has(eventKey)) {
+    return true;
+  }
+  recentEventKeys.set(eventKey, now);
+  return false;
+}
+
 function base64UrlToUint8Array(base64Url: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64Url.length % 4)) % 4);
-  const base64 = (base64Url + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const clean = base64Url.trim();
+  const padding = '='.repeat((4 - (clean.length % 4)) % 4);
+  const base64 = (clean + padding).replace(/-/g, '+').replace(/_/g, '/');
   const raw = atob(base64);
   const output = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) {
@@ -61,6 +76,124 @@ async function hmacSha256(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8
   );
   const sig = await crypto.subtle.sign('HMAC', cryptoKey, data);
   return new Uint8Array(sig);
+}
+
+/**
+ * Generates or retrieves server-side VAPID keys:
+ * 1. Always prefers VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT from Edge Function secrets.
+ * 2. If not set in env secrets, reads or generates once in `public.push_vapid_keys` via service_role.
+ * NEVER exposes privateKey to clients.
+ */
+async function resolveServerVapidConfig(adminClient: SupabaseClient): Promise<{
+  publicKey: string;
+  privateKey: string;
+  subject: string;
+} | null> {
+  const envPublic = (
+    Deno.env.get('VAPID_PUBLIC_KEY') ||
+    Deno.env.get('VITE_VAPID_PUBLIC_KEY') ||
+    ''
+  ).trim();
+  const envPrivate = (Deno.env.get('VAPID_PRIVATE_KEY') || '').trim();
+  const envSubject = (
+    Deno.env.get('VAPID_SUBJECT') || 'mailto:support@osa-messaging.app'
+  ).trim();
+
+  if (envPublic && envPrivate) {
+    return {
+      publicKey: envPublic,
+      privateKey: envPrivate,
+      subject: envSubject,
+    };
+  }
+
+  try {
+    const { data: existing } = await adminClient
+      .from('push_vapid_keys')
+      .select('public_key, private_key, subject')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (existing?.public_key && existing?.private_key) {
+      return {
+        publicKey: String(existing.public_key).trim(),
+        privateKey: String(existing.private_key).trim(),
+        subject: String(existing.subject || envSubject).trim(),
+      };
+    }
+
+    // Generate a standard P-256 ECDSA VAPID keypair using Web Crypto API
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const rawPublic = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey));
+    const jwkPrivate = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+
+    if (rawPublic.length === 65 && jwkPrivate.d) {
+      const publicKey = uint8ArrayToBase64Url(rawPublic);
+      const privateKey = jwkPrivate.d;
+
+      await adminClient.from('push_vapid_keys').upsert(
+        {
+          id: 1,
+          public_key: publicKey,
+          private_key: privateKey,
+          subject: envSubject,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      );
+
+      return {
+        publicKey,
+        privateKey,
+        subject: envSubject,
+      };
+    }
+  } catch {
+    // Table not yet created or permission error
+  }
+
+  return null;
+}
+
+/**
+ * Creates a signed HMAC token allowing the Service Worker to reject an incoming call
+ * directly when the user taps [ Reject ] on a closed-app notification.
+ */
+async function createCallRejectToken(
+  callId: string,
+  receiverId: string,
+  callerId: string,
+  secretKey: string
+): Promise<string> {
+  const encoder = new TextEncoder();
+  const exp = Math.floor(Date.now() / 1000) + 180; // Valid for 3 minutes
+  const dataStr = `${callId}:${receiverId}:${callerId}:${exp}`;
+  const sigBytes = await hmacSha256(encoder.encode(secretKey), encoder.encode(dataStr));
+  return `${exp}.${uint8ArrayToBase64Url(sigBytes)}`;
+}
+
+async function verifyCallRejectToken(
+  token: string,
+  callId: string,
+  receiverId: string,
+  callerId: string,
+  secretKey: string
+): Promise<boolean> {
+  if (!token || !token.includes('.')) return false;
+  const [expStr, providedSig] = token.split('.');
+  const exp = Number(expStr);
+  if (!exp || Number.isNaN(exp) || Math.floor(Date.now() / 1000) > exp) {
+    return false;
+  }
+  const encoder = new TextEncoder();
+  const dataStr = `${callId}:${receiverId}:${callerId}:${exp}`;
+  const expectedSigBytes = await hmacSha256(encoder.encode(secretKey), encoder.encode(dataStr));
+  const expectedSig = uint8ArrayToBase64Url(expectedSigBytes);
+  return expectedSig === providedSig;
 }
 
 /**
@@ -218,16 +351,51 @@ async function encryptWebPushPayload(
   );
 }
 
+function formatMediaPreviewBody(
+  messageType: string | null | undefined,
+  rawBody: string
+): string {
+  const mt = (messageType || '').toLowerCase();
+  if (mt === 'image') return 'Photo';
+  if (mt === 'video') return 'Video';
+  if (mt === 'audio') return 'Voice message';
+  if (mt === 'document') return 'File';
+
+  if (rawBody.startsWith('[IMAGE]')) return 'Photo';
+  if (rawBody.startsWith('[VIDEO]')) return 'Video';
+  if (rawBody.startsWith('[AUDIO]')) return 'Voice message';
+  if (rawBody.startsWith('[DOCUMENT]')) return 'File';
+
+  return rawBody || 'New message';
+}
+
 interface PushRequestBody {
-  action?: 'send' | 'get_vapid_public_key';
+  action?: 'send' | 'get_vapid_public_key' | 'reject_call';
   senderId?: string;
+  senderName?: string;
   recipientIds?: string[];
-  type?: 'new_message' | 'group_message' | 'incoming_call' | 'missed_call' | 'status_update' | 'system';
+  type?:
+    | 'message'
+    | 'new_message'
+    | 'group_message'
+    | 'incoming_call'
+    | 'missed_call'
+    | 'status_update'
+    | 'system'
+    | 'INSERT';
+  table?: string;
+  record?: Record<string, unknown>;
   title?: string;
   body?: string;
   chatId?: string | null;
+  conversationId?: string | null;
+  messageId?: string | null;
+  messageType?: string | null;
   callId?: string | null;
   callType?: 'audio' | 'video' | null;
+  callerId?: string | null;
+  callerName?: string | null;
+  rejectToken?: string | null;
   tag?: string;
   url?: string;
 }
@@ -238,22 +406,22 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const vapidPublicKey =
-      Deno.env.get('VAPID_PUBLIC_KEY') ||
-      Deno.env.get('VITE_VAPID_PUBLIC_KEY') ||
-      '';
-    const vapidPrivateKey = Deno.env.get('VAPID_PRIVATE_KEY') || '';
-    const vapidSubject =
-      Deno.env.get('VAPID_SUBJECT') || 'mailto:support@osa-messaging.app';
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+    const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
-    const body: PushRequestBody = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
+    const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
+    const body: PushRequestBody =
+      req.method === 'POST' ? await req.json().catch(() => ({})) : {};
 
-    // Public VAPID key endpoint (safe for browser PushManager.subscribe; never exposes private key)
+    const vapidConfig = await resolveServerVapidConfig(adminClient);
+
+    // 1. Public VAPID key endpoint (safe for browser PushManager.subscribe; never exposes private key)
     if (body.action === 'get_vapid_public_key') {
       return new Response(
         JSON.stringify({
-          vapidPublicKey: vapidPublicKey || null,
-          configured: Boolean(vapidPublicKey && vapidPrivateKey),
+          vapidPublicKey: vapidConfig?.publicKey || null,
+          configured: Boolean(vapidConfig?.publicKey && vapidConfig?.privateKey),
         }),
         {
           status: 200,
@@ -262,6 +430,79 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // 2. Closed-App Incoming Call Reject Action from Service Worker notificationclick
+    if (body.action === 'reject_call' && body.callId) {
+      const callId = String(body.callId).trim();
+      const { data: callRow } = await adminClient
+        .from('calls')
+        .select('id, caller_id, receiver_id, status')
+        .eq('id', callId)
+        .maybeSingle();
+
+      if (!callRow) {
+        return new Response(JSON.stringify({ rejected: false, error: 'Call not found' }), {
+          status: 404,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      let authorized = false;
+      if (body.rejectToken && vapidConfig?.privateKey) {
+        authorized = await verifyCallRejectToken(
+          String(body.rejectToken),
+          callRow.id,
+          callRow.receiver_id,
+          callRow.caller_id,
+          vapidConfig.privateKey
+        );
+      }
+
+      const authHeader = req.headers.get('Authorization') || '';
+      if (!authorized && authHeader) {
+        const bearerJwt = authHeader.replace(/^Bearer\s+/i, '').trim();
+        const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+          global: { headers: { Authorization: authHeader } },
+        });
+        const {
+          data: { user: authUser },
+        } = await userClient.auth.getUser(bearerJwt);
+        if (authUser?.id === callRow.receiver_id) {
+          authorized = true;
+        }
+      }
+
+      if (!authorized) {
+        return new Response(JSON.stringify({ error: 'Unauthorized call reject action' }), {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const nowIso = new Date().toISOString();
+      await adminClient
+        .from('calls')
+        .update({
+          status: 'rejected',
+          ended_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq('id', callRow.id);
+
+      await adminClient.from('call_signals').insert({
+        call_id: callRow.id,
+        sender_id: callRow.receiver_id,
+        receiver_id: callRow.caller_id,
+        signal_type: 'reject',
+        payload: { source: 'push_notification' },
+      });
+
+      return new Response(JSON.stringify({ rejected: true, callId: callRow.id }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // 3. Authenticate sender or database webhook
     const authHeader = req.headers.get('Authorization') || '';
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
@@ -270,20 +511,50 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
-    const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-
-    const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-
     const bearerJwt = authHeader.replace(/^Bearer\s+/i, '').trim();
-    const {
-      data: { user: authUser },
-    } = await userClient.auth.getUser(bearerJwt);
+    let senderUserId = '';
 
-    const senderUserId = authUser?.id || (body.senderId && body.senderId.trim()) || '';
+    // Support both Supabase Database Webhooks (service_role) and authenticated client sessions
+    if (supabaseServiceRoleKey && bearerJwt === supabaseServiceRoleKey) {
+      if (body.record && typeof body.record === 'object') {
+        senderUserId = String(
+          body.record.sender_id || body.record.caller_id || body.record.actor_id || ''
+        );
+      } else if (body.senderId) {
+        senderUserId = String(body.senderId).trim();
+      }
+    } else {
+      const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } },
+      });
+      const {
+        data: { user: authUser },
+      } = await userClient.auth.getUser(bearerJwt);
+      senderUserId = authUser?.id || (body.senderId && body.senderId.trim()) || '';
+    }
+
+    // Normalize Database Webhook payloads if triggered via Supabase Webhook on messages or calls
+    if (body.type === 'INSERT' && body.record && typeof body.record === 'object') {
+      const rec = body.record;
+      if (body.table === 'messages') {
+        body.type = 'message';
+        body.messageId = String(rec.id || '');
+        body.chatId = String(rec.chat_id || '');
+        body.conversationId = String(rec.chat_id || '');
+        body.messageType = String(rec.message_type || 'text');
+        body.body = String(rec.content || '');
+        senderUserId = String(rec.sender_id || senderUserId);
+      } else if (body.table === 'calls') {
+        body.type = 'incoming_call';
+        body.callId = String(rec.id || '');
+        body.callType = (rec.call_type === 'video' ? 'video' : 'audio') as 'audio' | 'video';
+        body.chatId = rec.chat_id ? String(rec.chat_id) : null;
+        body.callerId = String(rec.caller_id || '');
+        body.recipientIds = rec.receiver_id ? [String(rec.receiver_id)] : [];
+        senderUserId = String(rec.caller_id || senderUserId);
+      }
+    }
+
     if (!senderUserId) {
       return new Response(JSON.stringify({ error: 'Unauthorized user session' }), {
         status: 401,
@@ -291,7 +562,7 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (!vapidPublicKey || !vapidPrivateKey) {
+    if (!vapidConfig || !vapidConfig.publicKey || !vapidConfig.privateKey) {
       return new Response(
         JSON.stringify({
           sent: 0,
@@ -327,7 +598,92 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const rawRecipients = Array.isArray(body.recipientIds) ? body.recipientIds : [];
+    const resolvedChatId = (body.conversationId || body.chatId || '').trim() || null;
+    const rawType = body.type || 'new_message';
+    const isMessagePush =
+      rawType === 'message' || rawType === 'new_message' || rawType === 'group_message';
+    const isIncomingCall = rawType === 'incoming_call';
+
+    // Deduplicate by messageId or callId so we never send two push notifications for the same event
+    const dedupKey =
+      isMessagePush && body.messageId
+        ? `msg:${body.messageId}`
+        : isIncomingCall && body.callId
+        ? `call:${body.callId}:incoming`
+        : null;
+
+    if (dedupKey) {
+      if (isEventRecentlyProcessed(dedupKey)) {
+        return new Response(
+          JSON.stringify({ sent: 0, skipped: true, deduplicated: true, eventKey: dedupKey }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      try {
+        const { error: logErr } = await adminClient
+          .from('push_delivery_log')
+          .insert({ event_key: dedupKey });
+        if (logErr) {
+          // Unique constraint violation -> already delivered
+          return new Response(
+            JSON.stringify({ sent: 0, skipped: true, deduplicated: true, eventKey: dedupKey }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+      } catch {
+        // Ignore if push_delivery_log migration is not applied yet
+      }
+    }
+
+    // Look up sender profile name if not provided
+    let senderDisplayName = (body.senderName || body.callerName || '').trim();
+    if (!senderDisplayName) {
+      const { data: senderProfile } = await adminClient
+        .from('profiles')
+        .select('full_name')
+        .eq('id', senderUserId)
+        .maybeSingle();
+      senderDisplayName = (senderProfile?.full_name || '').trim() || 'OSA User';
+    }
+
+    // Resolve recipients: if recipientIds was not supplied on a chat message, look up all chat_members on the server
+    let rawRecipients = Array.isArray(body.recipientIds) ? body.recipientIds : [];
+    let isGroupConversation = rawType === 'group_message';
+    let groupTitle = '';
+
+    if (resolvedChatId && (rawRecipients.length === 0 || isMessagePush)) {
+      const [{ data: chatRow }, { data: memberRows }] = await Promise.all([
+        adminClient
+          .from('chats')
+          .select('id, type, group_id')
+          .eq('id', resolvedChatId)
+          .maybeSingle(),
+        adminClient
+          .from('chat_members')
+          .select('user_id, is_muted')
+          .eq('chat_id', resolvedChatId)
+          .neq('user_id', senderUserId),
+      ]);
+
+      if (chatRow?.type === 'group') {
+        isGroupConversation = true;
+        if (chatRow.group_id) {
+          const { data: grp } = await adminClient
+            .from('groups')
+            .select('name')
+            .eq('id', chatRow.group_id)
+            .maybeSingle();
+          groupTitle = (grp?.name || '').trim();
+        }
+      }
+
+      if (rawRecipients.length === 0 && memberRows) {
+        rawRecipients = memberRows
+          .filter((m) => !m.is_muted)
+          .map((m) => String(m.user_id));
+      }
+    }
+
     // Never notify the sender
     const recipientIds = Array.from(
       new Set(rawRecipients.filter((id) => Boolean(id) && id !== senderUserId))
@@ -339,8 +695,6 @@ Deno.serve(async (req: Request) => {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
-
-    const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
 
     // 1. Exclude blocked users (either direction)
     const { data: blockRows } = await adminClient
@@ -363,15 +717,11 @@ Deno.serve(async (req: Request) => {
     }
 
     // 2. Check muted chat memberships if chatId is provided for message/group notifications
-    const notifType = body.type || 'new_message';
-    if (
-      body.chatId &&
-      (notifType === 'new_message' || notifType === 'group_message')
-    ) {
+    if (resolvedChatId && isMessagePush) {
       const { data: chatMembers } = await adminClient
         .from('chat_members')
         .select('user_id, is_muted')
-        .eq('chat_id', body.chatId)
+        .eq('chat_id', resolvedChatId)
         .in('user_id', allowedIds);
 
       if (chatMembers && chatMembers.length > 0) {
@@ -404,16 +754,20 @@ Deno.serve(async (req: Request) => {
       const s = settingsMap.get(uid);
       if (!s) return true; // Default is enabled
       if (s.push_enabled === false) return false;
-      if (notifType === 'new_message' && s.message_notifications === false) return false;
-      if (notifType === 'group_message' && s.group_notifications === false) return false;
+      if (isMessagePush && !isGroupConversation && s.message_notifications === false) {
+        return false;
+      }
+      if (isMessagePush && isGroupConversation && s.group_notifications === false) {
+        return false;
+      }
       if (
-        (notifType === 'incoming_call' || notifType === 'missed_call') &&
+        (isIncomingCall || rawType === 'missed_call') &&
         s.call_notifications === false
       ) {
         return false;
       }
       if (
-        (notifType === 'status_update' || notifType === 'system') &&
+        (rawType === 'status_update' || rawType === 'system') &&
         s.status_notifications === false
       ) {
         return false;
@@ -449,39 +803,44 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Build target URL respecting GitHub Pages /OSA/ base path
+    // 5. Build target URL & payload for Message vs Audio/Video Call
     const baseAppUrl = 'https://ddg2jnv78j-maker.github.io/OSA/';
     const urlParams = new URLSearchParams();
-    if (body.chatId) urlParams.set('chatId', body.chatId);
+    if (resolvedChatId) urlParams.set('chatId', resolvedChatId);
     if (body.callId) urlParams.set('callId', body.callId);
     if (body.callType) urlParams.set('callType', body.callType);
     const querySuffix = urlParams.toString() ? `?${urlParams.toString()}` : '';
     const targetUrl = body.url || `${baseAppUrl}${querySuffix}`;
 
-    const isCall = notifType === 'incoming_call';
-    const pushPayload = JSON.stringify({
-      title: rawTitleText || 'OSA',
-      body: rawBodyText || 'You have a new message',
-      icon: `${baseAppUrl}pwa-192x192.png`,
-      badge: `${baseAppUrl}pwa-192x192.png`,
-      tag:
-        body.tag ||
-        (isCall
-          ? `osa-call-${body.callId || Date.now()}`
-          : body.chatId
-          ? `osa-chat-${body.chatId}`
-          : 'osa-notification'),
-      renotify: true,
-      requireInteraction: isCall,
-      data: {
-        type: notifType,
-        chatId: body.chatId || null,
-        callId: body.callId || null,
-        callType: body.callType || null,
-        senderId: senderUserId,
-        url: targetUrl,
-      },
-    });
+    const resolvedCallType: 'audio' | 'video' =
+      body.callType === 'video' || rawTitleText.toLowerCase().includes('video')
+        ? 'video'
+        : 'audio';
+
+    const notificationTitle = isIncomingCall
+      ? resolvedCallType === 'video'
+        ? 'Incoming video call'
+        : 'Incoming audio call'
+      : rawTitleText ||
+        (isGroupConversation && groupTitle
+          ? `${senderDisplayName} in ${groupTitle}`
+          : senderDisplayName);
+
+    const notificationBody = isIncomingCall
+      ? `${senderDisplayName} is calling you`
+      : isMessagePush
+      ? formatMediaPreviewBody(body.messageType, rawBodyText)
+      : rawBodyText || 'New message';
+
+    const notificationTag =
+      body.tag ||
+      (isIncomingCall
+        ? `osa-call-${body.callId || Date.now()}`
+        : body.messageId
+        ? `osa-msg-${body.messageId}`
+        : resolvedChatId
+        ? `osa-chat-${resolvedChatId}`
+        : 'osa-notification');
 
     let sentCount = 0;
     let cleanedCount = 0;
@@ -489,16 +848,85 @@ Deno.serve(async (req: Request) => {
     await Promise.all(
       subscriptions.map(async (sub) => {
         try {
+          let rejectToken: string | null = null;
+          if (isIncomingCall && body.callId) {
+            rejectToken = await createCallRejectToken(
+              body.callId,
+              String(sub.user_id),
+              senderUserId,
+              vapidConfig.privateKey
+            );
+          }
+
+          const payloadType = isIncomingCall
+            ? 'incoming_call'
+            : isMessagePush
+            ? 'message'
+            : rawType;
+
+          const pushPayloadObj = isIncomingCall
+            ? {
+                type: 'incoming_call',
+                callType: resolvedCallType,
+                callId: body.callId || null,
+                callerId: senderUserId,
+                callerName: senderDisplayName,
+                title: notificationTitle,
+                body: notificationBody,
+                icon: `${baseAppUrl}pwa-192x192.png`,
+                badge: `${baseAppUrl}pwa-192x192.png`,
+                tag: notificationTag,
+                renotify: true,
+                requireInteraction: true,
+                data: {
+                  type: 'incoming_call',
+                  callType: resolvedCallType,
+                  callId: body.callId || null,
+                  callerId: senderUserId,
+                  callerName: senderDisplayName,
+                  chatId: resolvedChatId,
+                  conversationId: resolvedChatId,
+                  rejectToken,
+                  rejectEndpoint: `${supabaseUrl}/functions/v1/send-web-push`,
+                  anonKey: supabaseAnonKey,
+                  url: targetUrl,
+                },
+              }
+            : {
+                type: payloadType,
+                conversationId: resolvedChatId,
+                chatId: resolvedChatId,
+                senderId: senderUserId,
+                senderName: senderDisplayName,
+                messageId: body.messageId || null,
+                title: notificationTitle,
+                body: notificationBody,
+                icon: `${baseAppUrl}pwa-192x192.png`,
+                badge: `${baseAppUrl}pwa-192x192.png`,
+                tag: notificationTag,
+                renotify: true,
+                requireInteraction: false,
+                data: {
+                  type: payloadType,
+                  conversationId: resolvedChatId,
+                  chatId: resolvedChatId,
+                  senderId: senderUserId,
+                  senderName: senderDisplayName,
+                  messageId: body.messageId || null,
+                  url: targetUrl,
+                },
+              };
+
           const encryptedBody = await encryptWebPushPayload(
-            pushPayload,
+            JSON.stringify(pushPayloadObj),
             sub.p256dh,
             sub.auth
           );
           const vapidAuth = await createVapidAuthorizationHeader(
             sub.endpoint,
-            vapidPublicKey,
-            vapidPrivateKey,
-            vapidSubject
+            vapidConfig.publicKey,
+            vapidConfig.privateKey,
+            vapidConfig.subject
           );
 
           const res = await fetch(sub.endpoint, {
@@ -507,8 +935,8 @@ Deno.serve(async (req: Request) => {
               Authorization: vapidAuth,
               'Content-Encoding': 'aes128gcm',
               'Content-Type': 'application/octet-stream',
-              TTL: isCall ? '60' : '86400',
-              Urgency: isCall ? 'high' : 'normal',
+              TTL: isIncomingCall ? '60' : '86400',
+              Urgency: isIncomingCall ? 'high' : 'normal',
             },
             body: encryptedBody,
           });

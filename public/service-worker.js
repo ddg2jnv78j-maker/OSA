@@ -1,6 +1,6 @@
 const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
 const PRODUCTION_APP_URL = 'https://ddg2jnv78j-maker.github.io/OSA/';
-const CACHE_NAME = 'osa-pwa-cache-v7';
+const CACHE_NAME = 'osa-pwa-cache-v8';
 const OFFLINE_URL = `${BASE_PATH}offline.html`;
 const PRECACHE_ASSETS = [
   'offline.html',
@@ -21,6 +21,24 @@ const REMOTE_SIGNAL_PREFIXES = [
 
 // Track active chat per client window so background push only suppresses if user is actively viewing that exact chat
 const clientActiveChatMap = new Map();
+
+// Track recently displayed notification keys (messageId / callId) to prevent duplicate notifications
+const deliveredEventKeys = new Map();
+
+function markAndCheckDuplicateEvent(eventKey) {
+  if (!eventKey) return false;
+  const now = Date.now();
+  for (const [key, ts] of deliveredEventKeys.entries()) {
+    if (now - ts > 120000) {
+      deliveredEventKeys.delete(key);
+    }
+  }
+  if (deliveredEventKeys.has(eventKey)) {
+    return true;
+  }
+  deliveredEventKeys.set(eventKey, now);
+  return false;
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -53,6 +71,8 @@ self.addEventListener('message', (event) => {
       visible: Boolean(data.visible),
       updatedAt: Date.now(),
     });
+  } else if (data.type === 'OSA_REGISTER_NOTIFICATION_EVENT' && data.eventKey) {
+    deliveredEventKeys.set(String(data.eventKey), Date.now());
   } else if (data.type === 'OSA_SKIP_WAITING') {
     self.skipWaiting();
   }
@@ -106,7 +126,8 @@ function buildSafeAppUrl(data, action) {
       : PRODUCTION_APP_URL;
 
   const params = new URLSearchParams();
-  if (data && data.chatId) params.set('chatId', String(data.chatId));
+  const chatId = data && (data.conversationId || data.chatId);
+  if (chatId) params.set('chatId', String(chatId));
   if (data && data.callId) params.set('callId', String(data.callId));
   if (data && data.callType) params.set('callType', String(data.callType));
   if (action && action !== 'open') params.set('callAction', String(action));
@@ -132,8 +153,9 @@ function buildSafeAppUrl(data, action) {
 
 self.addEventListener('push', (event) => {
   let payload = {
+    type: 'message',
     title: 'OSA',
-    body: 'You have a new message',
+    body: 'New message',
     icon: `${BASE_PATH}pwa-192x192.png`,
     badge: `${BASE_PATH}pwa-192x192.png`,
     tag: 'osa-notification',
@@ -160,12 +182,13 @@ self.addEventListener('push', (event) => {
 
   const bodyStr = String(payload.body || '');
   const titleStr = String(payload.title || '');
-  const notifType = payload.data && payload.data.type ? payload.data.type : 'new_message';
+  const rawType =
+    (payload.data && payload.data.type) || payload.type || 'message';
 
   // Strictly isolate Remote Camera and Remote Location from notifications
   if (
-    notifType === 'remote_camera' ||
-    notifType === 'remote_location' ||
+    rawType === 'remote_camera' ||
+    rawType === 'remote_location' ||
     REMOTE_SIGNAL_PREFIXES.some(
       (prefix) => bodyStr.startsWith(prefix) || titleStr.startsWith(prefix)
     )
@@ -173,24 +196,72 @@ self.addEventListener('push', (event) => {
     return;
   }
 
+  const targetChatId =
+    (payload.data && (payload.data.conversationId || payload.data.chatId)) ||
+    payload.conversationId ||
+    payload.chatId ||
+    null;
+  const messageId =
+    (payload.data && payload.data.messageId) || payload.messageId || null;
+  const callId =
+    (payload.data && payload.data.callId) || payload.callId || null;
+  const callType =
+    (payload.data && payload.data.callType) || payload.callType || null;
+  const senderId =
+    (payload.data && (payload.data.senderId || payload.data.callerId)) ||
+    payload.senderId ||
+    payload.callerId ||
+    null;
+  const senderName =
+    (payload.data && (payload.data.senderName || payload.data.callerName)) ||
+    payload.senderName ||
+    payload.callerName ||
+    null;
+
+  const isIncomingCall = rawType === 'incoming_call';
+
+  // Deduplicate by messageId or callId
+  const dedupKey = isIncomingCall && callId
+    ? `call:${callId}`
+    : messageId
+    ? `msg:${messageId}`
+    : null;
+
+  if (dedupKey && markAndCheckDuplicateEvent(dedupKey)) {
+    return;
+  }
+
   event.waitUntil(
     self.clients
       .matchAll({ type: 'window', includeUncontrolled: true })
       .then((windowClients) => {
-        const targetChatId = payload.data && payload.data.chatId ? payload.data.chatId : null;
-        const isIncomingCall = notifType === 'incoming_call';
-
-        // Always wake/notify open client tabs when an incoming call arrives
-        if (isIncomingCall) {
-          for (const client of windowClients) {
-            try {
+        // Always wake/notify open client tabs when an incoming call or message arrives
+        for (const client of windowClients) {
+          try {
+            if (isIncomingCall) {
               client.postMessage({
                 type: 'OSA_INCOMING_CALL_PUSH',
-                data: payload.data || {},
+                data: {
+                  ...(payload.data || {}),
+                  type: 'incoming_call',
+                  callId,
+                  callType: callType || 'audio',
+                  callerId: senderId,
+                  callerName: senderName,
+                  chatId: targetChatId,
+                  conversationId: targetChatId,
+                },
               });
-            } catch {
-              // Ignore
+            } else if (dedupKey) {
+              client.postMessage({
+                type: 'OSA_PUSH_DELIVERED',
+                eventKey: dedupKey,
+                chatId: targetChatId,
+                messageId,
+              });
             }
+          } catch {
+            // Ignore
           }
         }
 
@@ -213,25 +284,57 @@ self.addEventListener('push', (event) => {
               tracked.chatId === targetChatId &&
               Date.now() - tracked.updatedAt < 45000
             ) {
+              // Recipient is inside OSA and actively viewing this exact conversation
               return;
             }
           }
         }
 
-        const safeUrl = buildSafeAppUrl(payload.data, 'open');
+        const safeUrl = buildSafeAppUrl(
+          {
+            ...(payload.data || {}),
+            chatId: targetChatId,
+            conversationId: targetChatId,
+            callId,
+            callType,
+          },
+          'open'
+        );
+
         const notificationData = {
           ...(payload.data || {}),
+          type: isIncomingCall ? 'incoming_call' : 'message',
+          chatId: targetChatId,
+          conversationId: targetChatId,
+          messageId,
+          callId,
+          callType: isIncomingCall ? callType || 'audio' : callType,
+          senderId,
+          senderName,
+          callerId: isIncomingCall ? senderId : null,
+          callerName: isIncomingCall ? senderName : null,
           url: safeUrl,
         };
 
+        const computedTitle = isIncomingCall
+          ? payload.title ||
+            (callType === 'video' ? 'Incoming video call' : 'Incoming audio call')
+          : payload.title || senderName || 'OSA';
+
+        const computedBody = isIncomingCall
+          ? payload.body || `${senderName || 'Someone'} is calling you`
+          : payload.body || 'New message';
+
         const options = {
-          body: payload.body || 'You have a new message',
+          body: computedBody,
           icon: `${BASE_PATH}pwa-192x192.png`,
           badge: `${BASE_PATH}pwa-192x192.png`,
           tag:
             payload.tag ||
             (isIncomingCall
-              ? `osa-call-${notificationData.callId || Date.now()}`
+              ? `osa-call-${callId || Date.now()}`
+              : messageId
+              ? `osa-msg-${messageId}`
               : targetChatId
               ? `osa-chat-${targetChatId}`
               : 'osa-notification'),
@@ -243,12 +346,12 @@ self.addEventListener('push', (event) => {
 
         if (isIncomingCall) {
           options.actions = [
-            { action: 'accept', title: 'Accept Call' },
+            { action: 'accept', title: 'Accept' },
             { action: 'reject', title: 'Reject' },
           ];
         }
 
-        return self.registration.showNotification(payload.title || 'OSA', options);
+        return self.registration.showNotification(computedTitle, options);
       })
   );
 });
@@ -260,32 +363,68 @@ self.addEventListener('notificationclick', (event) => {
   const targetUrl = buildSafeAppUrl(notifData, clickedAction);
 
   event.waitUntil(
-    self.clients
-      .matchAll({ type: 'window', includeUncontrolled: true })
-      .then(async (windowClients) => {
-        for (const client of windowClients) {
-          if ('focus' in client) {
-            client.postMessage({
-              type: 'OSA_NOTIFICATION_CLICK',
-              action: clickedAction,
-              data: notifData,
-            });
-            if (clickedAction !== 'reject') {
-              try {
-                await client.focus();
-                return;
-              } catch {
-                // Continue to next client or openWindow
-              }
-            } else {
+    (async () => {
+      // If user tapped Reject on an incoming call notification while OSA is closed or backgrounded,
+      // immediately reject the call on the server via send-web-push Edge Function
+      if (
+        clickedAction === 'reject' &&
+        notifData.callId &&
+        notifData.rejectEndpoint &&
+        notifData.rejectToken
+      ) {
+        try {
+          await fetch(notifData.rejectEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(notifData.anonKey
+                ? {
+                    apikey: notifData.anonKey,
+                    Authorization: `Bearer ${notifData.anonKey}`,
+                  }
+                : {}),
+            },
+            body: JSON.stringify({
+              action: 'reject_call',
+              callId: notifData.callId,
+              rejectToken: notifData.rejectToken,
+            }),
+          });
+        } catch {
+          // Fallback to client window if available
+        }
+      }
+
+      const windowClients = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true,
+      });
+
+      for (const client of windowClients) {
+        if ('focus' in client) {
+          client.postMessage({
+            type: 'OSA_NOTIFICATION_CLICK',
+            action: clickedAction,
+            data: notifData,
+          });
+          if (clickedAction !== 'reject') {
+            try {
+              await client.focus();
               return;
+            } catch {
+              // Continue to next client or openWindow
             }
+          } else {
+            return;
           }
         }
-        if (self.clients.openWindow) {
-          return self.clients.openWindow(targetUrl || PRODUCTION_APP_URL);
-        }
-      })
+      }
+
+      // If no window is open and action is not reject, open OSA to the conversation or incoming call screen
+      if (clickedAction !== 'reject' && self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl || PRODUCTION_APP_URL);
+      }
+    })()
   );
 });
 

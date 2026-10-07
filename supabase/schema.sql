@@ -1472,4 +1472,45 @@ CREATE POLICY "Users can delete own presence sessions"
   ON public.user_presence_sessions FOR DELETE TO authenticated
   USING (auth.uid() = user_id);
 
+-- ============================================================================
+-- 10. SERVER-SIDE WEB PUSH & DEDUPLICATION TABLES / TRIGGERS
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public.push_vapid_keys (
+  id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  public_key TEXT NOT NULL,
+  private_key TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT 'mailto:support@osa-messaging.app',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.push_vapid_keys ENABLE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION public.get_public_vapid_key()
+RETURNS TEXT
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_pub TEXT;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT public_key INTO v_pub FROM public.push_vapid_keys WHERE id = 1 LIMIT 1;
+  RETURN v_pub;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TABLE IF NOT EXISTS public.push_delivery_log (
+  event_key TEXT PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_delivery_log_created_at
+  ON public.push_delivery_log(created_at DESC);
+
+ALTER TABLE public.push_delivery_log ENABLE ROW LEVEL SECURITY;
+
 
