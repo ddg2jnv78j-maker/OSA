@@ -17,6 +17,7 @@ import {
   Info,
   MapPin,
   MoreVertical,
+  Music,
   Paperclip,
   Pencil,
   Phone,
@@ -35,6 +36,7 @@ import { OSAAvatar } from '../components/OSAAvatar';
 import { RemoteCameraModal } from '../components/RemoteCameraModal';
 import { RemoteLocationModal } from '../components/RemoteLocationModal';
 import { ReportUserModal } from '../components/ReportUserModal';
+import { RingtoneModal } from '../components/RingtoneSelector';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
 import { generateSmartDraftOrReply } from '../services/aiService';
@@ -120,6 +122,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
   const [showRemoteCameraModal, setShowRemoteCameraModal] = useState(false);
   const [showRemoteLocationModal, setShowRemoteLocationModal] = useState(false);
+  const [showRingtoneModal, setShowRingtoneModal] = useState(false);
   const [selectedLocationCard, setSelectedLocationCard] = useState<ChatLocationData | null>(null);
   const [sharingLocation, setSharingLocation] = useState(false);
 
@@ -1532,6 +1535,18 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
                 <button
                   type="button"
+                  onClick={() => {
+                    setShowChatInfo(false);
+                    setShowRingtoneModal(true);
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-sm text-slate-700 dark:text-slate-200"
+                >
+                  <Music className="w-4 h-4 text-blue-600" />
+                  <span>Call Ringtone</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={handleClearChat}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-sm text-amber-600"
                 >
@@ -1835,6 +1850,12 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           }}
         />
       )}
+
+      <RingtoneModal
+        isOpen={showRingtoneModal}
+        userId={currentUser.id}
+        onClose={() => setShowRingtoneModal(false)}
+      />
     </div>
   );
 };

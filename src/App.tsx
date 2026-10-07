@@ -63,6 +63,12 @@ import {
   RemoteCameraSessionManager,
   RemoteCameraSignalPayload,
 } from './services/remoteCameraService';
+import {
+  startIncomingCallRingtone,
+  stopAllRingtoneAudio,
+  stopIncomingCallRingtone,
+  syncUserRingtoneFromSupabase,
+} from './services/ringtoneService';
 import { WebRTCCallManager } from './services/webrtcService';
 import {
   CallRecord,
@@ -205,6 +211,7 @@ export default function App() {
 
       if (profile.theme) handleThemeChange(profile.theme);
       if (profile.language) handleLanguageChange(profile.language);
+      syncUserRingtoneFromSupabase(profile.id).catch(() => {});
 
       // Show Permission Setup screen on first-time registration / onboarding
       const permStatus = getStoredPermissionStatus(profile.id);
@@ -246,6 +253,7 @@ export default function App() {
         setAuthMode('reset');
         setCurrentUser(null);
       } else if (event === 'SIGNED_OUT' || !session) {
+        stopAllRingtoneAudio();
         setCurrentUser(null);
         setIsAdmin(false);
         setAdminRole(null);
@@ -488,12 +496,16 @@ export default function App() {
           setCallPeerProfile(callerProfile);
           setActiveCall(incoming);
           setCallError(undefined);
+          startIncomingCallRingtone(currentUser.id, incoming.id);
 
           const manager = new WebRTCCallManager(currentUser.id, {
             onLocalStream: setLocalStream,
             onRemoteStream: setRemoteStream,
             onStatusChange: (status, errMsg) => {
               setCallStatus(status);
+              if (status !== 'calling' && status !== 'ringing') {
+                stopIncomingCallRingtone();
+              }
               if (errMsg) setCallError(errMsg);
               if (
                 status === 'ended' ||
@@ -501,6 +513,7 @@ export default function App() {
                 status === 'missed' ||
                 status === 'failed'
               ) {
+                stopIncomingCallRingtone();
                 setTimeout(() => {
                   setActiveCall(null);
                   callManagerRef.current = null;
@@ -511,6 +524,44 @@ export default function App() {
           callManagerRef.current = manager;
 
           await manager.prepareIncomingCall(incoming);
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'calls',
+          filter: `receiver_id=eq.${currentUser.id}`,
+        },
+        (payload) => {
+          const updated = payload.new as CallRecord;
+          if (!updated) return;
+          if (
+            updated.status === 'ended' ||
+            updated.status === 'missed' ||
+            updated.status === 'rejected' ||
+            updated.status === 'failed' ||
+            updated.status === 'connected' ||
+            updated.status === 'accepted'
+          ) {
+            stopIncomingCallRingtone();
+          }
+          if (
+            activeCall &&
+            activeCall.id === updated.id &&
+            (updated.status === 'ended' ||
+              updated.status === 'missed' ||
+              updated.status === 'rejected' ||
+              updated.status === 'failed')
+          ) {
+            setCallStatus(updated.status);
+            callManagerRef.current?.cleanup();
+            setTimeout(() => {
+              setActiveCall(null);
+              callManagerRef.current = null;
+            }, 1500);
+          }
         }
       )
       .subscribe();
@@ -612,6 +663,7 @@ export default function App() {
   };
 
   const handleAcceptCall = async () => {
+    stopIncomingCallRingtone();
     if (!callManagerRef.current || !activeCall) return;
     try {
       await callManagerRef.current.acceptIncomingCall(activeCall);
@@ -621,11 +673,13 @@ export default function App() {
   };
 
   const handleRejectCall = async () => {
+    stopIncomingCallRingtone();
     if (!callManagerRef.current || !activeCall) return;
     await callManagerRef.current.rejectIncomingCall(activeCall);
   };
 
   const handleEndCall = async () => {
+    stopIncomingCallRingtone();
     if (!callManagerRef.current) {
       setActiveCall(null);
       return;
@@ -634,6 +688,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    stopAllRingtoneAudio();
     if (!currentUser) return;
     await signOutUser(currentUser.id);
     setCurrentUser(null);

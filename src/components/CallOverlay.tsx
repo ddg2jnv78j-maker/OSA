@@ -11,6 +11,10 @@ import {
   Video,
 } from 'lucide-react';
 import { TranslationDictionary } from '../lib/i18n';
+import {
+  startIncomingCallRingtone,
+  stopIncomingCallRingtone,
+} from '../services/ringtoneService';
 import { CallRecord, CallStatus, Profile } from '../types/osa';
 import { OSAAvatar } from './OSAAvatar';
 
@@ -58,6 +62,19 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   const isIncoming =
     callRecord.receiver_id === currentUser.id &&
     (callStatus === 'calling' || callStatus === 'ringing');
+
+  // Play selected OSA ringtone in a loop while incoming Audio or Video Call is ringing;
+  // stop immediately when accepted, rejected, cancelled, timed out, failed, ended, or unmounted.
+  useEffect(() => {
+    if (isIncoming && callRecord.id) {
+      startIncomingCallRingtone(currentUser.id, callRecord.id);
+    } else {
+      stopIncomingCallRingtone();
+    }
+    return () => {
+      stopIncomingCallRingtone();
+    };
+  }, [isIncoming, callRecord.id, currentUser.id]);
 
   const isVideo = callRecord.call_type === 'video';
   const peerName = peerProfile?.full_name || 'OSA User';

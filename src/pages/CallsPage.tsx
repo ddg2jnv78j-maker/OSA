@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Eye,
   MapPin,
+  Music,
   Phone,
   PhoneIncoming,
   PhoneMissed,
@@ -14,6 +15,7 @@ import {
 import { OSAAvatar } from '../components/OSAAvatar';
 import { RemoteCameraModal } from '../components/RemoteCameraModal';
 import { RemoteLocationModal } from '../components/RemoteLocationModal';
+import { RingtoneModal } from '../components/RingtoneSelector';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
 import { fetchCallHistory, searchUsers } from '../services/osaService';
@@ -37,6 +39,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
   const [users, setUsers] = useState<Profile[]>([]);
   const [remoteCameraTargetPeer, setRemoteCameraTargetPeer] = useState<Profile | null>(null);
   const [locationTargetPeer, setLocationTargetPeer] = useState<Profile | null>(null);
+  const [showRingtoneModal, setShowRingtoneModal] = useState(false);
 
   const loadCalls = async () => {
     try {
@@ -83,18 +86,29 @@ export const CallsPage: React.FC<CallsPageProps> = ({
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      <div className="shrink-0 flex items-center justify-between px-4 py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-10">
-        <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-1">
+      <div className="shrink-0 flex items-center justify-between gap-2 px-4 py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-10">
+        <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-1 truncate">
           Recent Audio &amp; Video Calls
         </h3>
-        <button
-          type="button"
-          onClick={() => setShowNewCallModal(true)}
-          className="px-4 py-2 min-h-[40px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shadow-xs"
-        >
-          <Plus className="w-4 h-4" />
-          <span>New Call</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowRingtoneModal(true)}
+            className="px-3.5 py-2 min-h-[40px] rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+            title="Select Incoming Call Ringtone"
+          >
+            <Music className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            <span>Ringtone</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowNewCallModal(true)}
+            className="px-4 py-2 min-h-[40px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shadow-xs"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New Call</span>
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 pb-6 space-y-4">
@@ -336,6 +350,12 @@ export const CallsPage: React.FC<CallsPageProps> = ({
           onClose={() => setLocationTargetPeer(null)}
         />
       )}
+
+      <RingtoneModal
+        isOpen={showRingtoneModal}
+        userId={currentUser.id}
+        onClose={() => setShowRingtoneModal(false)}
+      />
     </div>
   );
 };

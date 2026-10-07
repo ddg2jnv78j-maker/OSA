@@ -20,7 +20,9 @@ import {
   Mail,
   MessageSquare,
   Moon,
+  Music,
   Palette,
+  Phone,
   Shield,
   Sun,
   Trash2,
@@ -28,7 +30,15 @@ import {
 } from 'lucide-react';
 import { OSAAvatar } from '../components/OSAAvatar';
 import { PWAInstallButton } from '../components/PWAInstallButton';
+import { RingtoneSelectorList } from '../components/RingtoneSelector';
 import { TranslationDictionary } from '../lib/i18n';
+import {
+  getRingtoneById,
+  getSelectedRingtoneId,
+  OSARingtoneId,
+  RINGTONE_CHANGED_EVENT,
+  stopRingtonePreview,
+} from '../services/ringtoneService';
 import {
   blockUser,
   deleteUserAccount,
@@ -66,6 +76,8 @@ export type SettingsSubPage =
   | 'profile'
   | 'account'
   | 'privacy'
+  | 'calls'
+  | 'calls_ringtone'
   | 'notifications'
   | 'appearance'
   | 'language'
@@ -130,6 +142,25 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [statusBanner, setStatusBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(
     null
   );
+  const [selectedRingtoneId, setSelectedRingtoneId] = useState<OSARingtoneId>(() =>
+    getSelectedRingtoneId(currentUser.id)
+  );
+
+  useEffect(() => {
+    setSelectedRingtoneId(getSelectedRingtoneId(currentUser.id));
+    const handleRingtoneChanged = () => {
+      setSelectedRingtoneId(getSelectedRingtoneId(currentUser.id));
+    };
+    window.addEventListener(RINGTONE_CHANGED_EVENT, handleRingtoneChanged);
+    return () => {
+      window.removeEventListener(RINGTONE_CHANGED_EVENT, handleRingtoneChanged);
+      stopRingtonePreview();
+    };
+  }, [currentUser.id]);
+
+  useEffect(() => {
+    stopRingtonePreview();
+  }, [subPage]);
 
   // Profile Edit state
   const [fullName, setFullName] = useState(currentUser.full_name);
@@ -588,6 +619,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               { id: 'profile', icon: User, label: t.profile, sub: 'Photo, name, about, online status' },
               { id: 'account', icon: KeyRound, label: t.account, sub: 'Email, password, delete account' },
               { id: 'privacy', icon: Lock, label: t.privacy, sub: 'Last seen, photo, read receipts' },
+              {
+                id: 'calls',
+                icon: Phone,
+                label: t.calls || 'Calls',
+                sub: `Ringtone · ${getRingtoneById(selectedRingtoneId).name}`,
+              },
               { id: 'notifications', icon: Bell, label: t.notifications, sub: 'Alerts, unread, push notifications' },
               { id: 'appearance', icon: Palette, label: t.appearance, sub: `Current: ${theme.toUpperCase()}` },
               { id: 'language', icon: Globe, label: t.language, sub: language === 'bn' ? 'বাংলা' : 'English' },
@@ -1043,7 +1080,74 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 {t.markAllRead}
               </button>
             </div>
+
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                  Incoming Call Ringtone
+                </p>
+                <p className="text-xs text-slate-500">
+                  Selected: {getRingtoneById(selectedRingtoneId).name}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSubPage('calls_ringtone')}
+                className="px-3.5 py-2 min-h-[38px] rounded-xl bg-blue-600/10 text-blue-600 dark:text-blue-400 text-xs font-semibold inline-flex items-center gap-1.5"
+              >
+                <Music className="w-3.5 h-3.5" />
+                <span>Ringtone</span>
+              </button>
+            </div>
           </div>
+        </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* 29B. CALLS & RINGTONE SETTINGS (Settings -> Calls -> Ringtone)    */}
+      {/* ================================================================= */}
+      {subPage === 'calls' && (
+        <div className="space-y-5">
+          {renderSubHeader(t.calls || 'Calls', 'main')}
+
+          <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
+            <button
+              type="button"
+              onClick={() => setSubPage('calls_ringtone')}
+              className="w-full flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors text-left"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-blue-600/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                  <Music className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                    Ringtone
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                    {getRingtoneById(selectedRingtoneId).name} &middot;{' '}
+                    {getRingtoneById(selectedRingtoneId).subtitle}
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-4.5 h-4.5 text-slate-400 shrink-0" />
+            </button>
+          </div>
+
+          <RingtoneSelectorList
+            userId={currentUser.id}
+            onRingtoneChanged={(id) => setSelectedRingtoneId(id)}
+          />
+        </div>
+      )}
+
+      {subPage === 'calls_ringtone' && (
+        <div className="space-y-5">
+          {renderSubHeader('Ringtone', 'calls')}
+          <RingtoneSelectorList
+            userId={currentUser.id}
+            onRingtoneChanged={(id) => setSelectedRingtoneId(id)}
+          />
         </div>
       )}
 
