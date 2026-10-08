@@ -94,6 +94,57 @@ function pemToArrayBuffer(pem: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+function extractConfiguredFcmFields(): {
+  projectId: string;
+  clientEmail: string;
+  privateKeyPem: string;
+} {
+  let projectId = (Deno.env.get('FCM_PROJECT_ID') || Deno.env.get('FIREBASE_PROJECT_ID') || '').trim();
+  let clientEmail = (Deno.env.get('FCM_CLIENT_EMAIL') || Deno.env.get('FIREBASE_CLIENT_EMAIL') || '').trim();
+  let privateKeyPem = (Deno.env.get('FCM_PRIVATE_KEY') || Deno.env.get('FIREBASE_PRIVATE_KEY') || '').trim();
+
+  let rawJson = (
+    Deno.env.get('FIREBASE_SERVICE_ACCOUNT_JSON') ||
+    Deno.env.get('FCM_SERVICE_ACCOUNT_JSON') ||
+    Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') ||
+    ''
+  ).trim();
+
+  if (rawJson) {
+    if (
+      (rawJson.startsWith('"') && rawJson.endsWith('"')) ||
+      (rawJson.startsWith("'") && rawJson.endsWith("'"))
+    ) {
+      rawJson = rawJson.slice(1, -1).trim();
+    }
+    if (!rawJson.startsWith('{')) {
+      try {
+        const decoded = atob(rawJson);
+        if (decoded.trim().startsWith('{')) {
+          rawJson = decoded.trim();
+        }
+      } catch {
+        // Not base64
+      }
+    }
+    try {
+      const parsed = JSON.parse(rawJson);
+      projectId = String(parsed.project_id || projectId).trim();
+      clientEmail = String(parsed.client_email || clientEmail).trim();
+      privateKeyPem = String(parsed.private_key || privateKeyPem).trim();
+    } catch {
+      const projMatch = rawJson.match(/"project_id"\s*:\s*"([^"]+)"/);
+      const emailMatch = rawJson.match(/"client_email"\s*:\s*"([^"]+)"/);
+      const keyMatch = rawJson.match(/"private_key"\s*:\s*"([\s\S]*?-----END PRIVATE KEY-----[\\n\s]*)"/);
+      if (projMatch?.[1]) projectId = projMatch[1].trim();
+      if (emailMatch?.[1]) clientEmail = emailMatch[1].trim();
+      if (keyMatch?.[1]) privateKeyPem = keyMatch[1].trim();
+    }
+  }
+
+  return { projectId, clientEmail, privateKeyPem };
+}
+
 async function resolveFcmV1AccessToken(): Promise<{ accessToken: string; projectId: string } | null> {
   if (cachedFcmAccessToken && Date.now() < cachedFcmAccessToken.expiresAt - 60_000) {
     return {
@@ -102,27 +153,7 @@ async function resolveFcmV1AccessToken(): Promise<{ accessToken: string; project
     };
   }
 
-  let projectId = (Deno.env.get('FCM_PROJECT_ID') || Deno.env.get('FIREBASE_PROJECT_ID') || '').trim();
-  let clientEmail = (Deno.env.get('FCM_CLIENT_EMAIL') || Deno.env.get('FIREBASE_CLIENT_EMAIL') || '').trim();
-  let privateKeyPem = (Deno.env.get('FCM_PRIVATE_KEY') || Deno.env.get('FIREBASE_PRIVATE_KEY') || '').trim();
-
-  const rawJson = (
-    Deno.env.get('FIREBASE_SERVICE_ACCOUNT_JSON') ||
-    Deno.env.get('FCM_SERVICE_ACCOUNT_JSON') ||
-    Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') ||
-    ''
-  ).trim();
-
-  if (rawJson) {
-    try {
-      const parsed = JSON.parse(rawJson);
-      projectId = String(parsed.project_id || projectId).trim();
-      clientEmail = String(parsed.client_email || clientEmail).trim();
-      privateKeyPem = String(parsed.private_key || privateKeyPem).trim();
-    } catch {
-      // Ignore malformed JSON
-    }
-  }
+  const { projectId, clientEmail, privateKeyPem } = extractConfiguredFcmFields();
 
   if (!projectId || !clientEmail || !privateKeyPem) {
     return null;
@@ -530,10 +561,14 @@ Deno.serve(async (req: Request) => {
 
     // 1. Public VAPID key endpoint (safe for browser PushManager.subscribe; never exposes private key)
     if (body.action === 'get_vapid_public_key') {
+      const fcmFields = extractConfiguredFcmFields();
+      const fcmAuth = fcmFields.projectId ? await resolveFcmV1AccessToken() : null;
       return new Response(
         JSON.stringify({
           vapidPublicKey: vapidConfig?.publicKey || null,
           configured: Boolean(vapidConfig?.publicKey && vapidConfig?.privateKey),
+          fcmConfigured: Boolean(fcmAuth?.accessToken && fcmAuth?.projectId),
+          fcmProjectId: fcmAuth?.projectId || fcmFields.projectId || null,
         }),
         {
           status: 200,
