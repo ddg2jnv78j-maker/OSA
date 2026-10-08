@@ -151,6 +151,7 @@ export default function App() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const callManagerRef = useRef<WebRTCCallManager | null>(null);
+  const inFlightCallResumeRef = useRef<string | null>(null);
 
   // Separate Remote Camera Streamer State (never opens normal Video Call UI)
   const remoteCameraStreamerRef = useRef<RemoteCameraSessionManager | null>(null);
@@ -228,51 +229,69 @@ export default function App() {
     async (incoming: CallRecord, uid: string, autoAccept = false) => {
       if (!incoming || !uid) return;
       if (activeCall && activeCall.id === incoming.id) {
-        if (autoAccept && callManagerRef.current) {
+        if (autoAccept && callManagerRef.current && inFlightCallResumeRef.current !== `${incoming.id}:accept`) {
+          inFlightCallResumeRef.current = `${incoming.id}:accept`;
           stopIncomingCallRingtone();
-          await callManagerRef.current.acceptIncomingCall(incoming);
+          try {
+            await callManagerRef.current.acceptIncomingCall(incoming);
+          } finally {
+            inFlightCallResumeRef.current = null;
+          }
         }
         return;
       }
       if (activeCall) return;
 
-      const callerProfile = await fetchMyProfile(incoming.caller_id);
-      setCallPeerProfile(callerProfile);
-      setActiveCall(incoming);
-      setCallError(undefined);
-      if (!autoAccept && detectRuntimePlatform() !== 'android') {
-        startIncomingCallRingtone(uid, incoming.id);
+      const lockKey = `${incoming.id}:${autoAccept ? 'accept' : 'open'}`;
+      if (inFlightCallResumeRef.current === lockKey || inFlightCallResumeRef.current === `${incoming.id}:accept`) {
+        return;
       }
+      inFlightCallResumeRef.current = lockKey;
 
-      const manager = new WebRTCCallManager(uid, {
-        onLocalStream: setLocalStream,
-        onRemoteStream: setRemoteStream,
-        onStatusChange: (status, errMsg) => {
-          setCallStatus(status);
-          if (status !== 'calling' && status !== 'ringing') {
-            stopIncomingCallRingtone();
-          }
-          if (errMsg) setCallError(errMsg);
-          if (
-            status === 'ended' ||
-            status === 'rejected' ||
-            status === 'missed' ||
-            status === 'failed'
-          ) {
-            stopIncomingCallRingtone();
-            setTimeout(() => {
-              setActiveCall(null);
-              callManagerRef.current = null;
-            }, 1800);
-          }
-        },
-      });
-      callManagerRef.current = manager;
-      await manager.prepareIncomingCall(incoming);
+      try {
+        setActiveCall(incoming);
+        setCallError(undefined);
+        const callerProfile = await fetchMyProfile(incoming.caller_id);
+        setCallPeerProfile(callerProfile);
+        if (!autoAccept && detectRuntimePlatform() !== 'android') {
+          startIncomingCallRingtone(uid, incoming.id);
+        }
 
-      if (autoAccept) {
-        stopIncomingCallRingtone();
-        await manager.acceptIncomingCall(incoming);
+        const manager = new WebRTCCallManager(uid, {
+          onLocalStream: setLocalStream,
+          onRemoteStream: setRemoteStream,
+          onStatusChange: (status, errMsg) => {
+            setCallStatus(status);
+            if (status !== 'calling' && status !== 'ringing') {
+              stopIncomingCallRingtone();
+            }
+            if (errMsg) setCallError(errMsg);
+            if (
+              status === 'ended' ||
+              status === 'rejected' ||
+              status === 'missed' ||
+              status === 'failed'
+            ) {
+              stopIncomingCallRingtone();
+              setTimeout(() => {
+                setActiveCall(null);
+                callManagerRef.current = null;
+              }, 1800);
+            }
+          },
+        });
+        callManagerRef.current = manager;
+
+        if (autoAccept) {
+          stopIncomingCallRingtone();
+          await manager.acceptIncomingCall(incoming);
+        } else {
+          await manager.prepareIncomingCall(incoming);
+        }
+      } finally {
+        if (inFlightCallResumeRef.current === lockKey) {
+          inFlightCallResumeRef.current = null;
+        }
       }
     },
     [activeCall]
@@ -423,28 +442,32 @@ export default function App() {
         })
         .catch(() => {});
 
-      await setUserOnlineStatus(profile.id, true);
-      await refreshChatsAndNotifications(profile.id);
-
-      // Handle URL query deep-links from Web Push notification clicks (?chatId=... or ?callId=...&callAction=...)
+      // Handle URL query deep-links from notification clicks immediately on cold start without waiting for full chat history fetch
       const urlParams = new URLSearchParams(window.location.search);
       const deepChatId = urlParams.get('chatId');
       const deepCallId = urlParams.get('callId');
       const deepCallAction = urlParams.get('callAction') || undefined;
-      if (deepCallId) {
-        resumeIncomingCallFromNotification(deepCallId, profile.id, deepCallAction);
-      } else if (deepChatId) {
-        setActiveTab('chats');
-        setSelectedChatId(deepChatId);
-      } else {
-        checkPendingIncomingCall(profile.id);
-      }
       if (deepChatId || deepCallId || deepCallAction) {
         try {
           const cleanUrl = window.location.pathname;
           window.history.replaceState({}, document.title, cleanUrl);
         } catch {
           // Ignore
+        }
+      }
+      if (deepCallId) {
+        resumeIncomingCallFromNotification(deepCallId, profile.id, deepCallAction);
+      }
+
+      await setUserOnlineStatus(profile.id, true);
+      await refreshChatsAndNotifications(profile.id);
+
+      if (!deepCallId) {
+        if (deepChatId) {
+          setActiveTab('chats');
+          setSelectedChatId(deepChatId);
+        } else {
+          checkPendingIncomingCall(profile.id);
         }
       }
     } catch {

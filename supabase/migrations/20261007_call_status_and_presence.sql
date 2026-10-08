@@ -223,3 +223,77 @@ BEGIN
   END IF;
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION public.respond_to_call_native(
+  p_call_id UUID,
+  p_status TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID := auth.uid();
+  v_call public.calls;
+  v_now TIMESTAMPTZ := NOW();
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Authentication required';
+  END IF;
+
+  SELECT * INTO v_call
+  FROM public.calls
+  WHERE id = p_call_id
+  LIMIT 1;
+
+  IF v_call.id IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'Call not found');
+  END IF;
+
+  IF v_call.receiver_id <> v_uid AND v_call.caller_id <> v_uid THEN
+    RAISE EXCEPTION 'Not authorized for this call';
+  END IF;
+
+  IF p_status = 'ringing' THEN
+    IF v_call.status = 'calling' THEN
+      UPDATE public.calls
+      SET status = 'ringing',
+          updated_at = v_now
+      WHERE id = p_call_id;
+
+      INSERT INTO public.call_signals (call_id, sender_id, receiver_id, signal_type, payload)
+      VALUES (
+        p_call_id,
+        v_uid,
+        v_call.caller_id,
+        'ringing',
+        jsonb_build_object('reachable', true, 'source', 'android_native')
+      );
+    END IF;
+    RETURN jsonb_build_object('ok', true, 'status', 'ringing');
+  ELSIF p_status = 'rejected' THEN
+    IF v_call.status IN ('calling', 'ringing') THEN
+      UPDATE public.calls
+      SET status = 'rejected',
+          ended_at = v_now,
+          updated_at = v_now
+      WHERE id = p_call_id;
+
+      INSERT INTO public.call_signals (call_id, sender_id, receiver_id, signal_type, payload)
+      VALUES (
+        p_call_id,
+        v_uid,
+        CASE WHEN v_uid = v_call.receiver_id THEN v_call.caller_id ELSE v_call.receiver_id END,
+        'reject',
+        jsonb_build_object('source', 'android_notification')
+      );
+    END IF;
+    RETURN jsonb_build_object('ok', true, 'status', 'rejected');
+  END IF;
+
+  RETURN jsonb_build_object('ok', false, 'error', 'Unsupported status');
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.respond_to_call_native(UUID, TEXT) TO authenticated;

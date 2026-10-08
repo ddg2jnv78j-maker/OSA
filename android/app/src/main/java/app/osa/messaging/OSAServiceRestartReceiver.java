@@ -22,7 +22,9 @@ public class OSAServiceRestartReceiver extends BroadcastReceiver {
             );
             String userId = prefs.getString("auth_user_id", "");
             if (userId != null && !userId.trim().isEmpty()) {
+                OSABackgroundMessagingService.scheduleWatchdogAlarmStatic(context, 8000L);
                 OSABackgroundMessagingService.ensureStarted(context);
+                OSABackgroundMessagingService.triggerImmediateBackgroundPoll(context, goAsync());
             }
         } catch (Exception ignored) {
         }

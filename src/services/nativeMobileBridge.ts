@@ -355,6 +355,7 @@ export function initializeNativeMobileBridge(
             JSON.stringify({
               userId,
               accessToken: session.access_token,
+              refreshToken: session.refresh_token || '',
               supabaseUrl: sbConfig.url,
               anonKey: sbConfig.anonKey,
             })

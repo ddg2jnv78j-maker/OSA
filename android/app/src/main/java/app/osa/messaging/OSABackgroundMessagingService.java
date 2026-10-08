@@ -61,6 +61,7 @@ public class OSABackgroundMessagingService extends Service {
         if (context == null) return;
         try {
             Context appCtx = context.getApplicationContext();
+            scheduleWatchdogAlarmStatic(appCtx, 8000L);
             Intent intent = new Intent(appCtx, OSABackgroundMessagingService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(appCtx, intent);
@@ -74,6 +75,78 @@ public class OSABackgroundMessagingService extends Service {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    public static void scheduleWatchdogAlarmStatic(Context context, long delayMs) {
+        if (context == null) return;
+        try {
+            Context appCtx = context.getApplicationContext();
+            SharedPreferences prefs = appCtx.getSharedPreferences(OSAFirebaseMessagingService.PREFS_NAME, MODE_PRIVATE);
+            String userId = prefs.getString("auth_user_id", "");
+            if (userId == null || userId.trim().isEmpty()) return;
+
+            AlarmManager alarmManager = (AlarmManager) appCtx.getSystemService(Context.ALARM_SERVICE);
+            if (alarmManager == null) return;
+
+            long triggerAt = SystemClock.elapsedRealtime() + Math.max(3000L, delayMs);
+            Intent broadcastIntent = new Intent(appCtx, OSAServiceRestartReceiver.class);
+            broadcastIntent.setAction(OSAServiceRestartReceiver.ACTION_RESTART_BG_SERVICE);
+            PendingIntent broadcastPending = PendingIntent.getBroadcast(
+                    appCtx,
+                    9092,
+                    broadcastIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            );
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                try {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, broadcastPending);
+                } catch (Exception e) {
+                    alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, broadcastPending);
+                }
+            } else {
+                alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, broadcastPending);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void triggerImmediateBackgroundPoll(
+            final Context context,
+            final android.content.BroadcastReceiver.PendingResult pendingResult
+    ) {
+        if (context == null) {
+            if (pendingResult != null) pendingResult.finish();
+            return;
+        }
+        final Context appCtx = context.getApplicationContext();
+        Executors.newSingleThreadExecutor().execute(() -> {
+            PowerManager.WakeLock tempLock = null;
+            try {
+                PowerManager pm = (PowerManager) appCtx.getSystemService(Context.POWER_SERVICE);
+                if (pm != null) {
+                    tempLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "osa:bg_poll_receiver_lock");
+                    tempLock.acquire(9000L);
+                }
+                OSABackgroundMessagingService helper = new OSABackgroundMessagingService();
+                helper.attachBaseContext(appCtx);
+                helper.pollSupabaseEventsSafely();
+            } catch (Exception ignored) {
+            } finally {
+                try {
+                    if (tempLock != null && tempLock.isHeld()) {
+                        tempLock.release();
+                    }
+                } catch (Exception ignored) {
+                }
+                if (pendingResult != null) {
+                    try {
+                        pendingResult.finish();
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        });
     }
 
     public static void syncFcmTokenToSupabaseAsync(final Context context) {
@@ -405,6 +478,8 @@ public class OSABackgroundMessagingService extends Service {
                         callData.put("callerId", callerId);
                         callData.put("callerName", callerName);
                         callData.put("chatId", chatId);
+                        callData.put("anonKey", anonKey);
+                        callData.put("rejectEndpoint", supabaseUrl + "/functions/v1/send-web-push");
                         OSACallNotificationService.startCallNotificationFromData(this, callData);
 
                         if ("calling".equals(status)) {
@@ -433,12 +508,35 @@ public class OSABackgroundMessagingService extends Service {
             String callerId
     ) {
         try {
+            // 1. Atomic RPC respond_to_call_native
+            URL rpcUrl = new URL(supabaseUrl + "/rest/v1/rpc/respond_to_call_native");
+            HttpURLConnection rpcConn = (HttpURLConnection) rpcUrl.openConnection();
+            rpcConn.setConnectTimeout(6000);
+            rpcConn.setReadTimeout(6000);
+            rpcConn.setRequestMethod("POST");
+            rpcConn.setRequestProperty("Content-Type", "application/json");
+            rpcConn.setRequestProperty("apikey", anonKey);
+            rpcConn.setRequestProperty("Authorization", "Bearer " + accessToken);
+            rpcConn.setDoOutput(true);
+
+            JSONObject rpcBody = new JSONObject();
+            rpcBody.put("p_call_id", callId);
+            rpcBody.put("p_status", "ringing");
+            try (OutputStream os = rpcConn.getOutputStream()) {
+                os.write(rpcBody.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            int rpcCode = rpcConn.getResponseCode();
+            rpcConn.disconnect();
+            if (rpcCode >= 200 && rpcCode < 300) {
+                return;
+            }
+
+            // 2. Fallback: Direct PATCH + POST
             URL patchUrl = new URL(supabaseUrl + "/rest/v1/calls?id=eq." + callId);
             HttpURLConnection conn = (HttpURLConnection) patchUrl.openConnection();
             conn.setConnectTimeout(6000);
             conn.setReadTimeout(6000);
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("X-HTTP-Method-Override", "PATCH");
+            conn.setRequestMethod("PATCH");
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("Prefer", "return=minimal");
             conn.setRequestProperty("apikey", anonKey);
@@ -831,11 +929,22 @@ public class OSABackgroundMessagingService extends Service {
     private long parseIsoTimestampMs(String iso) {
         if (iso == null || iso.isEmpty()) return 0L;
         try {
-            String normalized = iso.trim();
+            String normalized = iso.trim().replace(" ", "T");
+            if (normalized.endsWith("+00")) {
+                normalized = normalized + ":00";
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                return java.time.OffsetDateTime.parse(normalized).toInstant().toEpochMilli();
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            String normalized = iso.trim().replace(" ", "T");
             if (normalized.endsWith("+00:00")) {
                 normalized = normalized.substring(0, normalized.length() - 6) + "Z";
+            } else if (normalized.endsWith("+00")) {
+                normalized = normalized.substring(0, normalized.length() - 3) + "Z";
             }
-            // Trim microseconds to milliseconds if present (e.g., .123456Z -> .123Z)
             int dotIdx = normalized.indexOf('.');
             int zIdx = normalized.indexOf('Z');
             if (dotIdx > 0 && zIdx > dotIdx + 4) {

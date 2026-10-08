@@ -326,6 +326,7 @@ public class MainActivity extends AppCompatActivity {
             editor.commit();
             OSABackgroundMessagingService.ensureStarted(this);
             OSABackgroundMessagingService.syncFcmTokenToSupabaseAsync(this);
+            runOnUiThread(this::probeSupabaseSessionFromWebView);
         }
     }
 
@@ -586,6 +587,25 @@ public class MainActivity extends AppCompatActivity {
                     );
                 }
             }
+        }
+        requestBatteryOptimizationExemptionIfNeeded();
+    }
+
+    private void requestBatteryOptimizationExemptionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                boolean alreadyAskedBattery = prefs.getBoolean("perm_asked_battery_opt_v1", false);
+                if (!alreadyAskedBattery) {
+                    prefs.edit().putBoolean("perm_asked_battery_opt_v1", true).apply();
+                    Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                }
+            }
+        } catch (Exception ignored) {
         }
     }
 

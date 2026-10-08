@@ -106,11 +106,12 @@ public class OSACallActionReceiver extends BroadcastReceiver {
                         sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
                         String nowIso = sdf.format(new Date());
 
-                        // 2a. PATCH public.calls -> status = "rejected" (with automatic 401 token refresh)
+                        // 2a. First call atomic RPC respond_to_call_native (uses standard POST, updates calls + call_signals)
                         String currentToken = accessToken;
+                        boolean rpcHandled = false;
                         try {
-                            int patchCode = executeRejectPatch(supabaseUrl, storedAnonKey, currentToken, callId, nowIso);
-                            if (patchCode == 401) {
+                            int rpcCode = executeRespondToCallRpc(supabaseUrl, storedAnonKey, currentToken, callId, "rejected");
+                            if (rpcCode == 401) {
                                 String refreshToken = prefs.getString("auth_refresh_token", "");
                                 if (refreshToken != null && !refreshToken.isEmpty()) {
                                     String refreshed = OSABackgroundMessagingService.refreshSupabaseAccessToken(
@@ -121,40 +122,65 @@ public class OSACallActionReceiver extends BroadcastReceiver {
                                     );
                                     if (refreshed != null && !refreshed.isEmpty()) {
                                         currentToken = refreshed;
-                                        executeRejectPatch(supabaseUrl, storedAnonKey, currentToken, callId, nowIso);
+                                        rpcCode = executeRespondToCallRpc(supabaseUrl, storedAnonKey, currentToken, callId, "rejected");
                                     }
                                 }
+                            }
+                            if (rpcCode >= 200 && rpcCode < 300) {
+                                rpcHandled = true;
                             }
                         } catch (Exception ignored) {
                         }
 
-                        // 2b. POST public.call_signals -> signal_type = "reject"
-                        if (callerId != null && !callerId.isEmpty() && userId != null && !userId.isEmpty()) {
+                        // 2b. Fallback: PATCH public.calls -> status = "rejected" + POST public.call_signals
+                        if (!rpcHandled) {
                             try {
-                                URL sigUrl = new URL(supabaseUrl + "/rest/v1/call_signals");
-                                HttpURLConnection sigConn = (HttpURLConnection) sigUrl.openConnection();
-                                sigConn.setConnectTimeout(8000);
-                                sigConn.setReadTimeout(8000);
-                                sigConn.setRequestMethod("POST");
-                                sigConn.setRequestProperty("Content-Type", "application/json");
-                                sigConn.setRequestProperty("Prefer", "return=minimal");
-                                sigConn.setRequestProperty("apikey", storedAnonKey);
-                                sigConn.setRequestProperty("Authorization", "Bearer " + currentToken);
-                                sigConn.setDoOutput(true);
-
-                                JSONObject sigObj = new JSONObject();
-                                sigObj.put("call_id", callId);
-                                sigObj.put("sender_id", userId);
-                                sigObj.put("receiver_id", callerId);
-                                sigObj.put("signal_type", "reject");
-                                sigObj.put("payload", new JSONObject().put("source", "android_notification"));
-
-                                try (OutputStream os = sigConn.getOutputStream()) {
-                                    os.write(sigObj.toString().getBytes(StandardCharsets.UTF_8));
+                                int patchCode = executeRejectPatch(supabaseUrl, storedAnonKey, currentToken, callId, nowIso);
+                                if (patchCode == 401) {
+                                    String refreshToken = prefs.getString("auth_refresh_token", "");
+                                    if (refreshToken != null && !refreshToken.isEmpty()) {
+                                        String refreshed = OSABackgroundMessagingService.refreshSupabaseAccessToken(
+                                                supabaseUrl,
+                                                storedAnonKey,
+                                                refreshToken,
+                                                prefs
+                                        );
+                                        if (refreshed != null && !refreshed.isEmpty()) {
+                                            currentToken = refreshed;
+                                            executeRejectPatch(supabaseUrl, storedAnonKey, currentToken, callId, nowIso);
+                                        }
+                                    }
                                 }
-                                sigConn.getResponseCode();
-                                sigConn.disconnect();
                             } catch (Exception ignored) {
+                            }
+
+                            if (callerId != null && !callerId.isEmpty() && userId != null && !userId.isEmpty()) {
+                                try {
+                                    URL sigUrl = new URL(supabaseUrl + "/rest/v1/call_signals");
+                                    HttpURLConnection sigConn = (HttpURLConnection) sigUrl.openConnection();
+                                    sigConn.setConnectTimeout(8000);
+                                    sigConn.setReadTimeout(8000);
+                                    sigConn.setRequestMethod("POST");
+                                    sigConn.setRequestProperty("Content-Type", "application/json");
+                                    sigConn.setRequestProperty("Prefer", "return=minimal");
+                                    sigConn.setRequestProperty("apikey", storedAnonKey);
+                                    sigConn.setRequestProperty("Authorization", "Bearer " + currentToken);
+                                    sigConn.setDoOutput(true);
+
+                                    JSONObject sigObj = new JSONObject();
+                                    sigObj.put("call_id", callId);
+                                    sigObj.put("sender_id", userId);
+                                    sigObj.put("receiver_id", callerId);
+                                    sigObj.put("signal_type", "reject");
+                                    sigObj.put("payload", new JSONObject().put("source", "android_notification"));
+
+                                    try (OutputStream os = sigConn.getOutputStream()) {
+                                        os.write(sigObj.toString().getBytes(StandardCharsets.UTF_8));
+                                    }
+                                    sigConn.getResponseCode();
+                                    sigConn.disconnect();
+                                } catch (Exception ignored) {
+                                }
                             }
                         }
                     }
@@ -164,6 +190,35 @@ public class OSACallActionReceiver extends BroadcastReceiver {
                 }
             });
         }
+    }
+
+    private int executeRespondToCallRpc(
+            String supabaseUrl,
+            String anonKey,
+            String accessToken,
+            String callId,
+            String status
+    ) throws Exception {
+        URL rpcUrl = new URL(supabaseUrl + "/rest/v1/rpc/respond_to_call_native");
+        HttpURLConnection conn = (HttpURLConnection) rpcUrl.openConnection();
+        conn.setConnectTimeout(8000);
+        conn.setReadTimeout(8000);
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("apikey", anonKey);
+        conn.setRequestProperty("Authorization", "Bearer " + accessToken);
+        conn.setDoOutput(true);
+
+        JSONObject req = new JSONObject();
+        req.put("p_call_id", callId);
+        req.put("p_status", status);
+
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(req.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        int code = conn.getResponseCode();
+        conn.disconnect();
+        return code;
     }
 
     private int executeRejectPatch(
@@ -177,8 +232,7 @@ public class OSACallActionReceiver extends BroadcastReceiver {
         HttpURLConnection patchConn = (HttpURLConnection) patchUrl.openConnection();
         patchConn.setConnectTimeout(8000);
         patchConn.setReadTimeout(8000);
-        patchConn.setRequestMethod("POST");
-        patchConn.setRequestProperty("X-HTTP-Method-Override", "PATCH");
+        patchConn.setRequestMethod("PATCH");
         patchConn.setRequestProperty("Content-Type", "application/json");
         patchConn.setRequestProperty("Prefer", "return=minimal");
         patchConn.setRequestProperty("apikey", anonKey);
