@@ -234,16 +234,24 @@ export async function registerUserDeviceInSupabase(params: {
  * OSABackgroundMessagingService and OSACallActionReceiver can operate when the app is backgrounded/locked/closed.
  */
 async function syncAndroidNativeAuthSession(userId: string): Promise<void> {
-  if (typeof window === 'undefined' || !window.OSANativeAndroid?.syncAuthSession) return;
+  if (typeof window === 'undefined') return;
   try {
     const { data } = await supabase.auth.getSession();
     const accessToken = data?.session?.access_token;
+    const refreshToken = data?.session?.refresh_token || '';
     const sbConfig = getSupabaseConfig();
-    if (accessToken && sbConfig.url && sbConfig.anonKey) {
+    if (sbConfig.url && sbConfig.anonKey && sbConfig.isConfigured) {
+      (window as unknown as Record<string, unknown>).__OSA_SUPABASE_CONFIG__ = {
+        url: sbConfig.url,
+        anonKey: sbConfig.anonKey,
+      };
+    }
+    if (accessToken && sbConfig.url && sbConfig.anonKey && window.OSANativeAndroid?.syncAuthSession) {
       window.OSANativeAndroid.syncAuthSession(
         JSON.stringify({
           userId,
           accessToken,
+          refreshToken,
           supabaseUrl: sbConfig.url,
           anonKey: sbConfig.anonKey,
         })

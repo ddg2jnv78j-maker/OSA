@@ -25,7 +25,7 @@ import java.util.Set;
 public class OSAFirebaseMessagingService extends FirebaseMessagingService {
     public static final String PREFS_NAME = "osa_native_prefs";
     private static final String KEY_DELIVERED_MSG_IDS = "delivered_msg_ids_v1";
-    private static final int MAX_TRACKED_MSG_IDS = 120;
+    private static final int MAX_TRACKED_MSG_IDS = 150;
 
     @Override
     public void onNewToken(String token) {
@@ -33,8 +33,9 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
         if (token == null || token.trim().isEmpty()) return;
         String cleanToken = token.trim();
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        prefs.edit().putString("fcm_token", cleanToken).apply();
+        prefs.edit().putString("fcm_token", cleanToken).commit();
         MainActivity.notifyTokenUpdatedFromService(cleanToken);
+        OSABackgroundMessagingService.syncFcmTokenToSupabaseAsync(getApplicationContext());
     }
 
     @Override
@@ -127,7 +128,7 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
 
     /**
      * Checks and records whether a messageId has already produced an Android notification.
-     * Returns true if this messageId was ALREADY delivered (duplicate), false if it is new.
+     * Uses synchronous .commit() so state is immediately persisted across service/process restarts.
      */
     public static synchronized boolean checkAndMarkMessageDelivered(Context context, String messageId) {
         if (context == null || messageId == null || messageId.trim().isEmpty()) {
@@ -154,7 +155,7 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
             if (sb.length() > 0) sb.append(",");
             sb.append(id);
         }
-        prefs.edit().putString(KEY_DELIVERED_MSG_IDS, sb.toString()).apply();
+        prefs.edit().putString(KEY_DELIVERED_MSG_IDS, sb.toString()).commit();
         return false;
     }
 
@@ -230,7 +231,7 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
             if (checkAndMarkMessageDelivered(context, messageId)) {
                 return;
             }
-            prefs.edit().putString("last_msg_id_" + threadKey, messageId).apply();
+            prefs.edit().putString("last_msg_id_" + threadKey, messageId).commit();
         }
 
         int serverCount = 0;
@@ -244,7 +245,7 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
 
         int localCount = prefs.getInt("unread_" + threadKey, 0) + 1;
         int finalCount = Math.max(serverCount, localCount);
-        prefs.edit().putInt("unread_" + threadKey, finalCount).apply();
+        prefs.edit().putInt("unread_" + threadKey, finalCount).commit();
 
         String collapsedText = finalCount >= 2
                 ? (latestPreview + " (" + finalCount + " new messages)")
@@ -260,7 +261,7 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
             openIntent.putExtra("senderId", senderId);
         }
 
-        int notificationId = ("osa_chat_" + threadKey).hashCode();
+        int notificationId = ((("osa_chat_" + threadKey).hashCode()) & 0x7FFFFFFF) % 1000000 + 2000;
         PendingIntent pendingOpen = PendingIntent.getActivity(
                 context,
                 notificationId,

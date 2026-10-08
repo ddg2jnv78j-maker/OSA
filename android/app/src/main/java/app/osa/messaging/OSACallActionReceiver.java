@@ -106,30 +106,25 @@ public class OSACallActionReceiver extends BroadcastReceiver {
                         sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
                         String nowIso = sdf.format(new Date());
 
-                        // 2a. PATCH public.calls -> status = "rejected"
+                        // 2a. PATCH public.calls -> status = "rejected" (with automatic 401 token refresh)
+                        String currentToken = accessToken;
                         try {
-                            URL patchUrl = new URL(supabaseUrl + "/rest/v1/calls?id=eq." + callId);
-                            HttpURLConnection patchConn = (HttpURLConnection) patchUrl.openConnection();
-                            patchConn.setConnectTimeout(8000);
-                            patchConn.setReadTimeout(8000);
-                            patchConn.setRequestMethod("POST");
-                            patchConn.setRequestProperty("X-HTTP-Method-Override", "PATCH");
-                            patchConn.setRequestProperty("Content-Type", "application/json");
-                            patchConn.setRequestProperty("Prefer", "return=minimal");
-                            patchConn.setRequestProperty("apikey", storedAnonKey);
-                            patchConn.setRequestProperty("Authorization", "Bearer " + accessToken);
-                            patchConn.setDoOutput(true);
-
-                            JSONObject updateObj = new JSONObject();
-                            updateObj.put("status", "rejected");
-                            updateObj.put("ended_at", nowIso);
-                            updateObj.put("updated_at", nowIso);
-
-                            try (OutputStream os = patchConn.getOutputStream()) {
-                                os.write(updateObj.toString().getBytes(StandardCharsets.UTF_8));
+                            int patchCode = executeRejectPatch(supabaseUrl, storedAnonKey, currentToken, callId, nowIso);
+                            if (patchCode == 401) {
+                                String refreshToken = prefs.getString("auth_refresh_token", "");
+                                if (refreshToken != null && !refreshToken.isEmpty()) {
+                                    String refreshed = OSABackgroundMessagingService.refreshSupabaseAccessToken(
+                                            supabaseUrl,
+                                            storedAnonKey,
+                                            refreshToken,
+                                            prefs
+                                    );
+                                    if (refreshed != null && !refreshed.isEmpty()) {
+                                        currentToken = refreshed;
+                                        executeRejectPatch(supabaseUrl, storedAnonKey, currentToken, callId, nowIso);
+                                    }
+                                }
                             }
-                            patchConn.getResponseCode();
-                            patchConn.disconnect();
                         } catch (Exception ignored) {
                         }
 
@@ -144,7 +139,7 @@ public class OSACallActionReceiver extends BroadcastReceiver {
                                 sigConn.setRequestProperty("Content-Type", "application/json");
                                 sigConn.setRequestProperty("Prefer", "return=minimal");
                                 sigConn.setRequestProperty("apikey", storedAnonKey);
-                                sigConn.setRequestProperty("Authorization", "Bearer " + accessToken);
+                                sigConn.setRequestProperty("Authorization", "Bearer " + currentToken);
                                 sigConn.setDoOutput(true);
 
                                 JSONObject sigObj = new JSONObject();
@@ -169,5 +164,37 @@ public class OSACallActionReceiver extends BroadcastReceiver {
                 }
             });
         }
+    }
+
+    private int executeRejectPatch(
+            String supabaseUrl,
+            String anonKey,
+            String accessToken,
+            String callId,
+            String nowIso
+    ) throws Exception {
+        URL patchUrl = new URL(supabaseUrl + "/rest/v1/calls?id=eq." + callId);
+        HttpURLConnection patchConn = (HttpURLConnection) patchUrl.openConnection();
+        patchConn.setConnectTimeout(8000);
+        patchConn.setReadTimeout(8000);
+        patchConn.setRequestMethod("POST");
+        patchConn.setRequestProperty("X-HTTP-Method-Override", "PATCH");
+        patchConn.setRequestProperty("Content-Type", "application/json");
+        patchConn.setRequestProperty("Prefer", "return=minimal");
+        patchConn.setRequestProperty("apikey", anonKey);
+        patchConn.setRequestProperty("Authorization", "Bearer " + accessToken);
+        patchConn.setDoOutput(true);
+
+        JSONObject updateObj = new JSONObject();
+        updateObj.put("status", "rejected");
+        updateObj.put("ended_at", nowIso);
+        updateObj.put("updated_at", nowIso);
+
+        try (OutputStream os = patchConn.getOutputStream()) {
+            os.write(updateObj.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        int code = patchConn.getResponseCode();
+        patchConn.disconnect();
+        return code;
     }
 }

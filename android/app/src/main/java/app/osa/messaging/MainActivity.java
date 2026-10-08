@@ -13,22 +13,26 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.util.Base64;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import com.google.firebase.messaging.FirebaseMessaging;
 import java.lang.ref.WeakReference;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -39,14 +43,15 @@ import org.json.JSONObject;
 /**
  * OSA Native Android Activity & WebView Bridge.
  * - Configures high-importance notification channels for Messages and Incoming Audio/Video Calls
- * - Requests Android 13+ POST_NOTIFICATIONS, CAMERA, RECORD_AUDIO, and ACCESS_FINE_LOCATION permissions
- * - Exposes OSANativeAndroid JavascriptInterface to the OSA React web app
- * - Bridges real-time and background Message & Call notifications with strict deduplication
- * - Handles deep-links for grouped message notifications and Answer/Decline call actions (including cold launch)
+ * - Automatically captures Supabase URL, anonKey, accessToken, refreshToken, and userId from both
+ *   WebView network headers (shouldInterceptRequest) and localStorage so OSABackgroundMessagingService
+ *   always operates even if the user closes OSA immediately
+ * - Syncs the real Android FCM token to public.user_devices via both JS and native Java REST
  */
 public class MainActivity extends AppCompatActivity {
-    public static final String CHANNEL_MESSAGES = "osa_messages_channel";
-    public static final String CHANNEL_CALLS = "osa_incoming_calls_high";
+    public static final String CHANNEL_MESSAGES = "osa_messages_high_v2";
+    public static final String CHANNEL_CALLS = "osa_incoming_calls_high_v2";
+    public static final String CHANNEL_BG_SYNC = "osa_background_sync_silent_v2";
     private static final String PREFS_NAME = "osa_native_prefs";
     private static final String PRODUCTION_WEB_URL = "https://ddg2jnv78j-maker.github.io/OSA/";
     private static final String LOCAL_ASSET_URL = "file:///android_asset/public/index.html";
@@ -99,6 +104,18 @@ public class MainActivity extends AppCompatActivity {
                 .build();
         callsChannel.setSound(ringtoneUri, audioAttributes);
         manager.createNotificationChannel(callsChannel);
+
+        NotificationChannel bgSyncChannel = new NotificationChannel(
+                CHANNEL_BG_SYNC,
+                "OSA Background Connection",
+                NotificationManager.IMPORTANCE_LOW
+        );
+        bgSyncChannel.setDescription("Keeps OSA connected for calls and messages when closed");
+        bgSyncChannel.enableVibration(false);
+        bgSyncChannel.setSound(null, null);
+        bgSyncChannel.setShowBadge(false);
+        bgSyncChannel.setLockscreenVisibility(android.app.Notification.VISIBILITY_SECRET);
+        manager.createNotificationChannel(bgSyncChannel);
     }
 
     public static void notifyTokenUpdatedFromService(String token) {
@@ -160,9 +177,22 @@ public class MainActivity extends AppCompatActivity {
         });
 
         webView.setWebViewClient(new WebViewClient() {
+            @Nullable
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                try {
+                    if (request != null && request.getUrl() != null) {
+                        inspectSupabaseRequestHeaders(request);
+                    }
+                } catch (Exception ignored) {
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                probeSupabaseSessionFromWebView();
                 fetchAndSyncFcmToken();
                 dispatchIntentToWebApp(getIntent());
             }
@@ -183,6 +213,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        handleIncomingCallAcceptOrOpenIntent(getIntent());
         clearNotificationCountFromIntent(getIntent());
         capturePendingIntentPayload(getIntent());
         String startUrl = buildLaunchUrl(getIntent());
@@ -195,10 +226,12 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         activeInstanceRef = new WeakReference<>(this);
+        OSABackgroundMessagingService.ensureStarted(this);
         fetchAndSyncFcmToken();
         if (webView != null) {
             webView.onResume();
             webView.resumeTimers();
+            probeSupabaseSessionFromWebView();
             webView.post(() -> webView.evaluateJavascript(
                     "window.__osaOnAppResume && window.__osaOnAppResume();",
                     null
@@ -207,12 +240,143 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onPause() {
+        probeSupabaseSessionFromWebView();
+        OSABackgroundMessagingService.ensureStarted(this);
+        super.onPause();
+    }
+
+    @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        handleIncomingCallAcceptOrOpenIntent(intent);
         clearNotificationCountFromIntent(intent);
         capturePendingIntentPayload(intent);
         dispatchIntentToWebApp(intent);
+    }
+
+    private void handleIncomingCallAcceptOrOpenIntent(Intent intent) {
+        if (intent == null) return;
+        String callId = intent.getStringExtra("callId");
+        String callAction = intent.getStringExtra("callAction");
+        if (callId != null && !callId.trim().isEmpty() && "accept".equalsIgnoreCase(callAction)) {
+            // Stop the ringing notification immediately when user taps Accept
+            OSACallNotificationService.stopCallNotification(this, callId.trim());
+        }
+    }
+
+    /**
+     * Automatically captures Supabase URL, anonKey, accessToken, and userId from any
+     * outgoing WebView request to *.supabase.co so native background services work immediately.
+     */
+    private void inspectSupabaseRequestHeaders(WebResourceRequest request) {
+        Uri uri = request.getUrl();
+        if (uri == null || uri.getHost() == null) return;
+        String host = uri.getHost().toLowerCase();
+        if (!host.endsWith(".supabase.co")) return;
+
+        String origin = uri.getScheme() + "://" + host;
+        Map<String, String> headers = request.getRequestHeaders();
+        if (headers == null || headers.isEmpty()) return;
+
+        String apiKey = null;
+        String authHeader = null;
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) continue;
+            String k = entry.getKey().trim().toLowerCase();
+            if ("apikey".equals(k)) {
+                apiKey = entry.getValue().trim();
+            } else if ("authorization".equals(k)) {
+                authHeader = entry.getValue().trim();
+            }
+        }
+
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        boolean changed = false;
+
+        if (!origin.isEmpty() && !origin.equals(prefs.getString("auth_supabase_url", ""))) {
+            editor.putString("auth_supabase_url", origin);
+            changed = true;
+        }
+        if (apiKey != null && apiKey.length() > 20 && !apiKey.equals(prefs.getString("auth_anon_key", ""))) {
+            editor.putString("auth_anon_key", apiKey);
+            changed = true;
+        }
+
+        if (authHeader != null && authHeader.toLowerCase().startsWith("bearer ")) {
+            String jwt = authHeader.substring(7).trim();
+            if (!jwt.isEmpty() && (apiKey == null || !jwt.equals(apiKey))) {
+                String extractedUserId = extractUserIdFromJwt(jwt);
+                if (extractedUserId != null && !extractedUserId.isEmpty()) {
+                    if (!jwt.equals(prefs.getString("auth_access_token", ""))) {
+                        editor.putString("auth_access_token", jwt);
+                        changed = true;
+                    }
+                    if (!extractedUserId.equals(prefs.getString("auth_user_id", ""))) {
+                        editor.putString("auth_user_id", extractedUserId);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if (changed) {
+            editor.commit();
+            OSABackgroundMessagingService.ensureStarted(this);
+            OSABackgroundMessagingService.syncFcmTokenToSupabaseAsync(this);
+        }
+    }
+
+    private String extractUserIdFromJwt(String jwt) {
+        try {
+            String[] parts = jwt.split("\\.");
+            if (parts.length < 2) return null;
+            byte[] decoded = Base64.decode(parts[1], Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+            String payloadJson = new String(decoded, StandardCharsets.UTF_8);
+            JSONObject obj = new JSONObject(payloadJson);
+            String role = obj.optString("role", "");
+            String sub = obj.optString("sub", "").trim();
+            if ("authenticated".equals(role) && sub.length() >= 32) {
+                return sub;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * Reads localStorage directly from WebView to extract access_token, refresh_token, and user.id
+     * even if the WebView served a cached page.
+     */
+    private void probeSupabaseSessionFromWebView() {
+        if (webView == null) return;
+        String js = "(function(){"
+                + "try {"
+                + "  var raw = localStorage.getItem('osa-auth-token');"
+                + "  if (!raw) {"
+                + "    for (var i = 0; i < localStorage.length; i++) {"
+                + "      var k = localStorage.key(i);"
+                + "      if (k && k.indexOf('auth-token') !== -1) { raw = localStorage.getItem(k); break; }"
+                + "    }"
+                + "  }"
+                + "  if (!raw) return;"
+                + "  var parsed = JSON.parse(raw);"
+                + "  var session = parsed.currentSession || parsed.session || parsed;"
+                + "  var accessToken = session && session.access_token ? session.access_token : '';"
+                + "  var refreshToken = session && session.refresh_token ? session.refresh_token : '';"
+                + "  var userId = session && session.user && session.user.id ? session.user.id : '';"
+                + "  var sbUrl = localStorage.getItem('osa_supabase_url') || (window.__OSA_SUPABASE_CONFIG__ && window.__OSA_SUPABASE_CONFIG__.url) || '';"
+                + "  var sbKey = localStorage.getItem('osa_supabase_anon_key') || (window.__OSA_SUPABASE_CONFIG__ && window.__OSA_SUPABASE_CONFIG__.anonKey) || '';"
+                + "  if (userId && accessToken && window.OSANativeAndroid && window.OSANativeAndroid.syncAuthSession) {"
+                + "    window.OSANativeAndroid.syncAuthSession(JSON.stringify({"
+                + "      userId: userId, accessToken: accessToken, refreshToken: refreshToken, supabaseUrl: sbUrl, anonKey: sbKey"
+                + "    }));"
+                + "  }"
+                + "} catch (e) {}"
+                + "})();";
+        webView.post(() -> webView.evaluateJavascript(js, null));
     }
 
     private void handleWebViewPermissionRequest(final PermissionRequest request) {
@@ -442,10 +606,10 @@ public class MainActivity extends AppCompatActivity {
         prefs.edit()
                 .remove("unread_" + conversationId)
                 .remove("last_msg_id_" + conversationId)
-                .apply();
+                .commit();
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
-            int notificationId = ("osa_chat_" + conversationId).hashCode();
+            int notificationId = ((("osa_chat_" + conversationId).hashCode()) & 0x7FFFFFFF) % 1000000 + 2000;
             manager.cancel("osa-chat-" + conversationId, notificationId);
         }
     }
@@ -544,6 +708,7 @@ public class MainActivity extends AppCompatActivity {
             String cachedToken = prefs.getString("fcm_token", null);
             if (cachedToken != null && !cachedToken.trim().isEmpty()) {
                 pushTokenToWebView(cachedToken.trim());
+                OSABackgroundMessagingService.syncFcmTokenToSupabaseAsync(this);
             }
 
             FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
@@ -552,8 +717,9 @@ public class MainActivity extends AppCompatActivity {
                 if (token == null || token.trim().isEmpty()) return;
 
                 String cleanToken = token.trim();
-                prefs.edit().putString("fcm_token", cleanToken).apply();
+                prefs.edit().putString("fcm_token", cleanToken).commit();
                 pushTokenToWebView(cleanToken);
+                OSABackgroundMessagingService.syncFcmTokenToSupabaseAsync(MainActivity.this);
             });
         } catch (Exception ignored) {
         }
@@ -651,18 +817,27 @@ public class MainActivity extends AppCompatActivity {
                 JSONObject obj = new JSONObject(sessionJson);
                 String userId = obj.optString("userId", "").trim();
                 String accessToken = obj.optString("accessToken", "").trim();
+                String refreshToken = obj.optString("refreshToken", "").trim();
                 String supabaseUrl = obj.optString("supabaseUrl", "").trim();
                 String anonKey = obj.optString("anonKey", "").trim();
 
                 if (!userId.isEmpty() && !accessToken.isEmpty()) {
                     SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-                    prefs.edit()
-                            .putString("auth_user_id", userId)
-                            .putString("auth_access_token", accessToken)
-                            .putString("auth_supabase_url", supabaseUrl)
-                            .putString("auth_anon_key", anonKey)
-                            .apply();
+                    SharedPreferences.Editor editor = prefs.edit();
+                    editor.putString("auth_user_id", userId);
+                    editor.putString("auth_access_token", accessToken);
+                    if (!refreshToken.isEmpty()) {
+                        editor.putString("auth_refresh_token", refreshToken);
+                    }
+                    if (!supabaseUrl.isEmpty() && !supabaseUrl.contains("placeholder")) {
+                        editor.putString("auth_supabase_url", supabaseUrl);
+                    }
+                    if (!anonKey.isEmpty() && !anonKey.contains("placeholder")) {
+                        editor.putString("auth_anon_key", anonKey);
+                    }
+                    editor.commit();
                     OSABackgroundMessagingService.ensureStarted(MainActivity.this);
+                    OSABackgroundMessagingService.syncFcmTokenToSupabaseAsync(MainActivity.this);
                 }
             } catch (Exception ignored) {
             }
@@ -674,7 +849,8 @@ public class MainActivity extends AppCompatActivity {
             prefs.edit()
                     .remove("auth_user_id")
                     .remove("auth_access_token")
-                    .apply();
+                    .remove("auth_refresh_token")
+                    .commit();
         }
 
         @JavascriptInterface

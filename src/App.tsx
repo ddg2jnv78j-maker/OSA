@@ -1003,13 +1003,8 @@ export default function App() {
             isAndroidNative ||
             (typeof Notification !== 'undefined' && Notification.permission === 'granted');
 
-          // Only report RINGING back to the caller if OSA is actively visible OR a real system incoming-call notification can reach the user
-          if (isAppVisible || canNotifyInBackground) {
-            await presentIncomingCall(incoming, currentUser.id, false);
-          }
-
           // On Android Native (foreground, background, or locked) or when web tab is in background/unfocused,
-          // trigger the incoming call notification with Accept/Reject, ringtone, vibration, and 45s timeout
+          // trigger the incoming call notification immediately with Accept/Reject, ringtone, vibration, and 45s timeout
           if (isAndroidNative || !isAppVisible || !document.hasFocus()) {
             const callLabel = incoming.call_type === 'video' ? 'Video Call' : 'Audio Call';
             showBackgroundSystemNotification({
@@ -1023,6 +1018,11 @@ export default function App() {
               callType: incoming.call_type,
               type: 'incoming_call',
             }).catch(() => {});
+          }
+
+          // Only report RINGING back to the caller if OSA is actively visible OR a real system incoming-call notification can reach the user
+          if (isAppVisible || canNotifyInBackground) {
+            await presentIncomingCall(incoming, currentUser.id, false);
           }
         }
       )

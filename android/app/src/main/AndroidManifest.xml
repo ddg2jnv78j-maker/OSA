@@ -4,6 +4,8 @@
     <!-- Network & WebRTC Media Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -12,12 +14,15 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
-    <!-- Native Notifications, Full-Screen Incoming Calls & Vibration -->
+    <!-- Native Notifications, Full-Screen Incoming Calls, Background Sync & Vibration -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
 
@@ -68,25 +73,28 @@
         <!-- Firebase Cloud Messaging Service for Closed/Background Messages & Calls -->
         <service
             android:name=".OSAFirebaseMessagingService"
-            android:exported="false">
+            android:exported="false"
+            android:directBootAware="true">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
 
-        <!-- Persistent Foreground Incoming Call Service -->
+        <!-- Persistent Foreground Incoming Call Service (mediaPlayback|dataSync works on Android 14 without ROLE_DIALER) -->
         <service
             android:name=".OSACallNotificationService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="phoneCall" />
+            android:stopWithTask="false"
+            android:foregroundServiceType="mediaPlayback|dataSync" />
 
-        <!-- Background Message & Call Sync Service -->
+        <!-- Persistent Foreground Background Message & Call Sync Service -->
         <service
             android:name=".OSABackgroundMessagingService"
             android:enabled="true"
             android:exported="false"
-            android:stopWithTask="false" />
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- BroadcastReceiver for Native Incoming Call Accept / Reject Actions -->
         <receiver
@@ -96,6 +104,19 @@
             <intent-filter>
                 <action android:name="app.osa.messaging.ACTION_ACCEPT_CALL" />
                 <action android:name="app.osa.messaging.ACTION_REJECT_CALL" />
+            </intent-filter>
+        </receiver>
+
+        <!-- BroadcastReceiver for Restarting Background Sync Service on Task Removal or Reboot -->
+        <receiver
+            android:name=".OSAServiceRestartReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="app.osa.messaging.ACTION_RESTART_BG_SERVICE" />
             </intent-filter>
         </receiver>
     </application>
