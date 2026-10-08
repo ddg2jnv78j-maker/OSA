@@ -32,6 +32,8 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
         super.onNewToken(token);
         if (token == null || token.trim().isEmpty()) return;
         String cleanToken = token.trim();
+        android.util.Log.i("OSA_DIAG", "[OSA_FCM_TOKEN] onNewToken len=" + cleanToken.length()
+                + " prefix=" + cleanToken.substring(0, Math.min(8, cleanToken.length())) + "...");
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         prefs.edit().putString("fcm_token", cleanToken).commit();
         MainActivity.notifyTokenUpdatedFromService(cleanToken);
@@ -57,6 +59,10 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
                 data.put("body", notif.getBody());
             }
         }
+
+        android.util.Log.i("OSA_DIAG", "[OSA_FCM_RECEIVED] messageId=" + remoteMessage.getMessageId()
+                + " type=" + data.get("type") + " callId=" + data.get("callId")
+                + " chatId=" + data.get("chatId"));
 
         if (data.isEmpty()) return;
         handleIncomingPushPayload(this, data);
@@ -296,6 +302,9 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
             manager.notify("osa-chat-" + threadKey, notificationId, builder.build());
+            android.util.Log.i("OSA_DIAG", "[OSA_NOTIFICATION_POSTED] type=message channel="
+                    + MainActivity.CHANNEL_MESSAGES + " notificationId=" + notificationId
+                    + " threadKey=" + threadKey + " messageId=" + messageId);
         }
     }
 }

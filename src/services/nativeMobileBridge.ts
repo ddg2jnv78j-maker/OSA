@@ -189,7 +189,11 @@ export async function registerUserDeviceInSupabase(params: {
       p_is_active: params.isActive ?? true,
     });
     if (!rpcErr && rpcRow) {
+      console.info('[OSA_FCM_TOKEN] rpc/upsert_user_device succeeded for platform=' + params.platform);
       return rpcRow as UserDeviceRow;
+    }
+    if (rpcErr) {
+      console.warn('[OSA_FCM_TOKEN] rpc/upsert_user_device failed:', rpcErr.code, rpcErr.message);
     }
   } catch {
     // Fallback to direct table upsert
@@ -220,7 +224,11 @@ export async function registerUserDeviceInSupabase(params: {
       .maybeSingle();
 
     if (!error && data) {
+      console.info('[OSA_FCM_TOKEN] rest/v1/user_devices upsert succeeded for platform=' + params.platform);
       return data as UserDeviceRow;
+    }
+    if (error) {
+      console.warn('[OSA_FCM_TOKEN] rest/v1/user_devices upsert failed:', error.code, error.message);
     }
   } catch {
     // Ignore if migration has not been run yet

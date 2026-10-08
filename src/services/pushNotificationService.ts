@@ -670,7 +670,7 @@ async function executeWebPushInvoke(params: {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData?.session?.access_token;
 
-    await supabase.functions.invoke('send-web-push', {
+    const { data: invokeData, error: invokeErr } = await supabase.functions.invoke('send-web-push', {
       body: {
         action: 'send',
         senderId: params.senderId,
@@ -689,6 +689,11 @@ async function executeWebPushInvoke(params: {
       },
       headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
     });
+    if (invokeErr) {
+      console.warn('[OSA_FCM_SEND] send-web-push error:', invokeErr.message);
+    } else {
+      console.info('[OSA_FCM_SEND] send-web-push response:', invokeData);
+    }
   } catch {
     // Fail gracefully if Edge Function is not yet deployed
   }

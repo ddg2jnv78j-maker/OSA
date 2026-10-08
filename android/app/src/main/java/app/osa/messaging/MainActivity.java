@@ -712,11 +712,20 @@ public class MainActivity extends AppCompatActivity {
             }
 
             FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
-                if (!task.isSuccessful()) return;
+                if (!task.isSuccessful()) {
+                    android.util.Log.w("OSA_DIAG", "[OSA_FCM_TOKEN] getToken() failed: "
+                            + (task.getException() != null ? task.getException().getMessage() : "unknown"));
+                    return;
+                }
                 String token = task.getResult();
-                if (token == null || token.trim().isEmpty()) return;
+                if (token == null || token.trim().isEmpty()) {
+                    android.util.Log.w("OSA_DIAG", "[OSA_FCM_TOKEN] getToken() returned empty token");
+                    return;
+                }
 
                 String cleanToken = token.trim();
+                android.util.Log.i("OSA_DIAG", "[OSA_FCM_TOKEN] generated len=" + cleanToken.length()
+                        + " prefix=" + cleanToken.substring(0, Math.min(8, cleanToken.length())) + "...");
                 prefs.edit().putString("fcm_token", cleanToken).commit();
                 pushTokenToWebView(cleanToken);
                 OSABackgroundMessagingService.syncFcmTokenToSupabaseAsync(MainActivity.this);

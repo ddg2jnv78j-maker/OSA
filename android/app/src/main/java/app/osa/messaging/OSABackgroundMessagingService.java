@@ -134,6 +134,8 @@ public class OSABackgroundMessagingService extends Service {
                 }
                 int code = rpcConn.getResponseCode();
                 rpcConn.disconnect();
+                android.util.Log.i("OSA_DIAG", "[OSA_FCM_TOKEN] rpc/upsert_user_device HTTP=" + code
+                        + " userId=" + userId + " deviceId=" + deviceId);
                 if (code >= 200 && code < 300) {
                     return true;
                 }
@@ -169,6 +171,8 @@ public class OSABackgroundMessagingService extends Service {
             }
             int code = conn.getResponseCode();
             conn.disconnect();
+            android.util.Log.i("OSA_DIAG", "[OSA_FCM_TOKEN] rest/v1/user_devices HTTP=" + code
+                    + " userId=" + userId + " deviceId=" + deviceId);
             return code >= 200 && code < 300;
         } catch (Exception ignored) {
             return false;

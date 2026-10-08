@@ -281,6 +281,9 @@ public class OSACallNotificationService extends Service {
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
             manager.notify(notificationId, notification);
+            android.util.Log.i("OSA_DIAG", "[OSA_NOTIFICATION_POSTED] type=call channel="
+                    + MainActivity.CHANNEL_CALLS + " notificationId=" + notificationId
+                    + " callId=" + callId + " callType=" + intent.getStringExtra("callType"));
         }
     }
 
