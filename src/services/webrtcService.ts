@@ -3,7 +3,12 @@ import { getIceServers, supabase } from '../lib/supabase';
 import { CallRecord, CallSignal, CallStatus, CallType, SignalType } from '../types/osa';
 import { createCallRecord, createNotification, updateCallRecordStatus } from './osaService';
 import { notifyNativeCallConnected } from './nativeMobileBridge';
-import { checkNativePermissions, saveStoredPermissionStatus } from './permissionService';
+import {
+  checkNativePermissions,
+  requestCameraPermission,
+  requestMicrophonePermission,
+  saveStoredPermissionStatus,
+} from './permissionService';
 import {
   dismissIncomingCallSystemNotification,
   dispatchWebPushNotification,
@@ -392,21 +397,20 @@ export class WebRTCCallManager {
       throw new Error('Your browser does not support WebRTC audio/video access (HTTPS is required).');
     }
 
-    // Read from centralized permission service so calls NEVER trigger unexpected browser permission prompts
-    const perm = await checkNativePermissions(this.currentUserId);
+    // Read from centralized permission service and request if still in prompt state
+    let perm = await checkNativePermissions(this.currentUserId);
     if (!perm.microphoneEnabled) {
       throw new Error(
         'Microphone access is disabled in OSA Settings. Please enable Microphone in Settings → Privacy / Permissions.'
       );
     }
-    if (perm.microphone === 'denied') {
+    if (perm.microphone === 'prompt') {
+      await requestMicrophonePermission(this.currentUserId, true);
+      perm = await checkNativePermissions(this.currentUserId);
+    }
+    if (perm.microphone === 'denied' || perm.microphone !== 'granted') {
       throw new Error(
         'Microphone permission is blocked by your browser/device. Open browser/device settings to allow Microphone.'
-      );
-    }
-    if (perm.onboardingCompleted && perm.microphone !== 'granted') {
-      throw new Error(
-        'Microphone permission was not granted during setup. Please allow Microphone in Settings → Privacy / Permissions.'
       );
     }
 
@@ -416,14 +420,13 @@ export class WebRTCCallManager {
           'Camera access is disabled in OSA Settings. Please enable Camera in Settings → Privacy / Permissions.'
         );
       }
-      if (perm.camera === 'denied') {
+      if (perm.camera === 'prompt') {
+        await requestCameraPermission(this.currentUserId, true);
+        perm = await checkNativePermissions(this.currentUserId);
+      }
+      if (perm.camera === 'denied' || perm.camera !== 'granted') {
         throw new Error(
           'Camera permission is blocked by your browser/device. Open browser/device settings to allow Camera.'
-        );
-      }
-      if (perm.onboardingCompleted && perm.camera !== 'granted') {
-        throw new Error(
-          'Camera permission was not granted during setup. Please allow Camera in Settings → Privacy / Permissions.'
         );
       }
     }

@@ -78,7 +78,14 @@ declare global {
       type: string;
       state: 'granted' | 'denied' | 'prompt';
     }) => void;
+    __osaReceiveIOSPermissionStatus?: (payload: {
+      camera?: 'granted' | 'denied' | 'prompt';
+      microphone?: 'granted' | 'denied' | 'prompt';
+      location?: 'granted' | 'denied' | 'prompt';
+      notifications?: 'granted' | 'denied' | 'prompt';
+    }) => void;
     __osaOnAppResume?: () => void;
+    __osaOnAppPause?: () => void;
   }
 }
 

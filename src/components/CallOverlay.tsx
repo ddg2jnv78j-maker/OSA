@@ -8,9 +8,14 @@ import {
   PhoneIncoming,
   PhoneOff,
   RefreshCw,
+  Settings,
   Video,
 } from 'lucide-react';
 import { TranslationDictionary } from '../lib/i18n';
+import {
+  getOpenPermissionSettingsButtonLabel,
+  openPermissionSettings,
+} from '../services/permissionService';
 import {
   startIncomingCallRingtone,
   stopIncomingCallRingtone,
@@ -228,6 +233,27 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
         <p className="text-sm font-mono-num text-blue-300 font-medium max-w-sm">
           {statusText()}
         </p>
+
+        {callStatus === 'failed' &&
+          errorMessage &&
+          /Camera|Microphone/i.test(errorMessage) && (
+            <button
+              type="button"
+              onClick={() =>
+                openPermissionSettings(
+                  /Camera/i.test(errorMessage) ? 'camera' : 'microphone'
+                )
+              }
+              className="mt-4 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold inline-flex items-center gap-2 shadow-lg"
+            >
+              <Settings className="w-4 h-4" />
+              <span>
+                {getOpenPermissionSettingsButtonLabel(
+                  /Camera/i.test(errorMessage) ? 'camera' : 'microphone'
+                )}
+              </span>
+            </button>
+          )}
       </div>
 
       {/* Picture-in-Picture Local Video Preview */}

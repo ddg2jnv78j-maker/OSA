@@ -54,10 +54,13 @@ import {
   signOutUser,
 } from './services/osaService';
 import {
+  checkNativePermissions,
   getCurrentDeviceLocation,
   getStoredPermissionStatus,
   LiveLocationPayload,
   requestAllOSAPermissions,
+  requestCameraPermission,
+  requestMicrophonePermission,
   syncPermissionsFromSupabase,
 } from './services/permissionService';
 import {
@@ -1051,6 +1054,26 @@ export default function App() {
     chatId?: string | null
   ) => {
     if (!currentUser) return;
+
+    // Pre-flight permission verification before creating any call session
+    let perm = await checkNativePermissions(currentUser.id);
+    if (perm.microphone === 'prompt') {
+      await requestMicrophonePermission(currentUser.id, true);
+      perm = await checkNativePermissions(currentUser.id);
+    }
+    if (callType === 'video' && perm.camera === 'prompt') {
+      await requestCameraPermission(currentUser.id, true);
+      perm = await checkNativePermissions(currentUser.id);
+    }
+
+    const micReady = perm.microphone === 'granted' && perm.microphoneEnabled;
+    const camReady =
+      callType !== 'video' || (perm.camera === 'granted' && perm.cameraEnabled);
+
+    if (!micReady || !camReady) {
+      setShowPermissionSetupModal(true);
+      return;
+    }
 
     setCallPeerProfile(peer);
     setCallError(undefined);

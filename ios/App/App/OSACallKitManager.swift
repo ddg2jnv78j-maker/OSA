@@ -6,7 +6,8 @@ import AVFoundation
 /**
  * OSA Real Apple CallKit & PushKit VoIP Manager for iPhone.
  * - Complies with Apple iOS 13+ VoIP Push policy by reporting every incoming VoIP push immediately to CXProvider.
- * - Handles lock-screen & background Incoming Audio and Video Calls with native Accept / Reject.
+ * - Handles foreground, background, and lock-screen Incoming Audio and Video Calls with native Accept / Reject.
+ * - Deduplicates incoming calls by callId and handles call_cancel / cancel_call / missed_call signals.
  * - Synchronizes CXAnswerCallAction and CXEndCallAction directly with Supabase and OSA WebRTC.
  */
 class OSACallKitManager: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
@@ -48,6 +49,11 @@ class OSACallKitManager: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
         self.voipRegistry = registry
     }
 
+    func hasActiveCall(callId: String) -> Bool {
+        guard let uuid = uuidByCallId[callId] else { return false }
+        return callsByUUID[uuid] != nil
+    }
+
     // MARK: - PKPushRegistryDelegate
 
     func pushRegistry(
@@ -72,21 +78,36 @@ class OSACallKitManager: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
         }
 
         let dict = payload.dictionaryPayload
-        let pushType = (dict["type"] as? String) ?? "incoming_call"
+        let pushType = ((dict["type"] as? String) ?? "incoming_call").lowercased()
         let callId = (dict["callId"] as? String) ?? UUID().uuidString
         let callType = (dict["callType"] as? String) ?? "audio"
-        let callerName = (dict["callerName"] as? String) ?? "OSA Caller"
+        let callerName = (dict["callerName"] as? String) ?? (dict["senderName"] as? String) ?? "OSA Caller"
         let rejectToken = dict["rejectToken"] as? String
         let rejectEndpoint = dict["rejectEndpoint"] as? String
         let anonKey = dict["anonKey"] as? String
 
-        if pushType == "cancel_call" {
-            endCall(forCallId: callId)
+        if pushType == "cancel_call" || pushType == "call_cancel" || pushType == "missed_call" {
+            if let existingUUID = uuidByCallId[callId] {
+                provider.reportCall(with: existingUUID, endedAt: Date(), reason: .remoteEnded)
+                callsByUUID.removeValue(forKey: existingUUID)
+                uuidByCallId.removeValue(forKey: callId)
+            }
             completion()
             return
         }
 
-        let callUUID = uuidByCallId[callId] ?? UUID()
+        // Deduplicate if CallKit already has an active incoming call for this callId
+        if let existingUUID = uuidByCallId[callId], callsByUUID[existingUUID] != nil {
+            let update = CXCallUpdate()
+            update.remoteHandle = CXHandle(type: .generic, value: callerName)
+            update.localizedCallerName = callerName
+            update.hasVideo = (callType.lowercased() == "video")
+            provider.reportCall(with: existingUUID, updated: update)
+            completion()
+            return
+        }
+
+        let callUUID = UUID()
         uuidByCallId[callId] = callUUID
         callsByUUID[callUUID] = ActiveCallMetadata(
             uuid: callUUID,
@@ -165,9 +186,15 @@ class OSACallKitManager: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
 
     func endCall(forCallId callId: String) {
         guard let uuid = uuidByCallId[callId] else { return }
+        callsByUUID.removeValue(forKey: uuid)
+        uuidByCallId.removeValue(forKey: callId)
         let endAction = CXEndCallAction(call: uuid)
         let transaction = CXTransaction(action: endAction)
-        callController.request(transaction) { _ in }
+        callController.request(transaction) { [weak self] error in
+            if error != nil {
+                self?.provider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+            }
+        }
     }
 
     func reportCallConnected(forCallId callId: String) {

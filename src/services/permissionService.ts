@@ -68,6 +68,7 @@ const pendingNativePermissionResolvers = new Map<
   string,
   Array<(state: PermissionStateValue) => void>
 >();
+let cachedIOSPermissionStatus: Partial<Record<PermissionKind, PermissionStateValue>> | null = null;
 
 function emitPermissionsUpdated(status: OSAPermissionStatus, userId?: string): void {
   if (typeof window === 'undefined') return;
@@ -126,7 +127,59 @@ function ensurePermissionLifecycleListeners(): void {
     } catch {
       // Ignore
     }
+    try {
+      window.dispatchEvent(new CustomEvent('osa:native-app-resume'));
+    } catch {
+      // Ignore
+    }
     handleRefresh();
+  };
+
+  const prevOnAppPause = window.__osaOnAppPause;
+  window.__osaOnAppPause = () => {
+    try {
+      prevOnAppPause?.();
+    } catch {
+      // Ignore
+    }
+    try {
+      window.dispatchEvent(new CustomEvent('osa:native-app-pause'));
+    } catch {
+      // Ignore
+    }
+  };
+
+  window.__osaReceiveIOSPermissionStatus = (payload) => {
+    if (!payload) return;
+    const nextCache: Partial<Record<PermissionKind, PermissionStateValue>> = {
+      ...(cachedIOSPermissionStatus || {}),
+    };
+    const cam = normalizePermissionState(payload.camera);
+    const mic = normalizePermissionState(payload.microphone);
+    const loc = normalizePermissionState(payload.location);
+    const notif = normalizePermissionState(payload.notifications);
+    if (cam) nextCache.camera = cam;
+    if (mic) nextCache.microphone = mic;
+    if (loc) nextCache.location = loc;
+    if (notif) nextCache.notifications = notif;
+    cachedIOSPermissionStatus = nextCache;
+
+    saveStoredPermissionStatus(
+      {
+        ...(cam ? { camera: cam, ...(cam === 'granted' ? { cameraEnabled: true } : {}) } : {}),
+        ...(mic
+          ? { microphone: mic, ...(mic === 'granted' ? { microphoneEnabled: true } : {}) }
+          : {}),
+        ...(loc ? { location: loc, ...(loc === 'granted' ? { locationEnabled: true } : {}) } : {}),
+        ...(notif
+          ? {
+              notifications: notif,
+              ...(notif === 'granted' ? { notificationsEnabled: true } : {}),
+            }
+          : {}),
+      },
+      activeUserIdForPermissions
+    );
   };
 
   window.__osaReceiveNativePermissionResult = (payload) => {
@@ -140,6 +193,48 @@ function ensurePermissionLifecycleListeners(): void {
     }
     handleRefresh();
   };
+}
+
+function requestIOSNativeSinglePermission(
+  permissionType: PermissionKind
+): Promise<PermissionStateValue | null> {
+  if (typeof window === 'undefined' || !window.webkit?.messageHandlers?.OSANativeBridge) {
+    return Promise.resolve(null);
+  }
+  ensurePermissionLifecycleListeners();
+
+  return new Promise((resolve) => {
+    const key = permissionType.toLowerCase();
+    const list = pendingNativePermissionResolvers.get(key) || [];
+    let settled = false;
+
+    const finish = (state: PermissionStateValue) => {
+      if (settled) return;
+      settled = true;
+      resolve(state);
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      const fallback = cachedIOSPermissionStatus?.[permissionType] || 'prompt';
+      finish(fallback);
+    }, 15000);
+
+    list.push((state) => {
+      window.clearTimeout(timeoutId);
+      finish(state);
+    });
+    pendingNativePermissionResolvers.set(key, list);
+
+    try {
+      window.webkit?.messageHandlers?.OSANativeBridge?.postMessage({
+        action: 'requestSinglePermission',
+        permissionType,
+      });
+    } catch {
+      window.clearTimeout(timeoutId);
+      finish('prompt');
+    }
+  });
 }
 
 function requestAndroidNativeSinglePermission(
@@ -354,6 +449,8 @@ export async function checkNativePermissions(userId?: string): Promise<OSAPermis
 
   const hasAndroidBridge =
     typeof window !== 'undefined' && Boolean(window.OSANativeAndroid?.getPermissionStatus);
+  const hasIOSBridge =
+    typeof window !== 'undefined' && Boolean(window.webkit?.messageHandlers?.OSANativeBridge);
 
   if (hasAndroidBridge && window.OSANativeAndroid?.getPermissionStatus) {
     try {
@@ -374,6 +471,22 @@ export async function checkNativePermissions(userId?: string): Promise<OSAPermis
       if (notif) next.notifications = notif;
     } catch {
       // Fallback to standard web permission checks below
+    }
+  } else if (hasIOSBridge) {
+    try {
+      window.webkit?.messageHandlers?.OSANativeBridge?.postMessage({
+        action: 'checkPermissions',
+      });
+    } catch {
+      // Ignore
+    }
+    if (cachedIOSPermissionStatus) {
+      if (cachedIOSPermissionStatus.camera) next.camera = cachedIOSPermissionStatus.camera;
+      if (cachedIOSPermissionStatus.microphone)
+        next.microphone = cachedIOSPermissionStatus.microphone;
+      if (cachedIOSPermissionStatus.location) next.location = cachedIOSPermissionStatus.location;
+      if (cachedIOSPermissionStatus.notifications)
+        next.notifications = cachedIOSPermissionStatus.notifications;
     }
   } else {
     // 1. Notifications (Web / PWA / iOS)
@@ -518,6 +631,26 @@ export async function requestMicrophonePermission(
     }
   }
 
+  // 1b. Check iOS Native runtime permission if running inside iOS Native app
+  if (typeof window !== 'undefined' && window.webkit?.messageHandlers?.OSANativeBridge) {
+    const iosState = cachedIOSPermissionStatus?.microphone;
+    if (iosState === 'denied') {
+      saveStoredPermissionStatus({ microphone: 'denied' }, userId);
+      return 'denied';
+    }
+    if (!iosState || iosState === 'prompt') {
+      const requested = await requestIOSNativeSinglePermission('microphone');
+      if (requested === 'denied') {
+        saveStoredPermissionStatus({ microphone: 'denied' }, userId);
+        return 'denied';
+      }
+      if (requested === 'granted') {
+        saveStoredPermissionStatus({ microphone: 'granted', microphoneEnabled: true }, userId);
+        return 'granted';
+      }
+    }
+  }
+
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     const current = await checkNativePermissions(userId);
     if (current.microphone === 'granted') return 'granted';
@@ -568,6 +701,26 @@ export async function requestCameraPermission(
     }
     if (osState === 'prompt') {
       const requested = await requestAndroidNativeSinglePermission('camera');
+      if (requested === 'denied') {
+        saveStoredPermissionStatus({ camera: 'denied' }, userId);
+        return 'denied';
+      }
+      if (requested === 'granted') {
+        saveStoredPermissionStatus({ camera: 'granted', cameraEnabled: true }, userId);
+        return 'granted';
+      }
+    }
+  }
+
+  // 1b. Check iOS Native runtime permission if running inside iOS Native app
+  if (typeof window !== 'undefined' && window.webkit?.messageHandlers?.OSANativeBridge) {
+    const iosState = cachedIOSPermissionStatus?.camera;
+    if (iosState === 'denied') {
+      saveStoredPermissionStatus({ camera: 'denied' }, userId);
+      return 'denied';
+    }
+    if (!iosState || iosState === 'prompt') {
+      const requested = await requestIOSNativeSinglePermission('camera');
       if (requested === 'denied') {
         saveStoredPermissionStatus({ camera: 'denied' }, userId);
         return 'denied';
@@ -655,7 +808,29 @@ export async function requestLocationPermission(
     }
   }
 
+  // 1b. Check iOS Native runtime permission if running inside iOS Native app
+  if (typeof window !== 'undefined' && window.webkit?.messageHandlers?.OSANativeBridge) {
+    const iosState = cachedIOSPermissionStatus?.location;
+    if (iosState === 'denied') {
+      saveStoredPermissionStatus({ location: 'denied' }, userId);
+      return { state: 'denied' };
+    }
+    if (!iosState || iosState === 'prompt') {
+      const requested = await requestIOSNativeSinglePermission('location');
+      if (requested === 'denied') {
+        saveStoredPermissionStatus({ location: 'denied' }, userId);
+        return { state: 'denied' };
+      }
+      if (requested === 'granted') {
+        saveStoredPermissionStatus({ location: 'granted', locationEnabled: true }, userId);
+        return { state: 'granted' };
+      }
+    }
+  }
+
   if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+    const current = await checkNativePermissions(userId);
+    if (current.location === 'granted') return { state: 'granted' };
     saveStoredPermissionStatus({ location: 'unsupported' }, userId);
     return { state: 'unsupported' };
   }
@@ -714,6 +889,32 @@ export async function requestNotificationPermission(
       return 'denied';
     }
     const requested = await requestAndroidNativeSinglePermission('notifications');
+    const finalState = requested || 'prompt';
+    saveStoredPermissionStatus(
+      {
+        notifications: finalState,
+        ...(finalState === 'granted' ? { notificationsEnabled: true } : {}),
+      },
+      userId
+    );
+    return finalState;
+  }
+
+  // 1b. Handle iOS Native App notification permission (UNUserNotificationCenter)
+  if (typeof window !== 'undefined' && window.webkit?.messageHandlers?.OSANativeBridge) {
+    const iosState = cachedIOSPermissionStatus?.notifications;
+    if (iosState === 'granted') {
+      saveStoredPermissionStatus(
+        { notifications: 'granted', notificationsEnabled: true },
+        userId
+      );
+      return 'granted';
+    }
+    if (iosState === 'denied') {
+      saveStoredPermissionStatus({ notifications: 'denied' }, userId);
+      return 'denied';
+    }
+    const requested = await requestIOSNativeSinglePermission('notifications');
     const finalState = requested || 'prompt';
     saveStoredPermissionStatus(
       {

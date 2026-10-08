@@ -448,6 +448,8 @@ export class PresenceManager {
     window.addEventListener('offline', this.handleNetworkOffline);
     window.addEventListener('pagehide', this.handlePageUnload);
     window.addEventListener('beforeunload', this.handlePageUnload);
+    window.addEventListener('osa:native-app-pause', this.handleNativeAppPause);
+    window.addEventListener('osa:native-app-resume', this.handleNativeAppResume);
   }
 
   private syncFromRealtimePresenceState(): void {
@@ -520,6 +522,19 @@ export class PresenceManager {
     }
   };
 
+  private handleNativeAppPause = (): void => {
+    if (this.isDestroyed) return;
+    if (this.channel) {
+      this.channel.untrack().catch(() => {});
+    }
+    syncServerPresence(this.userId, false, this.sessionId);
+  };
+
+  private handleNativeAppResume = (): void => {
+    if (this.isDestroyed) return;
+    this.publishCurrentState();
+  };
+
   private handleWindowFocus = (): void => {
     if (this.isDestroyed) return;
     if (document.visibilityState === 'visible' && navigator.onLine) {
@@ -558,6 +573,8 @@ export class PresenceManager {
     window.removeEventListener('offline', this.handleNetworkOffline);
     window.removeEventListener('pagehide', this.handlePageUnload);
     window.removeEventListener('beforeunload', this.handlePageUnload);
+    window.removeEventListener('osa:native-app-pause', this.handleNativeAppPause);
+    window.removeEventListener('osa:native-app-resume', this.handleNativeAppResume);
 
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);

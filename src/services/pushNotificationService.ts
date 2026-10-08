@@ -594,6 +594,21 @@ export async function reportActiveChatForPush(
 ): Promise<void> {
   if (isVisible && chatId) {
     foregroundUnreadCountByChat.delete(chatId);
+    if (typeof window !== 'undefined') {
+      try {
+        window.OSANativeAndroid?.clearConversationNotifications?.(chatId);
+      } catch {
+        // Ignore
+      }
+      try {
+        window.webkit?.messageHandlers?.OSANativeBridge?.postMessage({
+          action: 'clearConversationNotifications',
+          conversationId: chatId,
+        });
+      } catch {
+        // Ignore
+      }
+    }
   }
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     try {
