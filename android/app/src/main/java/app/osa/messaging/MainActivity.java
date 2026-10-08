@@ -22,10 +22,14 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import com.google.firebase.messaging.FirebaseMessaging;
+import java.util.ArrayList;
+import java.util.List;
 import org.json.JSONObject;
 
 /**
@@ -33,6 +37,7 @@ import org.json.JSONObject;
  * - Configures high-importance notification channels for Messages and Incoming Audio/Video Calls
  * - Requests Android 13+ POST_NOTIFICATIONS, CAMERA, RECORD_AUDIO, and ACCESS_FINE_LOCATION permissions
  * - Exposes OSANativeAndroid JavascriptInterface to the OSA React web app
+ * - Handles one-tap runtime permission checks, prompts, and direct App Permission Settings Intent navigation
  * - Handles deep-links for grouped message notifications and Answer/Decline call actions
  */
 public class MainActivity extends AppCompatActivity {
@@ -42,7 +47,19 @@ public class MainActivity extends AppCompatActivity {
     private static final String PRODUCTION_WEB_URL = "https://ddg2jnv78j-maker.github.io/OSA/";
     private static final String LOCAL_ASSET_URL = "file:///android_asset/public/index.html";
 
+    private static final int REQ_INITIAL_NOTIFICATIONS = 1000;
+    private static final int REQ_ALL_PERMISSIONS = 1001;
+    private static final int REQ_SINGLE_CAMERA = 1011;
+    private static final int REQ_SINGLE_MICROPHONE = 1012;
+    private static final int REQ_SINGLE_LOCATION = 1013;
+    private static final int REQ_SINGLE_NOTIFICATIONS = 1014;
+    private static final int REQ_WEBVIEW_MEDIA = 1020;
+    private static final int REQ_WEBVIEW_GEO = 1021;
+
     private WebView webView;
+    private PermissionRequest pendingWebPermissionRequest;
+    private GeolocationPermissions.Callback pendingGeoCallback;
+    private String pendingGeoOrigin;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -66,7 +83,7 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
-                runOnUiThread(() -> request.grant(request.getResources()));
+                runOnUiThread(() -> handleWebViewPermissionRequest(request));
             }
 
             @Override
@@ -74,7 +91,7 @@ public class MainActivity extends AppCompatActivity {
                     final String origin,
                     final GeolocationPermissions.Callback callback
             ) {
-                runOnUiThread(() -> callback.invoke(origin, true, false));
+                runOnUiThread(() -> handleWebViewGeolocationPrompt(origin, callback));
             }
         });
 
@@ -109,6 +126,17 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) {
+            webView.post(() -> webView.evaluateJavascript(
+                    "window.__osaOnAppResume && window.__osaOnAppResume();",
+                    null
+            ));
+        }
+    }
+
+    @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
@@ -116,14 +144,208 @@ public class MainActivity extends AppCompatActivity {
         dispatchIntentToWebApp(intent);
     }
 
+    private void handleWebViewPermissionRequest(final PermissionRequest request) {
+        String[] resources = request.getResources();
+        List<String> neededOsPerms = new ArrayList<>();
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+        for (String res : resources) {
+            if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    neededOsPerms.add(Manifest.permission.CAMERA);
+                    prefs.edit().putBoolean("perm_asked_camera", true).apply();
+                }
+            } else if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    neededOsPerms.add(Manifest.permission.RECORD_AUDIO);
+                    prefs.edit().putBoolean("perm_asked_microphone", true).apply();
+                }
+            }
+        }
+
+        if (neededOsPerms.isEmpty()) {
+            request.grant(resources);
+        } else {
+            pendingWebPermissionRequest = request;
+            ActivityCompat.requestPermissions(
+                    this,
+                    neededOsPerms.toArray(new String[0]),
+                    REQ_WEBVIEW_MEDIA
+            );
+        }
+    }
+
+    private void handleWebViewGeolocationPrompt(
+            final String origin,
+            final GeolocationPermissions.Callback callback
+    ) {
+        if (hasLocationOsPermission()) {
+            callback.invoke(origin, true, false);
+            return;
+        }
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        prefs.edit().putBoolean("perm_asked_location", true).apply();
+        pendingGeoOrigin = origin;
+        pendingGeoCallback = callback;
+        ActivityCompat.requestPermissions(
+                this,
+                new String[]{
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                },
+                REQ_WEBVIEW_GEO
+        );
+    }
+
+    private boolean hasLocationOsPermission() {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED
+                || ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private String evaluateOsPermissionState(String permType) {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if ("camera".equalsIgnoreCase(permType)) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                    == PackageManager.PERMISSION_GRANTED) {
+                return "granted";
+            }
+            boolean asked = prefs.getBoolean("perm_asked_camera", false);
+            boolean rationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                    this,
+                    Manifest.permission.CAMERA
+            );
+            return (asked && !rationale) ? "denied" : "prompt";
+        }
+
+        if ("microphone".equalsIgnoreCase(permType)) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                    == PackageManager.PERMISSION_GRANTED) {
+                return "granted";
+            }
+            boolean asked = prefs.getBoolean("perm_asked_microphone", false);
+            boolean rationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                    this,
+                    Manifest.permission.RECORD_AUDIO
+            );
+            return (asked && !rationale) ? "denied" : "prompt";
+        }
+
+        if ("location".equalsIgnoreCase(permType)) {
+            if (hasLocationOsPermission()) {
+                return "granted";
+            }
+            boolean asked = prefs.getBoolean("perm_asked_location", false);
+            boolean rationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                    this,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+            );
+            return (asked && !rationale) ? "denied" : "prompt";
+        }
+
+        if ("notifications".equalsIgnoreCase(permType)) {
+            boolean notificationsEnabled = NotificationManagerCompat.from(this).areNotificationsEnabled();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                boolean postGranted = ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED;
+                if (postGranted && notificationsEnabled) {
+                    return "granted";
+                }
+                boolean asked = prefs.getBoolean("perm_asked_notifications", false);
+                boolean rationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                        this,
+                        Manifest.permission.POST_NOTIFICATIONS
+                );
+                return (asked && !rationale) ? "denied" : "prompt";
+            } else {
+                return notificationsEnabled ? "granted" : "denied";
+            }
+        }
+
+        return "prompt";
+    }
+
+    private void notifyWebPermissionResult(String type, String state) {
+        if (webView == null) return;
+        try {
+            JSONObject obj = new JSONObject();
+            obj.put("type", type);
+            obj.put("state", state);
+            String js = "window.__osaReceiveNativePermissionResult && window.__osaReceiveNativePermissionResult("
+                    + obj.toString() + ");";
+            webView.post(() -> webView.evaluateJavascript(js, null));
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode,
+            @NonNull String[] permissions,
+            @NonNull int[] grantResults
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == REQ_WEBVIEW_MEDIA) {
+            if (pendingWebPermissionRequest != null) {
+                boolean allGranted = grantResults.length > 0;
+                for (int r : grantResults) {
+                    if (r != PackageManager.PERMISSION_GRANTED) {
+                        allGranted = false;
+                        break;
+                    }
+                }
+                if (allGranted) {
+                    pendingWebPermissionRequest.grant(pendingWebPermissionRequest.getResources());
+                } else {
+                    pendingWebPermissionRequest.deny();
+                }
+                pendingWebPermissionRequest = null;
+            }
+        } else if (requestCode == REQ_WEBVIEW_GEO) {
+            if (pendingGeoCallback != null) {
+                boolean granted = hasLocationOsPermission();
+                pendingGeoCallback.invoke(pendingGeoOrigin, granted, false);
+                pendingGeoCallback = null;
+                pendingGeoOrigin = null;
+            }
+        } else if (requestCode == REQ_SINGLE_CAMERA) {
+            notifyWebPermissionResult("camera", evaluateOsPermissionState("camera"));
+        } else if (requestCode == REQ_SINGLE_MICROPHONE) {
+            notifyWebPermissionResult("microphone", evaluateOsPermissionState("microphone"));
+        } else if (requestCode == REQ_SINGLE_LOCATION) {
+            notifyWebPermissionResult("location", evaluateOsPermissionState("location"));
+        } else if (requestCode == REQ_SINGLE_NOTIFICATIONS || requestCode == REQ_INITIAL_NOTIFICATIONS) {
+            String state = evaluateOsPermissionState("notifications");
+            if ("granted".equals(state)) {
+                fetchAndSyncFcmToken();
+            }
+            notifyWebPermissionResult("notifications", state);
+        }
+
+        if (webView != null) {
+            webView.post(() -> webView.evaluateJavascript(
+                    "window.__osaOnAppResume && window.__osaOnAppResume();",
+                    null
+            ));
+        }
+    }
+
     private void requestInitialNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
+                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                prefs.edit().putBoolean("perm_asked_notifications", true).apply();
                 ActivityCompat.requestPermissions(
                         this,
                         new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                        1000
+                        REQ_INITIAL_NOTIFICATIONS
                 );
             }
         }
@@ -278,6 +500,14 @@ public class MainActivity extends AppCompatActivity {
         return androidId != null ? "android_" + androidId : "android_device";
     }
 
+    private void launchAndroidAppPermissionSettings() {
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        Uri uri = Uri.fromParts("package", getPackageName(), null);
+        intent.setData(uri);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
+    }
+
     public class OSANativeAndroidBridge {
         @JavascriptInterface
         public String getPushToken() {
@@ -296,12 +526,65 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @JavascriptInterface
+        public String getPermissionStatus(String permissionType) {
+            return evaluateOsPermissionState(permissionType);
+        }
+
+        @JavascriptInterface
+        public void requestSinglePermission(String permissionType) {
+            runOnUiThread(() -> {
+                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                if ("camera".equalsIgnoreCase(permissionType)) {
+                    prefs.edit().putBoolean("perm_asked_camera", true).apply();
+                    ActivityCompat.requestPermissions(
+                            MainActivity.this,
+                            new String[]{Manifest.permission.CAMERA},
+                            REQ_SINGLE_CAMERA
+                    );
+                } else if ("microphone".equalsIgnoreCase(permissionType)) {
+                    prefs.edit().putBoolean("perm_asked_microphone", true).apply();
+                    ActivityCompat.requestPermissions(
+                            MainActivity.this,
+                            new String[]{Manifest.permission.RECORD_AUDIO},
+                            REQ_SINGLE_MICROPHONE
+                    );
+                } else if ("location".equalsIgnoreCase(permissionType)) {
+                    prefs.edit().putBoolean("perm_asked_location", true).apply();
+                    ActivityCompat.requestPermissions(
+                            MainActivity.this,
+                            new String[]{
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                            },
+                            REQ_SINGLE_LOCATION
+                    );
+                } else if ("notifications".equalsIgnoreCase(permissionType)) {
+                    prefs.edit().putBoolean("perm_asked_notifications", true).apply();
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        ActivityCompat.requestPermissions(
+                                MainActivity.this,
+                                new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                                REQ_SINGLE_NOTIFICATIONS
+                        );
+                    } else {
+                        String state = evaluateOsPermissionState("notifications");
+                        if (!"granted".equals(state)) {
+                            launchAndroidAppPermissionSettings();
+                        }
+                        notifyWebPermissionResult("notifications", state);
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void openPermissionSettings(String permissionType) {
+            runOnUiThread(MainActivity.this::launchAndroidAppPermissionSettings);
+        }
+
+        @JavascriptInterface
         public void openAppSettings() {
-            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            Uri uri = Uri.fromParts("package", getPackageName(), null);
-            intent.setData(uri);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
+            runOnUiThread(MainActivity.this::launchAndroidAppPermissionSettings);
         }
 
         @JavascriptInterface
@@ -321,31 +604,41 @@ public class MainActivity extends AppCompatActivity {
 
         @JavascriptInterface
         public void requestNativePermissions() {
-            String[] perms;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                perms = new String[]{
-                        Manifest.permission.CAMERA,
-                        Manifest.permission.RECORD_AUDIO,
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.POST_NOTIFICATIONS
-                };
-            } else {
-                perms = new String[]{
-                        Manifest.permission.CAMERA,
-                        Manifest.permission.RECORD_AUDIO,
-                        Manifest.permission.ACCESS_FINE_LOCATION
-                };
-            }
-            boolean needsRequest = false;
-            for (String p : perms) {
-                if (ContextCompat.checkSelfPermission(MainActivity.this, p) != PackageManager.PERMISSION_GRANTED) {
-                    needsRequest = true;
-                    break;
+            runOnUiThread(() -> {
+                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                prefs.edit()
+                        .putBoolean("perm_asked_camera", true)
+                        .putBoolean("perm_asked_microphone", true)
+                        .putBoolean("perm_asked_location", true)
+                        .putBoolean("perm_asked_notifications", true)
+                        .apply();
+                String[] perms;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    perms = new String[]{
+                            Manifest.permission.CAMERA,
+                            Manifest.permission.RECORD_AUDIO,
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.POST_NOTIFICATIONS
+                    };
+                } else {
+                    perms = new String[]{
+                            Manifest.permission.CAMERA,
+                            Manifest.permission.RECORD_AUDIO,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                    };
                 }
-            }
-            if (needsRequest) {
-                ActivityCompat.requestPermissions(MainActivity.this, perms, 1001);
-            }
+                boolean needsRequest = false;
+                for (String p : perms) {
+                    if (ContextCompat.checkSelfPermission(MainActivity.this, p)
+                            != PackageManager.PERMISSION_GRANTED) {
+                        needsRequest = true;
+                        break;
+                    }
+                }
+                if (needsRequest) {
+                    ActivityCompat.requestPermissions(MainActivity.this, perms, REQ_ALL_PERMISSIONS);
+                }
+            });
         }
     }
 }

@@ -4,21 +4,27 @@ import {
   Bell,
   Camera,
   CheckCircle2,
+  ExternalLink,
   MapPin,
   Mic,
   RefreshCw,
+  Settings,
   ShieldCheck,
   X,
 } from 'lucide-react';
 import {
   checkNativePermissions,
+  getAllowPermissionButtonLabel,
+  getOpenPermissionSettingsButtonLabel,
+  getPermissionSettingsInstruction,
+  getStoredPermissionStatus,
+  handleOneTapPermissionAction,
+  openPermissionSettings,
+  OSA_PERMISSIONS_UPDATED_EVENT,
   OSAPermissionStatus,
+  PermissionKind,
   PermissionStateValue,
-  requestAllOSAPermissions,
-  requestCameraPermission,
-  requestLocationPermission,
-  requestMicrophonePermission,
-  requestNotificationPermission,
+  requestAllPermissions,
   saveStoredPermissionStatus,
   syncPermissionsToSupabase,
 } from '../services/permissionService';
@@ -40,14 +46,42 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
 }) => {
   const [status, setStatus] = useState<OSAPermissionStatus | null>(null);
   const [requestingAll, setRequestingAll] = useState(false);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<PermissionKind | null>(null);
   const [infoMessage, setInfoMessage] = useState('');
+  const [expandedDeniedKey, setExpandedDeniedKey] = useState<PermissionKind | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
-    checkNativePermissions(userId).then((res) => {
-      setStatus(res);
-    });
+
+    const refresh = () => {
+      checkNativePermissions(userId)
+        .then((res) => {
+          setStatus(res);
+        })
+        .catch(() => {});
+    };
+
+    refresh();
+
+    const handlePermUpdated = () => {
+      setStatus(getStoredPermissionStatus(userId));
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refresh();
+      }
+    };
+
+    window.addEventListener(OSA_PERMISSIONS_UPDATED_EVENT, handlePermUpdated);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener(OSA_PERMISSIONS_UPDATED_EVENT, handlePermUpdated);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [isOpen, userId]);
 
   if (!isOpen || !status) return null;
@@ -58,69 +92,77 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
     return updated;
   };
 
-  const handleRequestSingle = async (
-    key: 'microphone' | 'camera' | 'location' | 'notifications'
-  ) => {
+  const handlePermissionAction = async (key: PermissionKind) => {
     setBusyKey(key);
     setInfoMessage('');
     try {
+      const result = await handleOneTapPermissionAction(key, userId);
+      const next = await refreshStatus();
+      await syncPermissionsToSupabase(userId, next);
+
+      if (result.state === 'denied' || next[key] === 'denied') {
+        setExpandedDeniedKey(key);
+        if (result.instruction) {
+          setInfoMessage(result.instruction);
+        }
+      } else if (next[key] === 'granted') {
+        if (expandedDeniedKey === key) {
+          setExpandedDeniedKey(null);
+        }
+      }
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleOpenSettingsForPermission = async (key: PermissionKind) => {
+    setBusyKey(key);
+    try {
+      // First re-check in case user already unblocked the permission in browser address bar
       const latest = await checkNativePermissions(userId);
-      if (latest[key] === 'denied') {
-        setInfoMessage(
-          `${key.charAt(0).toUpperCase() + key.slice(1)} access is blocked by your browser/device. Open browser/device settings (tap the lock/tune icon in your browser address bar or phone app settings) to allow it.`
-        );
-        setStatus(latest);
+      setStatus(latest);
+
+      if (latest[key] === 'granted') {
+        setExpandedDeniedKey(null);
+        setInfoMessage('');
         return;
       }
 
-      if (key === 'microphone') {
-        const res = await requestMicrophonePermission(userId, true);
-        if (res === 'denied') {
-          setInfoMessage(
-            'Microphone access is blocked by your browser/device. Open browser/device settings (lock icon in address bar) to allow Microphone.'
-          );
-        }
-      } else if (key === 'camera') {
-        const res = await requestCameraPermission(userId, true);
-        if (res === 'denied') {
-          setInfoMessage(
-            'Camera access is blocked by your browser/device. Open browser/device settings (lock icon in address bar) to allow Camera.'
-          );
-        }
-      } else if (key === 'location') {
-        const res = await requestLocationPermission(userId, true);
-        if (res.state === 'denied') {
-          setInfoMessage(
-            'Location access is blocked by your browser/device. Open browser/device settings to allow Location/GPS.'
-          );
-        }
-      } else if (key === 'notifications') {
-        const res = await requestNotificationPermission(userId);
-        if (res === 'denied') {
-          setInfoMessage(
-            'Notification access is blocked by your browser/device. Open browser/device settings to allow Notifications.'
-          );
-        }
+      if (latest[key] === 'prompt') {
+        await handlePermissionAction(key);
+        return;
       }
-      const next = await refreshStatus();
-      await syncPermissionsToSupabase(userId, next);
+
+      const settingsResult = openPermissionSettings(key);
+      setExpandedDeniedKey(key);
+      setInfoMessage(settingsResult.instruction);
     } finally {
       setBusyKey(null);
     }
   };
 
   const handleToggleFeatureEnabled = async (
-    key: 'camera' | 'microphone' | 'location' | 'notifications',
+    key: PermissionKind,
     enabledKey: 'cameraEnabled' | 'microphoneEnabled' | 'locationEnabled' | 'notificationsEnabled',
     nextVal: boolean
   ) => {
     setInfoMessage('');
-    const currentPerm = status[key];
-    if (nextVal && currentPerm === 'denied') {
-      setInfoMessage(
-        `${key.charAt(0).toUpperCase() + key.slice(1)} is blocked by your browser/device. Open browser/device settings to unblock it.`
-      );
+    const latest = await checkNativePermissions(userId);
+    const currentPerm = latest[key];
+
+    if (nextVal && currentPerm === 'prompt') {
+      await handlePermissionAction(key);
+      return;
     }
+
+    if (nextVal && currentPerm === 'denied') {
+      const settingsResult = openPermissionSettings(key);
+      setExpandedDeniedKey(key);
+      setInfoMessage(settingsResult.instruction);
+      setStatus(latest);
+      return;
+    }
+
     const updated = saveStoredPermissionStatus({ [enabledKey]: nextVal }, userId);
     setStatus(updated);
     await syncPermissionsToSupabase(userId, updated);
@@ -130,9 +172,27 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
     setRequestingAll(true);
     setInfoMessage('');
     try {
-      const finalStatus = await requestAllOSAPermissions(userId);
+      const finalStatus = await requestAllPermissions(userId);
       setStatus(finalStatus);
-      onComplete(finalStatus);
+      const anyDenied =
+        finalStatus.camera === 'denied' ||
+        finalStatus.microphone === 'denied' ||
+        finalStatus.location === 'denied' ||
+        finalStatus.notifications === 'denied';
+      if (!anyDenied) {
+        onComplete(finalStatus);
+      } else {
+        const firstDenied: PermissionKind =
+          finalStatus.camera === 'denied'
+            ? 'camera'
+            : finalStatus.microphone === 'denied'
+            ? 'microphone'
+            : finalStatus.location === 'denied'
+            ? 'location'
+            : 'notifications';
+        setExpandedDeniedKey(firstDenied);
+        setInfoMessage(getPermissionSettingsInstruction(firstDenied));
+      }
     } finally {
       setRequestingAll(false);
     }
@@ -186,13 +246,13 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
     }
     return (
       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400">
-        Required
+        Tap to Allow
       </span>
     );
   };
 
   const permissionItems: Array<{
-    key: 'microphone' | 'camera' | 'location' | 'notifications';
+    key: PermissionKind;
     enabledKey: 'microphoneEnabled' | 'cameraEnabled' | 'locationEnabled' | 'notificationsEnabled';
     title: string;
     subtitleBn: string;
@@ -270,7 +330,7 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
                 OSA Permission &amp; Remote Setup
               </h2>
               <p className="text-xs text-blue-100 mt-0.5">
-                Allow permissions once so Calls, Remote Camera, and Remote Location work seamlessly.
+                Tap any permission below to automatically allow or open its settings.
               </p>
             </div>
           </div>
@@ -289,9 +349,18 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
         {/* Scrollable Content */}
         <div className="flex-1 min-h-0 p-5 sm:p-6 overflow-y-auto space-y-4">
           {infoMessage && (
-            <div className="rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 p-3.5 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2.5">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-              <span>{infoMessage}</span>
+            <div className="rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 p-3.5 text-xs text-amber-800 dark:text-amber-200 flex items-start justify-between gap-2.5">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                <span className="leading-relaxed">{infoMessage}</span>
+              </div>
+              <button
+                type="button"
+                onClick={refreshStatus}
+                className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold shrink-0"
+              >
+                Check Now
+              </button>
             </div>
           )}
 
@@ -300,10 +369,21 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
             {permissionItems.map((item) => (
               <div
                 key={item.key}
-                className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800 p-3.5 space-y-2"
+                className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800 p-3.5 space-y-2.5"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-start gap-3 min-w-0">
+                  <button
+                    type="button"
+                    disabled={busyKey === item.key || requestingAll}
+                    onClick={() => {
+                      if (item.state === 'denied') {
+                        handleOpenSettingsForPermission(item.key);
+                      } else {
+                        handlePermissionAction(item.key);
+                      }
+                    }}
+                    className="flex items-start gap-3 min-w-0 text-left flex-1 cursor-pointer"
+                  >
                     <div className="w-10 h-10 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 flex items-center justify-center shrink-0 mt-0.5">
                       {item.icon}
                     </div>
@@ -321,23 +401,32 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
                         {item.description}
                       </p>
                     </div>
-                  </div>
+                  </button>
 
                   <div className="flex items-center gap-2 shrink-0">
+                    {item.state === 'granted' && (
+                      <span className="px-3 py-1.5 min-h-[34px] rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-xs font-bold inline-flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Allowed
+                      </span>
+                    )}
+
                     {item.state === 'prompt' && (
                       <button
                         type="button"
                         disabled={busyKey === item.key || requestingAll}
-                        onClick={() => handleRequestSingle(item.key)}
+                        onClick={() => handlePermissionAction(item.key)}
                         className="px-3 py-1.5 min-h-[34px] rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
                       >
-                        {busyKey === item.key ? 'Requesting...' : 'Allow'}
+                        {busyKey === item.key
+                          ? 'Requesting...'
+                          : getAllowPermissionButtonLabel(item.key)}
                       </button>
                     )}
 
                     <input
                       type="checkbox"
-                      checked={item.enabled}
+                      checked={item.enabled && item.state !== 'denied'}
                       onChange={(e) =>
                         handleToggleFeatureEnabled(item.key, item.enabledKey, e.target.checked)
                       }
@@ -348,8 +437,25 @@ export const PermissionSetupModal: React.FC<PermissionSetupModalProps> = ({
                 </div>
 
                 {item.state === 'denied' && (
-                  <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-3 py-2 text-[11px] text-red-700 dark:text-red-300">
-                    <strong>Blocked by browser/device:</strong> Open browser/device settings (tap the lock/tune icon in the address bar or phone app permissions) to allow {item.title}.
+                  <div className="rounded-xl bg-red-500/10 border border-red-500/20 p-3 space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <p className="text-[11px] font-semibold text-red-700 dark:text-red-300">
+                        {item.title} is currently blocked on this device/browser.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={busyKey === item.key}
+                        onClick={() => handleOpenSettingsForPermission(item.key)}
+                        className="w-full sm:w-auto px-3.5 py-2 min-h-[36px] rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
+                      >
+                        <Settings className="w-3.5 h-3.5" />
+                        <span>{getOpenPermissionSettingsButtonLabel(item.key)}</span>
+                        <ExternalLink className="w-3 h-3 opacity-80" />
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-red-700/90 dark:text-red-300/90 leading-relaxed">
+                      {getPermissionSettingsInstruction(item.key)}
+                    </p>
                   </div>
                 )}
               </div>

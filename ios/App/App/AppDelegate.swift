@@ -59,6 +59,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler {
         return true
     }
 
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        guard let webView = self.webView else { return }
+        let js = "window.__osaOnAppResume && window.__osaOnAppResume();"
+        DispatchQueue.main.async {
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -145,7 +153,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler {
             if let callId = dict["callId"] as? String {
                 OSACallKitManager.shared.reportCallConnected(forCallId: callId)
             }
-        case "openAppSettings":
+        case "openAppSettings", "openPermissionSettings":
             if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
                 DispatchQueue.main.async {
                     UIApplication.shared.open(settingsUrl)

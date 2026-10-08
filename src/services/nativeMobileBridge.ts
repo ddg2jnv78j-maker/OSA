@@ -38,7 +38,11 @@ interface AndroidJavascriptBridge {
   getPushToken?: () => string | null;
   getDeviceId?: () => string | null;
   getAppVersion?: () => string | null;
+  getPermissionStatus?: (permissionType: string) => string | null;
+  requestSinglePermission?: (permissionType: string) => void;
+  openPermissionSettings?: (permissionType?: string) => void;
   openAppSettings?: () => void;
+  clearConversationNotifications?: (conversationId: string) => void;
   dismissIncomingCallNotification?: (callId: string) => void;
   reportCallConnected?: (callId: string) => void;
   requestNativePermissions?: () => void;
@@ -70,6 +74,11 @@ declare global {
     }) => void;
     __osaReceiveNativeCallAction?: (payload: NativeCallEventDetail) => void;
     __osaReceiveNativeDeepLink?: (payload: NativeDeepLinkDetail) => void;
+    __osaReceiveNativePermissionResult?: (payload: {
+      type: string;
+      state: 'granted' | 'denied' | 'prompt';
+    }) => void;
+    __osaOnAppResume?: () => void;
   }
 }
 
@@ -340,16 +349,21 @@ export function notifyNativeCallConnected(callId: string): void {
 /**
  * Opens the native Android or iOS App Settings screen when a user needs to re-enable a denied OS permission.
  */
-export function openNativeOSAppSettings(): boolean {
+export function openNativeOSAppSettings(permissionType?: string): boolean {
   if (typeof window === 'undefined') return false;
   try {
+    if (window.OSANativeAndroid?.openPermissionSettings) {
+      window.OSANativeAndroid.openPermissionSettings(permissionType || '');
+      return true;
+    }
     if (window.OSANativeAndroid?.openAppSettings) {
       window.OSANativeAndroid.openAppSettings();
       return true;
     }
     if (window.webkit?.messageHandlers?.OSANativeBridge) {
       window.webkit.messageHandlers.OSANativeBridge.postMessage({
-        action: 'openAppSettings',
+        action: 'openPermissionSettings',
+        permissionType: permissionType || '',
       });
       return true;
     }

@@ -41,9 +41,15 @@ import {
 } from '../services/ringtoneService';
 import {
   checkNativePermissions,
+  getAllowPermissionButtonLabel,
+  getOpenPermissionSettingsButtonLabel,
+  getPermissionSettingsInstruction,
   getStoredPermissionStatus,
+  handleOneTapPermissionAction,
+  openPermissionSettings,
   OSA_PERMISSIONS_UPDATED_EVENT,
   OSAPermissionStatus,
+  PermissionKind,
   requestCameraPermission,
   requestLocationPermission,
   requestMicrophonePermission,
@@ -198,7 +204,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       .then((res) => setPermState(res))
       .catch(() => {});
     const handlePermUpdated = () => {
-      setPermState(getStoredPermissionStatus(currentUser.id));
+      const updated = getStoredPermissionStatus(currentUser.id);
+      setPermState(updated);
+      setBrowserPermState(
+        updated.notifications === 'granted'
+          ? 'granted'
+          : updated.notifications === 'denied'
+          ? 'denied'
+          : getWebPushSupportInfo().permission
+      );
     };
     window.addEventListener(OSA_PERMISSIONS_UPDATED_EVENT, handlePermUpdated);
     return () => {
@@ -1136,28 +1150,28 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               {(
                 [
                   {
-                    permKey: 'camera' as const,
+                    permKey: 'camera' as PermissionKind,
                     enabledKey: 'cameraEnabled' as const,
-                    label: 'Camera',
+                    label: 'Camera Access',
                     sub: 'Video Calls, Status capture, and Remote Camera',
                     requestFn: () => requestCameraPermission(currentUser.id, true),
                   },
                   {
-                    permKey: 'microphone' as const,
+                    permKey: 'microphone' as PermissionKind,
                     enabledKey: 'microphoneEnabled' as const,
-                    label: 'Microphone',
-                    sub: 'Audio Calls and Video Calls',
+                    label: 'Microphone Access',
+                    sub: 'Audio Calls, Video Calls, and Voice Messages',
                     requestFn: () => requestMicrophonePermission(currentUser.id, true),
                   },
                   {
-                    permKey: 'location' as const,
+                    permKey: 'location' as PermissionKind,
                     enabledKey: 'locationEnabled' as const,
                     label: 'Location (GPS)',
                     sub: 'Live location sharing and Remote Location',
                     requestFn: async () => (await requestLocationPermission(currentUser.id, true)).state,
                   },
                   {
-                    permKey: 'notifications' as const,
+                    permKey: 'notifications' as PermissionKind,
                     enabledKey: 'notificationsEnabled' as const,
                     label: 'Notifications',
                     sub: 'Background message and incoming call alerts',
@@ -1168,10 +1182,29 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 const browserStatus = permState[item.permKey];
                 const isEnabled = Boolean(permState[item.enabledKey]) && browserStatus !== 'denied';
                 return (
-                  <div key={item.permKey} className="py-3 space-y-2">
+                  <div key={item.permKey} className="py-3.5 space-y-2.5">
                     <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const res = await handleOneTapPermissionAction(item.permKey, currentUser.id);
+                          const updated = await checkNativePermissions(currentUser.id);
+                          setPermState(updated);
+                          if (res.state === 'denied' && res.instruction) {
+                            setStatusBanner({
+                              type: 'error',
+                              text: res.instruction,
+                            });
+                          } else if (updated[item.permKey] === 'granted') {
+                            setStatusBanner({
+                              type: 'success',
+                              text: `${item.label} is Allowed.`,
+                            });
+                          }
+                        }}
+                        className="min-w-0 text-left flex-1 cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-semibold text-slate-900 dark:text-white">
                             {item.label}
                           </span>
@@ -1184,13 +1217,22 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                                 : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
                             }`}
                           >
-                            {browserStatus}
+                            {browserStatus === 'granted'
+                              ? 'Allowed'
+                              : browserStatus === 'denied'
+                              ? 'Blocked'
+                              : 'Tap to Allow'}
                           </span>
                         </div>
                         <p className="text-xs text-slate-500 dark:text-slate-400">{item.sub}</p>
-                      </div>
+                      </button>
 
                       <div className="flex items-center gap-2 shrink-0">
+                        {browserStatus === 'granted' && (
+                          <span className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
+                            Allowed
+                          </span>
+                        )}
                         {browserStatus === 'prompt' && (
                           <button
                             type="button"
@@ -1200,20 +1242,28 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                               setPermState(updated);
                               await syncPermissionsToSupabase(currentUser.id, updated);
                             }}
-                            className="px-2.5 py-1 rounded-lg bg-blue-600 text-white text-xs font-semibold"
+                            className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors"
                           >
-                            Allow
+                            {getAllowPermissionButtonLabel(item.permKey)}
                           </button>
                         )}
                         <button
                           type="button"
                           onClick={async () => {
                             const latest = await checkNativePermissions(currentUser.id);
+                            if (!isEnabled && latest[item.permKey] === 'prompt') {
+                              await item.requestFn();
+                              const afterPrompt = await checkNativePermissions(currentUser.id);
+                              setPermState(afterPrompt);
+                              await syncPermissionsToSupabase(currentUser.id, afterPrompt);
+                              return;
+                            }
                             if (!isEnabled && latest[item.permKey] === 'denied') {
+                              const settingsRes = openPermissionSettings(item.permKey);
                               setPermState(latest);
                               setStatusBanner({
                                 type: 'error',
-                                text: `${item.label} is blocked by your browser/device. Open browser/device settings to allow ${item.label}.`,
+                                text: settingsRes.instruction,
                               });
                               return;
                             }
@@ -1240,8 +1290,40 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     </div>
 
                     {browserStatus === 'denied' && (
-                      <div className="rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/70 px-3 py-2 text-[11px] text-red-700 dark:text-red-300">
-                        <strong>Open browser/device settings:</strong> {item.label} is blocked by your browser or OS. Tap the lock/tune icon in your browser address bar or open device App Settings &rarr; Permissions to allow {item.label}.
+                      <div className="rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/70 p-3 text-[11px] text-red-700 dark:text-red-300 space-y-2">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <span className="font-semibold">
+                            {item.label} is blocked on this device/browser.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const latest = await checkNativePermissions(currentUser.id);
+                              setPermState(latest);
+                              if (latest[item.permKey] === 'prompt') {
+                                await item.requestFn();
+                                const after = await checkNativePermissions(currentUser.id);
+                                setPermState(after);
+                                await syncPermissionsToSupabase(currentUser.id, after);
+                                return;
+                              }
+                              if (latest[item.permKey] === 'granted') {
+                                return;
+                              }
+                              const settingsRes = openPermissionSettings(item.permKey);
+                              setStatusBanner({
+                                type: 'error',
+                                text: settingsRes.instruction,
+                              });
+                            }}
+                            className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
+                          >
+                            {getOpenPermissionSettingsButtonLabel(item.permKey)}
+                          </button>
+                        </div>
+                        <p className="leading-relaxed">
+                          {getPermissionSettingsInstruction(item.permKey)}
+                        </p>
                       </div>
                     )}
                   </div>
@@ -1398,24 +1480,31 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               )}
             </div>
 
-            {/* Clear explanation & instructions when Notification permission is denied */}
-            {browserPermState === 'denied' && (
-              <div className="rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/80 p-3.5 text-xs text-red-700 dark:text-red-300 space-y-2">
-                <p className="font-bold flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>Notifications are blocked in your browser or phone settings</span>
-                </p>
+            {/* Clear explanation & button when Notification permission is denied */}
+            {(browserPermState === 'denied' || permState.notifications === 'denied') && (
+              <div className="rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/80 p-3.5 text-xs text-red-700 dark:text-red-300 space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <p className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>Notifications are blocked in your browser or phone settings</span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = openPermissionSettings('notifications');
+                      setStatusBanner({
+                        type: 'error',
+                        text: res.instruction,
+                      });
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
+                  >
+                    {getOpenPermissionSettingsButtonLabel('notifications')}
+                  </button>
+                </div>
                 <p className="leading-relaxed">
-                  OSA will not repeatedly prompt you while notifications are blocked. To enable background notifications:
+                  {getPermissionSettingsInstruction('notifications')}
                 </p>
-                <ul className="list-disc pl-4 space-y-1 text-[11px]">
-                  <li>
-                    <strong>Android / Chrome:</strong> Tap the tune/lock icon in the address bar &rarr; <strong>Permissions</strong> &rarr; allow <strong>Notifications</strong>, or open <strong>Phone Settings &rarr; Apps &rarr; OSA &rarr; Notifications</strong>.
-                  </li>
-                  <li>
-                    <strong>iPhone / iPad (Home Screen PWA):</strong> Open <strong>iOS Settings &rarr; Notifications &rarr; OSA</strong> and toggle <strong>Allow Notifications</strong> ON.
-                  </li>
-                </ul>
               </div>
             )}
 
