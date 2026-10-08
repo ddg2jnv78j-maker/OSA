@@ -4,7 +4,7 @@
     "experimentalDecorators": true,
     "useDefineForClassFields": false,
     "module": "ESNext",
-    "types": ["vite/client", "vite-plugin-pwa/client"],
+    "types": ["node", "vite/client", "vite-plugin-pwa/client"],
     "lib": [
       "ES2022",
       "DOM",
@@ -32,6 +32,8 @@
   "exclude": [
     "node_modules",
     "dist",
-    "supabase"
+    "supabase",
+    "android",
+    "ios"
   ]
 }
