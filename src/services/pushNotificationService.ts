@@ -852,6 +852,8 @@ export async function dismissIncomingCallSystemNotification(
  */
 export async function showBackgroundSystemNotification(params: {
   userId: string;
+  senderId?: string | null;
+  senderName?: string | null;
   type:
     | 'message'
     | 'new_message'
@@ -867,8 +869,7 @@ export async function showBackgroundSystemNotification(params: {
   callId?: string | null;
   callType?: 'audio' | 'video' | null;
 }): Promise<void> {
-  if (typeof window === 'undefined' || !('Notification' in window)) return;
-  if (Notification.permission !== 'granted') return;
+  if (typeof window === 'undefined') return;
 
   const cleanBody = (params.body || '').trim();
   const cleanTitle = (params.title || '').trim();
@@ -877,6 +878,11 @@ export async function showBackgroundSystemNotification(params: {
       (prefix) => cleanBody.startsWith(prefix) || cleanTitle.startsWith(prefix)
     )
   ) {
+    return;
+  }
+
+  // Never notify the sender of their own message or call
+  if (params.senderId && params.senderId === params.userId) {
     return;
   }
 
@@ -912,6 +918,52 @@ export async function showBackgroundSystemNotification(params: {
   if (eventKey && markNotificationEventDelivered(eventKey)) {
     return;
   }
+
+  // Native Android Bridge path (works in Foreground, Background, and Screen Locked with shared SharedPreferences dedup)
+  if (window.OSANativeAndroid) {
+    try {
+      if (isCall && params.callId && window.OSANativeAndroid.showIncomingCallNotification) {
+        const callerName =
+          (params.senderName && params.senderName.trim()) ||
+          cleanBody.replace(/\s+is calling you.*$/i, '').trim() ||
+          cleanTitle ||
+          'OSA Caller';
+        window.OSANativeAndroid.showIncomingCallNotification(
+          JSON.stringify({
+            type: 'incoming_call',
+            callId: params.callId,
+            callType: params.callType || 'audio',
+            callerId: params.senderId || '',
+            callerName,
+            chatId: params.chatId || '',
+          })
+        );
+        return;
+      }
+
+      if (!isCall && window.OSANativeAndroid.showMessageNotification) {
+        const senderName =
+          (params.senderName && params.senderName.trim()) ||
+          (cleanTitle && cleanTitle !== 'OSA' ? cleanTitle : 'OSA User');
+        window.OSANativeAndroid.showMessageNotification(
+          JSON.stringify({
+            type: 'message',
+            conversationId: params.chatId || '',
+            chatId: params.chatId || '',
+            messageId: params.messageId || '',
+            senderId: params.senderId || '',
+            senderName,
+            messagePreview: cleanBody || 'New message',
+          })
+        );
+        return;
+      }
+    } catch {
+      // Fall through if bridge method fails
+    }
+  }
+
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
   const baseUrl = import.meta.env.BASE_URL || '/';
   const tag = isCall

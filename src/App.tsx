@@ -70,7 +70,10 @@ import {
   PresenceManager,
   subscribeToPresenceUpdates,
 } from './services/presenceService';
-import { initializeNativeMobileBridge } from './services/nativeMobileBridge';
+import {
+  detectRuntimePlatform,
+  initializeNativeMobileBridge,
+} from './services/nativeMobileBridge';
 import {
   dismissIncomingCallSystemNotification,
   ensureUserPushSubscription,
@@ -102,6 +105,7 @@ import {
   Chat,
   LanguageCode,
   MainTab,
+  Message,
   NotificationItem,
   PrivacySettings,
   Profile,
@@ -236,7 +240,7 @@ export default function App() {
       setCallPeerProfile(callerProfile);
       setActiveCall(incoming);
       setCallError(undefined);
-      if (!autoAccept) {
+      if (!autoAccept && detectRuntimePlatform() !== 'android') {
         startIncomingCallRingtone(uid, incoming.id);
       }
 
@@ -559,7 +563,7 @@ export default function App() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [currentUser, activeTab, selectedChatId]);
+  }, [currentUser?.id, activeTab, selectedChatId]);
 
   // Listen for Service Worker notificationclick & pushsubscriptionchange events
   useEffect(() => {
@@ -821,7 +825,71 @@ export default function App() {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
-        () => refreshChatsAndNotifications(currentUser.id)
+        async (payload) => {
+          refreshChatsAndNotifications(currentUser.id);
+          const newMsg = payload.new as Message | undefined;
+          if (!newMsg || !newMsg.id || !newMsg.sender_id || newMsg.sender_id === currentUser.id) {
+            return;
+          }
+          const rawContent = (newMsg.content || '').trim();
+          if (
+            rawContent.startsWith(RCAM_SIG_PREFIX) ||
+            rawContent.startsWith(REMOTE_LOC_REQ_PREFIX) ||
+            rawContent.startsWith(REMOTE_LOC_RES_PREFIX) ||
+            rawContent.startsWith(REMOTE_LOC_ERR_PREFIX)
+          ) {
+            return;
+          }
+
+          const isAndroidNative = detectRuntimePlatform() === 'android';
+          const isSameActiveChat =
+            !isAndroidNative &&
+            document.visibilityState === 'visible' &&
+            document.hasFocus() &&
+            activeTab === 'chats' &&
+            Boolean(selectedChatId) &&
+            newMsg.chat_id === selectedChatId;
+
+          if (isSameActiveChat) return;
+
+          const matchedChat = chats.find((c) => c.id === newMsg.chat_id);
+          if (matchedChat?.my_membership?.is_muted) return;
+
+          let senderName =
+            matchedChat?.peer?.full_name ||
+            matchedChat?.members?.find((m) => m.user_id === newMsg.sender_id)?.profile?.full_name ||
+            '';
+          if (!senderName) {
+            const senderProfile = await fetchMyProfile(newMsg.sender_id);
+            senderName = senderProfile?.full_name || 'OSA User';
+          }
+          if (matchedChat?.type === 'group' && matchedChat.group?.name) {
+            senderName = `${senderName} (${matchedChat.group.name})`;
+          }
+
+          const msgType = (newMsg.message_type || 'text').toLowerCase();
+          const previewBody =
+            msgType === 'image'
+              ? 'Photo'
+              : msgType === 'video'
+              ? 'Video'
+              : msgType === 'audio'
+              ? 'Voice message'
+              : msgType === 'document'
+              ? 'File'
+              : rawContent || 'New message';
+
+          showBackgroundSystemNotification({
+            userId: currentUser.id,
+            senderId: newMsg.sender_id,
+            senderName,
+            title: senderName,
+            body: previewBody,
+            chatId: newMsg.chat_id || null,
+            messageId: newMsg.id,
+            type: matchedChat?.type === 'group' ? 'group_message' : 'new_message',
+          }).catch(() => {});
+        }
       )
       .on(
         'postgres_changes',
@@ -890,8 +958,10 @@ export default function App() {
 
           setNotifications((prev) => [newNotif, ...prev]);
 
-          // Show OS / Service Worker notification when OSA is in background, another tab, or viewing a different chat
+          // Show OS / Service Worker / Native Android notification
+          const isAndroidNative = detectRuntimePlatform() === 'android';
           const isSameActiveChat =
+            !isAndroidNative &&
             document.visibilityState === 'visible' &&
             document.hasFocus() &&
             activeTab === 'chats' &&
@@ -901,10 +971,12 @@ export default function App() {
           if (!isSameActiveChat && newNotif.type !== 'incoming_call') {
             showBackgroundSystemNotification({
               userId: currentUser.id,
+              senderId: newNotif.actor_id || null,
+              senderName: newNotif.title || 'OSA User',
               title: newNotif.title || 'OSA',
               body: newNotif.body || 'New message',
               chatId: newNotif.chat_id || null,
-              messageId: newNotif.reference_id || null,
+              messageId: newNotif.reference_id || newNotif.id || null,
               type: newNotif.type === 'mention' ? 'group_message' : newNotif.type,
             }).catch(() => {});
           }
@@ -926,19 +998,24 @@ export default function App() {
 
           const callerProfile = await fetchMyProfile(incoming.caller_id);
           const isAppVisible = document.visibilityState === 'visible';
+          const isAndroidNative = detectRuntimePlatform() === 'android';
           const canNotifyInBackground =
-            typeof Notification !== 'undefined' && Notification.permission === 'granted';
+            isAndroidNative ||
+            (typeof Notification !== 'undefined' && Notification.permission === 'granted');
 
           // Only report RINGING back to the caller if OSA is actively visible OR a real system incoming-call notification can reach the user
           if (isAppVisible || canNotifyInBackground) {
             await presentIncomingCall(incoming, currentUser.id, false);
           }
 
-          // If tab is in background or unfocused, also show OS incoming call notification with Accept/Decline
-          if (!isAppVisible || !document.hasFocus()) {
+          // On Android Native (foreground, background, or locked) or when web tab is in background/unfocused,
+          // trigger the incoming call notification with Accept/Reject, ringtone, vibration, and 45s timeout
+          if (isAndroidNative || !isAppVisible || !document.hasFocus()) {
             const callLabel = incoming.call_type === 'video' ? 'Video Call' : 'Audio Call';
             showBackgroundSystemNotification({
               userId: currentUser.id,
+              senderId: incoming.caller_id,
+              senderName: callerProfile?.full_name || 'OSA Caller',
               title: `Incoming ${callLabel}`,
               body: `${callerProfile?.full_name || 'Someone'} is calling you on OSA`,
               chatId: incoming.chat_id || null,

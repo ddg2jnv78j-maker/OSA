@@ -28,8 +28,12 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import com.google.firebase.messaging.FirebaseMessaging;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import org.json.JSONObject;
 
 /**
@@ -37,8 +41,8 @@ import org.json.JSONObject;
  * - Configures high-importance notification channels for Messages and Incoming Audio/Video Calls
  * - Requests Android 13+ POST_NOTIFICATIONS, CAMERA, RECORD_AUDIO, and ACCESS_FINE_LOCATION permissions
  * - Exposes OSANativeAndroid JavascriptInterface to the OSA React web app
- * - Handles one-tap runtime permission checks, prompts, and direct App Permission Settings Intent navigation
- * - Handles deep-links for grouped message notifications and Answer/Decline call actions
+ * - Bridges real-time and background Message & Call notifications with strict deduplication
+ * - Handles deep-links for grouped message notifications and Answer/Decline call actions (including cold launch)
  */
 public class MainActivity extends AppCompatActivity {
     public static final String CHANNEL_MESSAGES = "osa_messages_channel";
@@ -56,16 +60,76 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_WEBVIEW_MEDIA = 1020;
     private static final int REQ_WEBVIEW_GEO = 1021;
 
+    private static WeakReference<MainActivity> activeInstanceRef;
+
     private WebView webView;
     private PermissionRequest pendingWebPermissionRequest;
     private GeolocationPermissions.Callback pendingGeoCallback;
     private String pendingGeoOrigin;
+    private String pendingIntentPayloadJson = null;
+
+    public static void ensureNotificationChannels(Context context) {
+        if (context == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) return;
+
+        NotificationChannel messagesChannel = new NotificationChannel(
+                CHANNEL_MESSAGES,
+                "OSA Messages",
+                NotificationManager.IMPORTANCE_HIGH
+        );
+        messagesChannel.setDescription("Real-time chat and group message notifications");
+        messagesChannel.enableVibration(true);
+        messagesChannel.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
+        manager.createNotificationChannel(messagesChannel);
+
+        NotificationChannel callsChannel = new NotificationChannel(
+                CHANNEL_CALLS,
+                "OSA Incoming Calls",
+                NotificationManager.IMPORTANCE_HIGH
+        );
+        callsChannel.setDescription("Incoming audio and video call alerts");
+        callsChannel.enableVibration(true);
+        callsChannel.setVibrationPattern(new long[]{0, 400, 200, 400, 200, 600});
+        callsChannel.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
+        Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+        AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build();
+        callsChannel.setSound(ringtoneUri, audioAttributes);
+        manager.createNotificationChannel(callsChannel);
+    }
+
+    public static void notifyTokenUpdatedFromService(String token) {
+        MainActivity activity = activeInstanceRef != null ? activeInstanceRef.get() : null;
+        if (activity != null) {
+            activity.pushTokenToWebView(token);
+        }
+    }
+
+    public static void notifyCallRejectedFromNotification(String callId, String callType) {
+        MainActivity activity = activeInstanceRef != null ? activeInstanceRef.get() : null;
+        if (activity != null && activity.webView != null) {
+            try {
+                JSONObject obj = new JSONObject();
+                obj.put("callId", callId);
+                obj.put("callType", callType != null ? callType : "audio");
+                obj.put("action", "reject");
+                String js = "window.__osaReceiveNativeCallAction && window.__osaReceiveNativeCallAction(" + obj.toString() + ");";
+                activity.webView.post(() -> activity.webView.evaluateJavascript(js, null));
+            } catch (Exception ignored) {
+            }
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        createNotificationChannels();
+        activeInstanceRef = new WeakReference<>(this);
+        ensureNotificationChannels(this);
         requestInitialNotificationPermissionIfNeeded();
+        OSABackgroundMessagingService.ensureStarted(this);
 
         webView = new WebView(this);
         setContentView(webView);
@@ -99,6 +163,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                fetchAndSyncFcmToken();
                 dispatchIntentToWebApp(getIntent());
             }
 
@@ -119,6 +184,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         clearNotificationCountFromIntent(getIntent());
+        capturePendingIntentPayload(getIntent());
         String startUrl = buildLaunchUrl(getIntent());
         webView.loadUrl(startUrl);
 
@@ -128,7 +194,11 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        activeInstanceRef = new WeakReference<>(this);
+        fetchAndSyncFcmToken();
         if (webView != null) {
+            webView.onResume();
+            webView.resumeTimers();
             webView.post(() -> webView.evaluateJavascript(
                     "window.__osaOnAppResume && window.__osaOnAppResume();",
                     null
@@ -141,6 +211,7 @@ public class MainActivity extends AppCompatActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         clearNotificationCountFromIntent(intent);
+        capturePendingIntentPayload(intent);
         dispatchIntentToWebApp(intent);
     }
 
@@ -341,12 +412,15 @@ public class MainActivity extends AppCompatActivity {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
                 SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-                prefs.edit().putBoolean("perm_asked_notifications", true).apply();
-                ActivityCompat.requestPermissions(
-                        this,
-                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                        REQ_INITIAL_NOTIFICATIONS
-                );
+                boolean alreadyAsked = prefs.getBoolean("perm_asked_notifications", false);
+                if (!alreadyAsked) {
+                    prefs.edit().putBoolean("perm_asked_notifications", true).apply();
+                    ActivityCompat.requestPermissions(
+                            this,
+                            new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                            REQ_INITIAL_NOTIFICATIONS
+                    );
+                }
             }
         }
     }
@@ -373,6 +447,37 @@ public class MainActivity extends AppCompatActivity {
         if (manager != null) {
             int notificationId = ("osa_chat_" + conversationId).hashCode();
             manager.cancel("osa-chat-" + conversationId, notificationId);
+        }
+    }
+
+    private void capturePendingIntentPayload(Intent intent) {
+        if (intent == null) return;
+        try {
+            String chatId = intent.getStringExtra("chatId");
+            if (chatId == null || chatId.isEmpty()) {
+                chatId = intent.getStringExtra("conversationId");
+            }
+            String callId = intent.getStringExtra("callId");
+            String callType = intent.getStringExtra("callType");
+            String callAction = intent.getStringExtra("callAction");
+
+            Uri dataUri = intent.getData();
+            if (dataUri != null) {
+                if (chatId == null) chatId = dataUri.getQueryParameter("chatId");
+                if (callId == null) callId = dataUri.getQueryParameter("callId");
+                if (callType == null) callType = dataUri.getQueryParameter("callType");
+                if (callAction == null) callAction = dataUri.getQueryParameter("callAction");
+            }
+
+            if ((callId != null && !callId.isEmpty()) || (chatId != null && !chatId.isEmpty())) {
+                JSONObject obj = new JSONObject();
+                if (chatId != null && !chatId.isEmpty()) obj.put("chatId", chatId);
+                if (callId != null && !callId.isEmpty()) obj.put("callId", callId);
+                if (callType != null && !callType.isEmpty()) obj.put("callType", callType);
+                if (callAction != null && !callAction.isEmpty()) obj.put("callAction", callAction);
+                pendingIntentPayloadJson = obj.toString();
+            }
+        } catch (Exception ignored) {
         }
     }
 
@@ -433,65 +538,40 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void createNotificationChannels() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationManager manager = getSystemService(NotificationManager.class);
-        if (manager == null) return;
-
-        NotificationChannel messagesChannel = new NotificationChannel(
-                CHANNEL_MESSAGES,
-                "OSA Messages",
-                NotificationManager.IMPORTANCE_HIGH
-        );
-        messagesChannel.setDescription("Real-time chat and group message notifications");
-        messagesChannel.enableVibration(true);
-        manager.createNotificationChannel(messagesChannel);
-
-        NotificationChannel callsChannel = new NotificationChannel(
-                CHANNEL_CALLS,
-                "OSA Incoming Calls",
-                NotificationManager.IMPORTANCE_HIGH
-        );
-        callsChannel.setDescription("Incoming audio and video call alerts");
-        callsChannel.enableVibration(true);
-        callsChannel.setVibrationPattern(new long[]{0, 400, 200, 400, 200, 600});
-        callsChannel.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
-        Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-        AudioAttributes audioAttributes = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build();
-        callsChannel.setSound(ringtoneUri, audioAttributes);
-        manager.createNotificationChannel(callsChannel);
-    }
-
     private void fetchAndSyncFcmToken() {
         try {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            String cachedToken = prefs.getString("fcm_token", null);
+            if (cachedToken != null && !cachedToken.trim().isEmpty()) {
+                pushTokenToWebView(cachedToken.trim());
+            }
+
             FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
                 if (!task.isSuccessful()) return;
                 String token = task.getResult();
-                if (token == null || token.isEmpty()) return;
+                if (token == null || token.trim().isEmpty()) return;
 
-                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-                prefs.edit().putString("fcm_token", token).apply();
-
-                if (webView != null) {
-                    try {
-                        JSONObject payload = new JSONObject();
-                        payload.put("platform", "android");
-                        payload.put("deviceId", getStableHardwareDeviceId());
-                        payload.put("pushToken", token);
-                        payload.put("appVersion", "1.0.0");
-                        payload.put("deviceModel", Build.MODEL);
-                        payload.put("osVersion", Build.VERSION.RELEASE);
-                        String js = "window.__osaReceiveNativePushToken && window.__osaReceiveNativePushToken(" + payload.toString() + ");";
-                        webView.post(() -> webView.evaluateJavascript(js, null));
-                    } catch (Exception ignored) {
-                    }
-                }
+                String cleanToken = token.trim();
+                prefs.edit().putString("fcm_token", cleanToken).apply();
+                pushTokenToWebView(cleanToken);
             });
         } catch (Exception ignored) {
-            // google-services.json not configured yet — app runs cleanly without crashing
+        }
+    }
+
+    private void pushTokenToWebView(String token) {
+        if (webView == null || token == null || token.trim().isEmpty()) return;
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("platform", "android");
+            payload.put("deviceId", getStableHardwareDeviceId());
+            payload.put("pushToken", token.trim());
+            payload.put("appVersion", "1.0.0");
+            payload.put("deviceModel", Build.MODEL);
+            payload.put("osVersion", Build.VERSION.RELEASE);
+            String js = "window.__osaReceiveNativePushToken && window.__osaReceiveNativePushToken(" + payload.toString() + ");";
+            webView.post(() -> webView.evaluateJavascript(js, null));
+        } catch (Exception ignored) {
         }
     }
 
@@ -508,11 +588,33 @@ public class MainActivity extends AppCompatActivity {
         startActivity(intent);
     }
 
+    private Map<String, String> parseJsonToStringMap(String jsonStr) {
+        Map<String, String> map = new HashMap<>();
+        if (jsonStr == null || jsonStr.trim().isEmpty()) return map;
+        try {
+            JSONObject obj = new JSONObject(jsonStr);
+            Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
+                if (!obj.isNull(k)) {
+                    map.put(k, String.valueOf(obj.get(k)));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return map;
+    }
+
     public class OSANativeAndroidBridge {
         @JavascriptInterface
         public String getPushToken() {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
             return prefs.getString("fcm_token", null);
+        }
+
+        @JavascriptInterface
+        public void syncPushToken() {
+            runOnUiThread(MainActivity.this::fetchAndSyncFcmToken);
         }
 
         @JavascriptInterface
@@ -523,6 +625,70 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public String getAppVersion() {
             return "1.0.0";
+        }
+
+        @JavascriptInterface
+        public String getDeviceModel() {
+            return Build.MODEL;
+        }
+
+        @JavascriptInterface
+        public String getOsVersion() {
+            return Build.VERSION.RELEASE;
+        }
+
+        @JavascriptInterface
+        public String consumePendingIntentPayload() {
+            String payload = pendingIntentPayloadJson;
+            pendingIntentPayloadJson = null;
+            return payload;
+        }
+
+        @JavascriptInterface
+        public void syncAuthSession(String sessionJson) {
+            if (sessionJson == null || sessionJson.trim().isEmpty()) return;
+            try {
+                JSONObject obj = new JSONObject(sessionJson);
+                String userId = obj.optString("userId", "").trim();
+                String accessToken = obj.optString("accessToken", "").trim();
+                String supabaseUrl = obj.optString("supabaseUrl", "").trim();
+                String anonKey = obj.optString("anonKey", "").trim();
+
+                if (!userId.isEmpty() && !accessToken.isEmpty()) {
+                    SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                    prefs.edit()
+                            .putString("auth_user_id", userId)
+                            .putString("auth_access_token", accessToken)
+                            .putString("auth_supabase_url", supabaseUrl)
+                            .putString("auth_anon_key", anonKey)
+                            .apply();
+                    OSABackgroundMessagingService.ensureStarted(MainActivity.this);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public void clearAuthSession() {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            prefs.edit()
+                    .remove("auth_user_id")
+                    .remove("auth_access_token")
+                    .apply();
+        }
+
+        @JavascriptInterface
+        public void showMessageNotification(String payloadJson) {
+            Map<String, String> data = parseJsonToStringMap(payloadJson);
+            if (data.isEmpty()) return;
+            OSAFirebaseMessagingService.showGroupedMessageNotificationStatic(MainActivity.this, data);
+        }
+
+        @JavascriptInterface
+        public void showIncomingCallNotification(String payloadJson) {
+            Map<String, String> data = parseJsonToStringMap(payloadJson);
+            if (data.isEmpty()) return;
+            OSACallNotificationService.startCallNotificationFromData(MainActivity.this, data);
         }
 
         @JavascriptInterface

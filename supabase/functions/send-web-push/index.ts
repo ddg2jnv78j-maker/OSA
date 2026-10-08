@@ -78,6 +78,115 @@ async function hmacSha256(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8
   return new Uint8Array(sig);
 }
 
+let cachedFcmAccessToken: { token: string; expiresAt: number; projectId: string } | null = null;
+
+function pemToArrayBuffer(pem: string): ArrayBuffer {
+  const clean = pem
+    .replace(/-----BEGIN PRIVATE KEY-----/g, '')
+    .replace(/-----END PRIVATE KEY-----/g, '')
+    .replace(/\\n/g, '')
+    .replace(/\s+/g, '');
+  const raw = atob(clean);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    bytes[i] = raw.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+async function resolveFcmV1AccessToken(): Promise<{ accessToken: string; projectId: string } | null> {
+  if (cachedFcmAccessToken && Date.now() < cachedFcmAccessToken.expiresAt - 60_000) {
+    return {
+      accessToken: cachedFcmAccessToken.token,
+      projectId: cachedFcmAccessToken.projectId,
+    };
+  }
+
+  let projectId = (Deno.env.get('FCM_PROJECT_ID') || Deno.env.get('FIREBASE_PROJECT_ID') || '').trim();
+  let clientEmail = (Deno.env.get('FCM_CLIENT_EMAIL') || Deno.env.get('FIREBASE_CLIENT_EMAIL') || '').trim();
+  let privateKeyPem = (Deno.env.get('FCM_PRIVATE_KEY') || Deno.env.get('FIREBASE_PRIVATE_KEY') || '').trim();
+
+  const rawJson = (
+    Deno.env.get('FIREBASE_SERVICE_ACCOUNT_JSON') ||
+    Deno.env.get('FCM_SERVICE_ACCOUNT_JSON') ||
+    Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') ||
+    ''
+  ).trim();
+
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      projectId = String(parsed.project_id || projectId).trim();
+      clientEmail = String(parsed.client_email || clientEmail).trim();
+      privateKeyPem = String(parsed.private_key || privateKeyPem).trim();
+    } catch {
+      // Ignore malformed JSON
+    }
+  }
+
+  if (!projectId || !clientEmail || !privateKeyPem) {
+    return null;
+  }
+
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const header = { alg: 'RS256', typ: 'JWT' };
+    const claimSet = {
+      iss: clientEmail,
+      scope: 'https://www.googleapis.com/auth/firebase.messaging',
+      aud: 'https://oauth2.googleapis.com/token',
+      iat: nowSec,
+      exp: nowSec + 3600,
+    };
+
+    const encoder = new TextEncoder();
+    const encodedHeader = uint8ArrayToBase64Url(encoder.encode(JSON.stringify(header)));
+    const encodedClaims = uint8ArrayToBase64Url(encoder.encode(JSON.stringify(claimSet)));
+    const unsignedJwt = `${encodedHeader}.${encodedClaims}`;
+
+    const cryptoKey = await crypto.subtle.importKey(
+      'pkcs8',
+      pemToArrayBuffer(privateKeyPem),
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signature = await crypto.subtle.sign(
+      'RSASSA-PKCS1-v1_5',
+      cryptoKey,
+      encoder.encode(unsignedJwt)
+    );
+    const signedJwt = `${unsignedJwt}.${uint8ArrayToBase64Url(new Uint8Array(signature))}`;
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: signedJwt,
+      }).toString(),
+    });
+
+    if (!tokenRes.ok) return null;
+    const tokenData = await tokenRes.json();
+    if (!tokenData?.access_token) return null;
+
+    const expiresInSec = Number(tokenData.expires_in || 3600);
+    cachedFcmAccessToken = {
+      token: String(tokenData.access_token),
+      expiresAt: Date.now() + expiresInSec * 1000,
+      projectId,
+    };
+    return {
+      accessToken: cachedFcmAccessToken.token,
+      projectId,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Generates or retrieves server-side VAPID keys:
  * 1. Always prefers VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT from Edge Function secrets.
@@ -450,13 +559,15 @@ Deno.serve(async (req: Request) => {
       }
 
       let authorized = false;
-      if (body.rejectToken && vapidConfig?.privateKey) {
+      const rejectSigningSecret =
+        vapidConfig?.privateKey || supabaseServiceRoleKey || 'osa-call-reject-secret';
+      if (body.rejectToken) {
         authorized = await verifyCallRejectToken(
           String(body.rejectToken),
           callRow.id,
           callRow.receiver_id,
           callRow.caller_id,
-          vapidConfig.privateKey
+          rejectSigningSecret
         );
       }
 
@@ -565,20 +676,9 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (!vapidConfig || !vapidConfig.publicKey || !vapidConfig.privateKey) {
-      return new Response(
-        JSON.stringify({
-          sent: 0,
-          skipped: true,
-          reason:
-            'VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must be configured in Supabase Edge Function secrets.',
-        }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
-      );
-    }
+    const hasVapidKeys = Boolean(vapidConfig && vapidConfig.publicKey && vapidConfig.privateKey);
+    const rejectSigningSecret =
+      vapidConfig?.privateKey || supabaseServiceRoleKey || 'osa-call-reject-secret';
 
     // Never allow Remote Camera or Remote Location signals to trigger Web Push notifications
     const rawBodyText = (body.body || '').trim();
@@ -879,19 +979,20 @@ Deno.serve(async (req: Request) => {
     let cleanedCount = 0;
 
     // 6. Deliver Web Push to all active browser/PWA subscriptions
-    await Promise.all(
-      subscriptions.map(async (sub) => {
-        try {
-          const recipientUid = String(sub.user_id);
-          let rejectToken: string | null = null;
-          if ((isIncomingCall || isCancelCall) && body.callId) {
-            rejectToken = await createCallRejectToken(
-              body.callId,
-              recipientUid,
-              senderUserId,
-              vapidConfig.privateKey
-            );
-          }
+    if (hasVapidKeys && vapidConfig) {
+      await Promise.all(
+        subscriptions.map(async (sub) => {
+          try {
+            const recipientUid = String(sub.user_id);
+            let rejectToken: string | null = null;
+            if ((isIncomingCall || isCancelCall) && body.callId) {
+              rejectToken = await createCallRejectToken(
+                body.callId,
+                recipientUid,
+                senderUserId,
+                rejectSigningSecret
+              );
+            }
 
           const msgFormatted = buildUserMessageTitleAndBody(recipientUid);
           const notificationTag =
@@ -1012,13 +1113,17 @@ Deno.serve(async (req: Request) => {
         }
       })
     );
+    }
 
-    // 7. Deliver to Native Android (FCM) and iOS (APNs / PushKit VoIP) registered in public.user_devices
+    // 7. Deliver to Native Android (FCM HTTP v1 & Legacy FCM) and iOS (APNs / PushKit VoIP) registered in public.user_devices
     const fcmServerKey = (Deno.env.get('FCM_SERVER_KEY') || '').trim();
+    const fcmV1Auth = nativeDevices.some((d) => d.platform === 'android')
+      ? await resolveFcmV1AccessToken()
+      : null;
     const apnsAuthToken = (Deno.env.get('APNS_BEARER_TOKEN') || '').trim();
     const apnsBundleId = (Deno.env.get('APNS_BUNDLE_ID') || 'app.osa.messaging').trim();
 
-    if (nativeDevices.length > 0 && (fcmServerKey || apnsAuthToken)) {
+    if (nativeDevices.length > 0 && (fcmV1Auth || fcmServerKey || apnsAuthToken)) {
       await Promise.all(
         nativeDevices.map(async (dev) => {
           try {
@@ -1030,49 +1135,86 @@ Deno.serve(async (req: Request) => {
                 body.callId,
                 recipientUid,
                 senderUserId,
-                vapidConfig.privateKey
+                rejectSigningSecret
               );
             }
 
-            if (dev.platform === 'android' && dev.push_token && fcmServerKey) {
-              const fcmPayload = {
-                to: dev.push_token,
-                priority: 'high',
-                data: {
-                  type: isCancelCall
-                    ? 'cancel_call'
-                    : isIncomingCall
-                    ? 'incoming_call'
-                    : 'message',
-                  title: isIncomingCall ? callNotificationTitle : msgFormatted.title,
-                  body: isIncomingCall ? callNotificationBody : msgFormatted.body,
-                  senderId: senderUserId,
-                  senderName: senderHeader,
-                  callerId: senderUserId,
-                  callerName: senderDisplayName,
-                  callerAvatar: senderAvatarUrl || '',
-                  conversationId: resolvedChatId || '',
-                  chatId: resolvedChatId || '',
-                  messageId: body.messageId || '',
-                  messageCount: String(msgFormatted.messageCount),
-                  latestPreview: previewLine,
-                  callId: body.callId || '',
-                  callType: resolvedCallType,
-                  rejectToken: rejectToken || '',
-                  rejectEndpoint: `${supabaseUrl}/functions/v1/send-web-push`,
-                  anonKey: supabaseAnonKey,
-                },
+            if (dev.platform === 'android' && dev.push_token) {
+              const dataStrings: Record<string, string> = {
+                type: isCancelCall
+                  ? 'cancel_call'
+                  : isIncomingCall
+                  ? 'incoming_call'
+                  : 'message',
+                title: isIncomingCall ? callNotificationTitle : msgFormatted.title,
+                body: isIncomingCall ? callNotificationBody : msgFormatted.body,
+                senderId: senderUserId,
+                senderName: senderHeader,
+                callerId: senderUserId,
+                callerName: senderDisplayName,
+                callerAvatar: senderAvatarUrl || '',
+                conversationId: resolvedChatId || '',
+                chatId: resolvedChatId || '',
+                messageId: body.messageId || '',
+                messageCount: String(msgFormatted.messageCount),
+                unreadCount: String(msgFormatted.messageCount),
+                messagePreview: previewLine,
+                latestPreview: previewLine,
+                callId: body.callId || '',
+                callType: resolvedCallType,
+                rejectToken: rejectToken || '',
+                rejectEndpoint: `${supabaseUrl}/functions/v1/send-web-push`,
+                anonKey: supabaseAnonKey,
               };
 
-              const fcmRes = await fetch('https://fcm.googleapis.com/fcm/send', {
-                method: 'POST',
-                headers: {
-                  Authorization: `key=${fcmServerKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(fcmPayload),
-              });
-              if (fcmRes.ok) nativeSentCount++;
+              let deliveredAndroid = false;
+
+              // 7a. Prefer Firebase Cloud Messaging HTTP v1 API if service account is configured
+              if (fcmV1Auth) {
+                const v1Res = await fetch(
+                  `https://fcm.googleapis.com/v1/projects/${fcmV1Auth.projectId}/messages:send`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      Authorization: `Bearer ${fcmV1Auth.accessToken}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                      message: {
+                        token: dev.push_token,
+                        data: dataStrings,
+                        android: {
+                          priority: 'HIGH',
+                          ttl: isIncomingCall || isCancelCall ? '60s' : '86400s',
+                        },
+                      },
+                    }),
+                  }
+                );
+                if (v1Res.ok) {
+                  deliveredAndroid = true;
+                  nativeSentCount++;
+                }
+              }
+
+              // 7b. Fallback to FCM Legacy HTTP API if FCM_SERVER_KEY is configured
+              if (!deliveredAndroid && fcmServerKey) {
+                const fcmPayload = {
+                  to: dev.push_token,
+                  priority: 'high',
+                  data: dataStrings,
+                };
+
+                const fcmRes = await fetch('https://fcm.googleapis.com/fcm/send', {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `key=${fcmServerKey}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(fcmPayload),
+                });
+                if (fcmRes.ok) nativeSentCount++;
+              }
             } else if (dev.platform === 'ios' && apnsAuthToken) {
               const isVoipPush = (isIncomingCall || isCancelCall) && Boolean(dev.voip_token);
               const targetToken = isVoipPush ? dev.voip_token : dev.push_token;

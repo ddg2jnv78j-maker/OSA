@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { getSupabaseConfig, supabase } from '../lib/supabase';
 
 export type NativePlatformType = 'android' | 'ios' | 'web';
 
@@ -36,8 +36,16 @@ export interface NativeDeepLinkDetail {
 
 interface AndroidJavascriptBridge {
   getPushToken?: () => string | null;
+  syncPushToken?: () => void;
   getDeviceId?: () => string | null;
   getAppVersion?: () => string | null;
+  getDeviceModel?: () => string | null;
+  getOsVersion?: () => string | null;
+  consumePendingIntentPayload?: () => string | null;
+  syncAuthSession?: (sessionJson: string) => void;
+  clearAuthSession?: () => void;
+  showMessageNotification?: (payloadJson: string) => void;
+  showIncomingCallNotification?: (payloadJson: string) => void;
   getPermissionStatus?: (permissionType: string) => string | null;
   requestSinglePermission?: (permissionType: string) => void;
   openPermissionSettings?: (permissionType?: string) => void;
@@ -147,6 +155,7 @@ export function getOrCreateStableDeviceId(): string {
 
 /**
  * Saves or updates a device record in `public.user_devices` (with strict RLS `auth.uid() = user_id`).
+ * Never generates or stores fake push tokens.
  */
 export async function registerUserDeviceInSupabase(params: {
   userId: string;
@@ -162,14 +171,18 @@ export async function registerUserDeviceInSupabase(params: {
   if (!params.userId) return null;
   const deviceId = (params.deviceId || getOrCreateStableDeviceId()).trim();
   const appVersion = (params.appVersion || '1.0.0').trim();
+  const cleanPushToken =
+    params.pushToken && params.pushToken.trim() ? params.pushToken.trim() : null;
+  const cleanVoipToken =
+    params.voipToken && params.voipToken.trim() ? params.voipToken.trim() : null;
 
   // 1. Try SECURITY DEFINER RPC `upsert_user_device`
   try {
     const { data: rpcRow, error: rpcErr } = await supabase.rpc('upsert_user_device', {
       p_platform: params.platform,
       p_device_id: deviceId,
-      p_push_token: params.pushToken || null,
-      p_voip_token: params.voipToken || null,
+      p_push_token: cleanPushToken,
+      p_voip_token: cleanVoipToken,
       p_app_version: appVersion,
       p_device_model: params.deviceModel || null,
       p_os_version: params.osVersion || null,
@@ -192,8 +205,8 @@ export async function registerUserDeviceInSupabase(params: {
           user_id: params.userId,
           platform: params.platform,
           device_id: deviceId,
-          push_token: params.pushToken || null,
-          voip_token: params.voipToken || null,
+          ...(cleanPushToken ? { push_token: cleanPushToken } : {}),
+          ...(cleanVoipToken ? { voip_token: cleanVoipToken } : {}),
           app_version: appVersion,
           device_model: params.deviceModel || null,
           os_version: params.osVersion || null,
@@ -217,6 +230,31 @@ export async function registerUserDeviceInSupabase(params: {
 }
 
 /**
+ * Syncs the authenticated Supabase session to the Android native layer so
+ * OSABackgroundMessagingService and OSACallActionReceiver can operate when the app is backgrounded/locked/closed.
+ */
+async function syncAndroidNativeAuthSession(userId: string): Promise<void> {
+  if (typeof window === 'undefined' || !window.OSANativeAndroid?.syncAuthSession) return;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const accessToken = data?.session?.access_token;
+    const sbConfig = getSupabaseConfig();
+    if (accessToken && sbConfig.url && sbConfig.anonKey) {
+      window.OSANativeAndroid.syncAuthSession(
+        JSON.stringify({
+          userId,
+          accessToken,
+          supabaseUrl: sbConfig.url,
+          anonKey: sbConfig.anonKey,
+        })
+      );
+    }
+  } catch {
+    // Ignore
+  }
+}
+
+/**
  * Initializes native Android (FCM + CallNotificationService) and iOS (APNs + PushKit VoIP + CallKit)
  * bridge callbacks for the authenticated user without affecting Web/PWA behavior.
  */
@@ -230,15 +268,20 @@ export function initializeNativeMobileBridge(
   if (typeof window === 'undefined') return () => {};
 
   const platform = detectRuntimePlatform();
+  const retryTimers: number[] = [];
 
   // Expose global hooks invoked by Android MainActivity.evaluateJavascript and iOS WKWebView evaluateJavaScript
   window.__osaReceiveNativePushToken = (payload) => {
+    const cleanToken = payload.pushToken && payload.pushToken.trim() ? payload.pushToken.trim() : null;
+    const cleanVoip = payload.voipToken && payload.voipToken.trim() ? payload.voipToken.trim() : null;
+    if (!cleanToken && !cleanVoip) return;
+
     registerUserDeviceInSupabase({
       userId,
       platform: payload.platform || (platform === 'web' ? 'android' : platform),
       deviceId: payload.deviceId || getOrCreateStableDeviceId(),
-      pushToken: payload.pushToken || null,
-      voipToken: payload.voipToken || null,
+      pushToken: cleanToken,
+      voipToken: cleanVoip,
       appVersion: payload.appVersion || '1.0.0',
       deviceModel: payload.deviceModel || null,
       osVersion: payload.osVersion || null,
@@ -273,21 +316,93 @@ export function initializeNativeMobileBridge(
   window.addEventListener('osa:native-call-action', handleCustomCallEvent);
   window.addEventListener('osa:native-deep-link', handleCustomDeepLinkEvent);
 
-  // If running on Android Native shell, pull initial FCM token immediately
+  let authSub: { unsubscribe: () => void } | null = null;
+
+  // If running on Android Native shell:
+  // 1. Sync Supabase auth session for background/closed-app notifications and call reject actions
+  // 2. Pull & sync real FCM token to public.user_devices (platform = 'android')
+  // 3. Consume any pending cold-start notification tap intent payload
   if (platform === 'android' && window.OSANativeAndroid) {
+    syncAndroidNativeAuthSession(userId).catch(() => {});
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || !session) {
+        try {
+          window.OSANativeAndroid?.clearAuthSession?.();
+        } catch {
+          // Ignore
+        }
+      } else if (session?.access_token && session.user?.id === userId) {
+        const sbConfig = getSupabaseConfig();
+        try {
+          window.OSANativeAndroid?.syncAuthSession?.(
+            JSON.stringify({
+              userId,
+              accessToken: session.access_token,
+              supabaseUrl: sbConfig.url,
+              anonKey: sbConfig.anonKey,
+            })
+          );
+        } catch {
+          // Ignore
+        }
+      }
+    });
+    authSub = listener.subscription;
+
+    const trySyncAndroidFcmToken = () => {
+      try {
+        window.OSANativeAndroid?.syncPushToken?.();
+        const fcmToken = window.OSANativeAndroid?.getPushToken?.();
+        const deviceId = window.OSANativeAndroid?.getDeviceId?.() || getOrCreateStableDeviceId();
+        const appVersion = window.OSANativeAndroid?.getAppVersion?.() || '1.0.0';
+        const deviceModel = window.OSANativeAndroid?.getDeviceModel?.() || null;
+        const osVersion = window.OSANativeAndroid?.getOsVersion?.() || null;
+
+        if (fcmToken && fcmToken.trim()) {
+          registerUserDeviceInSupabase({
+            userId,
+            platform: 'android',
+            deviceId,
+            pushToken: fcmToken.trim(),
+            appVersion,
+            deviceModel,
+            osVersion,
+            isActive: true,
+          }).catch(() => {});
+        }
+      } catch {
+        // Ignore
+      }
+    };
+
+    trySyncAndroidFcmToken();
+    for (const delayMs of [1500, 4000, 8000]) {
+      retryTimers.push(window.setTimeout(trySyncAndroidFcmToken, delayMs));
+    }
+
+    // Consume pending notification intent payload if the app was launched from a killed state
     try {
-      const fcmToken = window.OSANativeAndroid.getPushToken?.();
-      const deviceId = window.OSANativeAndroid.getDeviceId?.() || getOrCreateStableDeviceId();
-      const appVersion = window.OSANativeAndroid.getAppVersion?.() || '1.0.0';
-      if (fcmToken) {
-        registerUserDeviceInSupabase({
-          userId,
-          platform: 'android',
-          deviceId,
-          pushToken: fcmToken,
-          appVersion,
-          isActive: true,
-        }).catch(() => {});
+      const pendingRaw = window.OSANativeAndroid.consumePendingIntentPayload?.();
+      if (pendingRaw && pendingRaw.trim()) {
+        const parsed = JSON.parse(pendingRaw) as {
+          chatId?: string;
+          callId?: string;
+          callType?: 'audio' | 'video';
+          callAction?: 'accept' | 'reject' | 'open';
+        };
+        if (parsed.callId) {
+          callbacks.onNativeCallAction({
+            callId: parsed.callId,
+            callType: parsed.callType || 'audio',
+            chatId: parsed.chatId || null,
+            action: parsed.callAction || 'open',
+          });
+        } else if (parsed.chatId) {
+          callbacks.onNativeDeepLink({
+            chatId: parsed.chatId,
+          });
+        }
       }
     } catch {
       // Ignore
@@ -307,6 +422,8 @@ export function initializeNativeMobileBridge(
   }
 
   return () => {
+    retryTimers.forEach((id) => window.clearTimeout(id));
+    authSub?.unsubscribe();
     window.removeEventListener('osa:native-call-action', handleCustomCallEvent);
     window.removeEventListener('osa:native-deep-link', handleCustomDeepLinkEvent);
   };

@@ -81,6 +81,13 @@
             android:exported="false"
             android:foregroundServiceType="phoneCall" />
 
+        <!-- Background Message & Call Sync Service -->
+        <service
+            android:name=".OSABackgroundMessagingService"
+            android:enabled="true"
+            android:exported="false"
+            android:stopWithTask="false" />
+
         <!-- BroadcastReceiver for Native Incoming Call Accept / Reject Actions -->
         <receiver
             android:name=".OSACallActionReceiver"
