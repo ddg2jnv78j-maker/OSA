@@ -112,9 +112,68 @@ import {
   ThemeMode,
 } from './types/osa';
 
+function inspectInitialRecoveryUrl(): {
+  isRecoveryMode: boolean;
+  recoveryError: string;
+  tokenHash: string;
+} {
+  if (typeof window === 'undefined') {
+    return { isRecoveryMode: false, recoveryError: '', tokenHash: '' };
+  }
+  const rawHash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const hashParams = new URLSearchParams(rawHash);
+  const searchParams = new URLSearchParams(window.location.search);
+
+  const typeParam = (hashParams.get('type') || searchParams.get('type') || '').toLowerCase();
+  const isResetFlag =
+    searchParams.get('reset_password') === 'true' ||
+    hashParams.get('reset_password') === 'true';
+  const tokenHash = (searchParams.get('token_hash') || hashParams.get('token_hash') || '').trim();
+
+  const errorCode = (hashParams.get('error_code') || searchParams.get('error_code') || '').toLowerCase();
+  const errorParam = (hashParams.get('error') || searchParams.get('error') || '').toLowerCase();
+  const errorDesc = (
+    hashParams.get('error_description') ||
+    searchParams.get('error_description') ||
+    ''
+  )
+    .replace(/\+/g, ' ')
+    .trim();
+
+  let recoveryError = '';
+  if (
+    errorCode === 'otp_expired' ||
+    errorDesc.toLowerCase().includes('expired') ||
+    errorDesc.toLowerCase().includes('invalid')
+  ) {
+    recoveryError =
+      'This password reset link is invalid or has expired. Please request a new password reset email.';
+  } else if (errorParam || errorCode) {
+    recoveryError =
+      errorDesc || 'Unable to verify password reset link. Please request a new password reset email.';
+  }
+
+  const isRecoveryMode =
+    typeParam === 'recovery' ||
+    isResetFlag ||
+    Boolean(recoveryError);
+
+  return { isRecoveryMode, recoveryError, tokenHash };
+}
+
+const INITIAL_RECOVERY_STATE = inspectInitialRecoveryUrl();
+
 export default function App() {
   const [bootstrapping, setBootstrapping] = useState(true);
-  const [authMode, setAuthMode] = useState<AuthScreenMode>('login');
+  const [authMode, setAuthMode] = useState<AuthScreenMode>(
+    INITIAL_RECOVERY_STATE.isRecoveryMode ? 'reset' : 'login'
+  );
+  const [recoveryError, setRecoveryError] = useState<string>(
+    INITIAL_RECOVERY_STATE.recoveryError
+  );
+  const isRecoveryModeRef = useRef<boolean>(INITIAL_RECOVERY_STATE.isRecoveryMode);
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [myPrivacy, setMyPrivacy] = useState<PrivacySettings | null>(null);
   const [peerPrivacyMap, setPeerPrivacyMap] = useState<Record<string, PrivacySettings>>({});
@@ -389,6 +448,12 @@ export default function App() {
     }
 
     try {
+      if (isRecoveryModeRef.current) {
+        setCurrentUser(null);
+        setBootstrapping(false);
+        return;
+      }
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -478,20 +543,75 @@ export default function App() {
   }, [refreshChatsAndNotifications, resumeIncomingCallFromNotification, checkPendingIncomingCall]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('reset_password') === 'true') {
+    const currentUrlCheck = inspectInitialRecoveryUrl();
+    if (currentUrlCheck.isRecoveryMode) {
+      isRecoveryModeRef.current = true;
       setAuthMode('reset');
+      if (currentUrlCheck.recoveryError) {
+        setRecoveryError(currentUrlCheck.recoveryError);
+      }
     }
 
-    loadAuthenticatedUser();
-
     const sbConfig = getSupabaseConfig();
-    if (!sbConfig.isConfigured) return;
+    if (!sbConfig.isConfigured) {
+      setBootstrapping(false);
+      return;
+    }
+
+    if (isRecoveryModeRef.current) {
+      setBootstrapping(false);
+      const tokenHash = currentUrlCheck.tokenHash || INITIAL_RECOVERY_STATE.tokenHash;
+      if (tokenHash) {
+        supabase.auth
+          .verifyOtp({ token_hash: tokenHash, type: 'recovery' })
+          .then(({ error: otpErr }) => {
+            if (otpErr) {
+              setRecoveryError(
+                'This password reset link is invalid or has expired. Please request a new password reset email.'
+              );
+            }
+          })
+          .catch(() => {
+            setRecoveryError(
+              'This password reset link is invalid or has expired. Please request a new password reset email.'
+            );
+          });
+      } else if (!INITIAL_RECOVERY_STATE.recoveryError && !currentUrlCheck.recoveryError) {
+        supabase.auth
+          .getSession()
+          .then(({ data: { session } }) => {
+            if (!session?.user && isRecoveryModeRef.current) {
+              setRecoveryError(
+                'This password reset link is invalid or has expired. Please request a new password reset email.'
+              );
+            }
+          })
+          .catch(() => {});
+      }
+    } else {
+      loadAuthenticatedUser();
+    }
+
+    const handleHashChange = () => {
+      const hashCheck = inspectInitialRecoveryUrl();
+      if (hashCheck.isRecoveryMode) {
+        isRecoveryModeRef.current = true;
+        setAuthMode('reset');
+        setCurrentUser(null);
+        if (hashCheck.recoveryError) {
+          setRecoveryError(hashCheck.recoveryError);
+        }
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
 
     const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY') {
+        isRecoveryModeRef.current = true;
+        setRecoveryError('');
         setAuthMode('reset');
         setCurrentUser(null);
+        setBootstrapping(false);
       } else if (event === 'SIGNED_OUT' || !session) {
         stopAllRingtoneAudio();
         if (presenceManagerRef.current) {
@@ -504,11 +624,14 @@ export default function App() {
         setChats([]);
         setSelectedChatId(null);
       } else if (event === 'SIGNED_IN' && session?.user) {
-        loadAuthenticatedUser();
+        if (!isRecoveryModeRef.current) {
+          loadAuthenticatedUser();
+        }
       }
     });
 
     return () => {
+      window.removeEventListener('hashchange', handleHashChange);
       authListener.subscription.unsubscribe();
     };
   }, [loadAuthenticatedUser]);
@@ -1273,7 +1396,16 @@ export default function App() {
       <>
         <AuthPages
           initialMode={authMode}
+          initialError={recoveryError}
+          onClearInitialError={() => setRecoveryError('')}
+          onExitRecoveryMode={() => {
+            isRecoveryModeRef.current = false;
+            setRecoveryError('');
+            setAuthMode('login');
+          }}
           onAuthenticated={() => {
+            isRecoveryModeRef.current = false;
+            setRecoveryError('');
             setAuthMode('login');
             loadAuthenticatedUser();
           }}

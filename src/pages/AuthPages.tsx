@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { TranslationDictionary } from '../lib/i18n';
-import { getSupabaseConfig } from '../lib/supabase';
+import { getSupabaseConfig, supabase } from '../lib/supabase';
 import {
   describeSupabaseError,
   sendPasswordResetEmail,
@@ -26,6 +26,9 @@ export type AuthScreenMode = 'login' | 'register' | 'forgot' | 'reset';
 
 interface AuthPagesProps {
   initialMode?: AuthScreenMode;
+  initialError?: string;
+  onClearInitialError?: () => void;
+  onExitRecoveryMode?: () => void;
   onAuthenticated: () => void;
   onOpenSupabaseConfig: () => void;
   t: TranslationDictionary;
@@ -35,6 +38,9 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export const AuthPages: React.FC<AuthPagesProps> = ({
   initialMode = 'login',
+  initialError = '',
+  onClearInitialError,
+  onExitRecoveryMode,
   onAuthenticated,
   onOpenSupabaseConfig,
   t,
@@ -47,14 +53,50 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
   const [showPassword, setShowPassword] = useState(false);
 
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(initialError);
   const [successMessage, setSuccessMessage] = useState('');
 
   const sbConfig = getSupabaseConfig();
 
+  useEffect(() => {
+    setMode(initialMode);
+  }, [initialMode]);
+
+  useEffect(() => {
+    if (initialError) {
+      setError(initialError);
+    }
+  }, [initialError]);
+
+  useEffect(() => {
+    if (mode !== 'reset' || !sbConfig.isConfigured) return;
+    let cancelled = false;
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        if (cancelled) return;
+        if (session?.user?.email) {
+          setEmail((prev) => prev || session.user.email || '');
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, sbConfig.isConfigured]);
+
   const switchMode = (nextMode: AuthScreenMode) => {
     setError('');
     setSuccessMessage('');
+    onClearInitialError?.();
+    if (mode === 'reset' && nextMode !== 'reset') {
+      onExitRecoveryMode?.();
+      try {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch {
+        // Ignore history error
+      }
+    }
     setMode(nextMode);
   };
 
@@ -157,6 +199,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
     e.preventDefault();
     setError('');
     setSuccessMessage('');
+    onClearInitialError?.();
 
     const currentConfig = getSupabaseConfig();
     if (!currentConfig.isConfigured) {
@@ -174,7 +217,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
     try {
       await sendPasswordResetEmail(cleanEmail);
       setSuccessMessage(
-        'Password reset instructions have been sent to your email via Supabase Auth.'
+        'Password reset link sent! Please check your email inbox (and spam folder) and click "Reset Password" to set your new OSA password.'
       );
     } catch (err) {
       setError(describeSupabaseError(err, 'Failed to send password reset email.'));
@@ -187,6 +230,7 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
     e.preventDefault();
     setError('');
     setSuccessMessage('');
+    onClearInitialError?.();
 
     if (!password || password.length < 6) {
       setError('New password must be at least 6 characters.');
@@ -199,13 +243,32 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
 
     setLoading(true);
     try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session?.user?.email && !email) {
+        setEmail(session.user.email);
+      }
+
       await updateUserPassword(password);
-      setSuccessMessage('Your OSA password has been updated! Redirecting...');
-      setTimeout(() => {
-        onAuthenticated();
-      }, 1200);
+
+      try {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch {
+        // Ignore history error
+      }
+
+      onExitRecoveryMode?.();
+      await supabase.auth.signOut().catch(() => {});
+
+      setPassword('');
+      setConfirmPassword('');
+      setMode('login');
+      setSuccessMessage(
+        'Your OSA password has been updated successfully! Please sign in with your new password.'
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update password.');
+      setError(describeSupabaseError(err, 'Failed to update password.'));
     } finally {
       setLoading(false);
     }
@@ -512,38 +575,76 @@ export const AuthPages: React.FC<AuthPagesProps> = ({
           {/* RESET PASSWORD FORM */}
           {mode === 'reset' && (
             <form onSubmit={handleResetPassword} className="space-y-4" noValidate>
+              {email && (
+                <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/80 px-3.5 py-2.5 text-xs text-slate-600 dark:text-slate-300">
+                  Resetting password for <span className="font-semibold text-slate-900 dark:text-white">{email}</span>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                   {t.newPassword}
                 </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Minimum 6 characters"
-                  className="w-full px-4 py-3 min-h-[46px] rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
-                />
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Minimum 6 characters"
+                    className="w-full pl-10 pr-10 py-3 min-h-[46px] rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                   {t.confirmPassword}
                 </label>
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Confirm new password"
-                  className="w-full px-4 py-3 min-h-[46px] rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
-                />
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Confirm new password"
+                    className="w-full pl-10 pr-10 py-3 min-h-[46px] rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
               </div>
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 min-h-[48px] rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
+                className="w-full py-3 min-h-[48px] rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold shadow-md shadow-blue-600/20 transition-colors"
               >
                 {loading ? 'Updating Password...' : t.updatePassword}
+              </button>
+
+              {error && (
+                <button
+                  type="button"
+                  onClick={() => switchMode('forgot')}
+                  className="w-full py-2.5 min-h-[44px] rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 text-sm font-semibold text-blue-700 dark:text-blue-300 hover:bg-blue-100/80 dark:hover:bg-blue-900/50 transition-colors"
+                >
+                  Request a New Reset Link
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="w-full py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 inline-flex items-center justify-center gap-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>{t.backToLogin}</span>
               </button>
             </form>
           )}

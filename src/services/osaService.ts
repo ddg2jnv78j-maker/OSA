@@ -46,6 +46,8 @@ export function classifyFileType(mimeType: string, fileName: string): 'image' | 
 // 1. AUTHENTICATION & ACCOUNT
 // ============================================================================
 
+export const OSA_PASSWORD_RESET_REDIRECT_URL = 'https://ddg2jnv78j-maker.github.io/OSA/';
+
 export function describeSupabaseError(err: unknown, fallbackMessage: string): string {
   const rawMessage = err instanceof Error ? err.message : String(err || '');
   const lower = rawMessage.toLowerCase();
@@ -55,6 +57,21 @@ export function describeSupabaseError(err: unknown, fallbackMessage: string): st
     lower.includes('networkerror')
   ) {
     return 'Network connection to Supabase failed ("Load failed"). Please click "Database Ready / Connect Supabase" in the top bar and verify that your Supabase Project URL (https://<project-ref>.supabase.co) and Anon Public Key are accurate and that the project is active.';
+  }
+  if (
+    lower.includes('rate limit') ||
+    lower.includes('over_email_send_rate_limit') ||
+    lower.includes('for security purposes, you can only request this')
+  ) {
+    return 'Email rate limit reached on Supabase Auth. Please wait a few minutes before requesting another password reset email, or check your inbox/spam folder for the recent reset link.';
+  }
+  if (
+    lower.includes('otp_expired') ||
+    lower.includes('link is invalid or has expired') ||
+    lower.includes('token has expired') ||
+    lower.includes('auth session missing')
+  ) {
+    return 'This password reset link is invalid or has expired. Please request a new password reset email.';
   }
   return rawMessage || fallbackMessage;
 }
@@ -105,16 +122,28 @@ export async function signUpWithEmail(fullName: string, email: string, password:
 }
 
 export async function sendPasswordResetEmail(email: string) {
-  const redirectTo = `${window.location.origin}/?reset_password=true`;
-  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-    redirectTo,
+  const cleanEmail = email.trim();
+  const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+    redirectTo: OSA_PASSWORD_RESET_REDIRECT_URL,
   });
-  if (error) throw error;
+  if (error) {
+    throw new Error(describeSupabaseError(error, 'Failed to send password reset email.'));
+  }
 }
 
 export async function updateUserPassword(newPassword: string) {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session?.user) {
+    throw new Error(
+      'This password reset link is invalid or has expired. Please request a new password reset email.'
+    );
+  }
   const { error } = await supabase.auth.updateUser({ password: newPassword });
-  if (error) throw error;
+  if (error) {
+    throw new Error(describeSupabaseError(error, 'Failed to update password.'));
+  }
 }
 
 export async function updateUserEmail(newEmail: string, userId: string) {
