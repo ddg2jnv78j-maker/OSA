@@ -1,8 +1,12 @@
 import { execSync } from 'node:child_process';
+import { runAndroidSha1Diagnostic } from './verify-android-sha1.mjs';
 
 // 1. Run the standard Vite production build
 console.log('Running Vite production build...');
 execSync('npx vite build', { stdio: 'inherit' });
+
+// 2. Verify and report the Android APK signing certificate SHA-1 and SHA-256 fingerprints
+runAndroidSha1Diagnostic();
 
 // 2. When running inside GitHub Actions, wait for GitHub's legacy "pages build and deployment"
 // workflow on the same commit to finish first, so that "Deploy Vite app to GitHub Pages"
