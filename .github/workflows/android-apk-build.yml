@@ -1,0 +1,126 @@
+name: Build Android APK (Restricted Firebase Key)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "android/**"
+      - ".github/workflows/android-apk-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-android-apk:
+    name: Build Signed Debug APK & Verify SHA-1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Restore persistent CI Debug Keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: osa-android-debug-keystore-v1
+
+      - name: Ensure Android Debug Keystore exists
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web assets
+        run: npx vite build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_WEBRTC_STUN_URLS: ${{ secrets.VITE_WEBRTC_STUN_URLS }}
+          VITE_WEBRTC_TURN_URL: ${{ secrets.VITE_WEBRTC_TURN_URL }}
+          VITE_WEBRTC_TURN_USERNAME: ${{ secrets.VITE_WEBRTC_TURN_USERNAME }}
+          VITE_WEBRTC_TURN_CREDENTIAL: ${{ secrets.VITE_WEBRTC_TURN_CREDENTIAL }}
+          VITE_VAPID_PUBLIC_KEY: ${{ secrets.VITE_VAPID_PUBLIC_KEY }}
+          VITE_GOOGLE_AI_API_KEY: ${{ secrets.VITE_GOOGLE_AI_API_KEY }}
+
+      - name: Sync Capacitor Android assets
+        run: npx cap copy android
+
+      - name: Verify FIREBASE_ANDROID_API_KEY secret is present and build APK
+        working-directory: ./android
+        env:
+          FIREBASE_ANDROID_API_KEY: ${{ secrets.FIREBASE_ANDROID_API_KEY }}
+        run: |
+          if [ -z "$FIREBASE_ANDROID_API_KEY" ]; then
+            echo "ERROR: FIREBASE_ANDROID_API_KEY secret is not configured."
+            exit 1
+          fi
+          echo "FIREBASE_ANDROID_API_KEY secret verified present (length: ${#FIREBASE_ANDROID_API_KEY})."
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Inspect Built APK Signing Certificate (SHA-1 & SHA-256)
+        run: |
+          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          CERT_OUT=$(keytool -printcert -jarfile "$APK_PATH")
+          SHA1=$(echo "$CERT_OUT" | grep -m1 "SHA1:" | awk '{print $2}')
+          SHA256=$(echo "$CERT_OUT" | grep -m1 "SHA256:" | awk '{print $2}')
+
+          {
+            echo "=================================================================="
+            echo "OSA REBUILT ANDROID APK SIGNING CERTIFICATE (DEBUG)"
+            echo "=================================================================="
+            echo "Package Name      : app.osa.messaging"
+            echo "Firebase Project  : osa-app-88c1e"
+            echo "Firebase Key Ref  : FIREBASE_ANDROID_API_KEY (osa-android-fcm-key-v2)"
+            echo "APK SHA-1         : $SHA1"
+            echo "APK SHA-256       : $SHA256"
+            echo "=================================================================="
+          } | tee signing-fingerprint-report.txt
+
+          {
+            echo "## OSA Android APK Built with Restricted Replacement Key"
+            echo ""
+            echo "| Property | Value |"
+            echo "| :--- | :--- |"
+            echo "| **Package Name** | \`app.osa.messaging\` |"
+            echo "| **Firebase Project ID** | \`osa-app-88c1e\` |"
+            echo "| **Replacement Key Secret** | \`FIREBASE_ANDROID_API_KEY\` (\`osa-android-fcm-key-v2\`) |"
+            echo "| **Built APK DEBUG SHA-1** | \`$SHA1\` |"
+            echo "| **Built APK DEBUG SHA-256** | \`$SHA256\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Rebuilt Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: osa-android-debug-apk
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            signing-fingerprint-report.txt
