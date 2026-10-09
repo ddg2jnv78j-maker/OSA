@@ -85,34 +85,7 @@ jobs:
 
       - name: Inspect Built APK Signing Certificate (SHA-1 & SHA-256)
         run: |
-          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
-          CERT_OUT=$(keytool -printcert -jarfile "$APK_PATH")
-          SHA1=$(echo "$CERT_OUT" | grep -m1 "SHA1:" | awk '{print $2}')
-          SHA256=$(echo "$CERT_OUT" | grep -m1 "SHA256:" | awk '{print $2}')
-
-          {
-            echo "=================================================================="
-            echo "OSA REBUILT ANDROID APK SIGNING CERTIFICATE (DEBUG)"
-            echo "=================================================================="
-            echo "Package Name      : app.osa.messaging"
-            echo "Firebase Project  : osa-app-88c1e"
-            echo "Firebase Key Ref  : FIREBASE_ANDROID_API_KEY (osa-android-fcm-key-v2)"
-            echo "APK SHA-1         : $SHA1"
-            echo "APK SHA-256       : $SHA256"
-            echo "=================================================================="
-          } | tee signing-fingerprint-report.txt
-
-          {
-            echo "## OSA Android APK Built with Restricted Replacement Key"
-            echo ""
-            echo "| Property | Value |"
-            echo "| :--- | :--- |"
-            echo "| **Package Name** | \`app.osa.messaging\` |"
-            echo "| **Firebase Project ID** | \`osa-app-88c1e\` |"
-            echo "| **Replacement Key Secret** | \`FIREBASE_ANDROID_API_KEY\` (\`osa-android-fcm-key-v2\`) |"
-            echo "| **Built APK DEBUG SHA-1** | \`$SHA1\` |"
-            echo "| **Built APK DEBUG SHA-256** | \`$SHA256\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          node scripts/verify-android-sha1.mjs | tee signing-fingerprint-report.txt
 
       - name: Upload Rebuilt Android APK Artifact
         uses: actions/upload-artifact@v4
