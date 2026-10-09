@@ -19,4 +19,8 @@ coverage/
 android/.gradle/
 android/local.properties
 android/app/google-services.json
+*.jks
+*.keystore
+*firebase-adminsdk*.json
+service-account*.json
 
