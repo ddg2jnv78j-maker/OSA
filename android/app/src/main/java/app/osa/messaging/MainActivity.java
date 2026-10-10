@@ -31,6 +31,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import com.google.firebase.messaging.FirebaseMessaging;
+import java.io.InputStream;
 import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -53,7 +54,9 @@ public class MainActivity extends AppCompatActivity {
     public static final String CHANNEL_CALLS = "osa_incoming_calls_high_v2";
     public static final String CHANNEL_BG_SYNC = "osa_background_sync_silent_v2";
     private static final String PREFS_NAME = "osa_native_prefs";
-    private static final String PRODUCTION_WEB_URL = "https://ddg2jnv78j-maker.github.io/OSA/";
+    private static final String VIRTUAL_ASSET_HOST = "appassets.androidplatform.net";
+    private static final String PRODUCTION_WEB_URL = "https://appassets.androidplatform.net/index.html";
+    private static final String LEGACY_PAGES_WEB_URL = "https://ddg2jnv78j-maker.github.io/OSA/";
     private static final String LOCAL_ASSET_URL = "file:///android_asset/public/index.html";
 
     private static final int REQ_INITIAL_NOTIFICATIONS = 1000;
@@ -182,6 +185,13 @@ public class MainActivity extends AppCompatActivity {
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 try {
                     if (request != null && request.getUrl() != null) {
+                        Uri reqUri = request.getUrl();
+                        if (VIRTUAL_ASSET_HOST.equalsIgnoreCase(reqUri.getHost())) {
+                            WebResourceResponse localResp = serveBundledPublicAsset(reqUri);
+                            if (localResp != null) {
+                                return localResp;
+                            }
+                        }
                         inspectSupabaseRequestHeaders(request);
                     }
                 } catch (Exception ignored) {
@@ -206,8 +216,10 @@ public class MainActivity extends AppCompatActivity {
                 super.onReceivedError(view, request, error);
                 if (request != null && request.isForMainFrame()) {
                     String failingUrl = request.getUrl() != null ? request.getUrl().toString() : "";
-                    if (failingUrl.startsWith(PRODUCTION_WEB_URL)) {
-                        view.loadUrl(LOCAL_ASSET_URL);
+                    if (!failingUrl.startsWith(PRODUCTION_WEB_URL) && !failingUrl.startsWith(LOCAL_ASSET_URL)) {
+                        view.loadUrl(PRODUCTION_WEB_URL);
+                    } else if (failingUrl.startsWith(LEGACY_PAGES_WEB_URL)) {
+                        view.loadUrl(PRODUCTION_WEB_URL);
                     }
                 }
             }
@@ -634,6 +646,65 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    @Nullable
+    private WebResourceResponse serveBundledPublicAsset(Uri uri) {
+        if (uri == null) return null;
+        String rawPath = uri.getPath();
+        if (rawPath == null || rawPath.isEmpty() || "/".equals(rawPath)) {
+            rawPath = "/index.html";
+        }
+        if (rawPath.startsWith("/OSA/")) {
+            rawPath = rawPath.substring(4);
+        } else if ("/OSA".equals(rawPath)) {
+            rawPath = "/index.html";
+        }
+        String relPath = rawPath.startsWith("/") ? rawPath.substring(1) : rawPath;
+        if (relPath.isEmpty()) {
+            relPath = "index.html";
+        }
+
+        InputStream stream = null;
+        String resolvedPath = relPath;
+        try {
+            stream = getAssets().open("public/" + relPath);
+        } catch (Exception e1) {
+            if (!relPath.contains(".")) {
+                try {
+                    resolvedPath = "index.html";
+                    stream = getAssets().open("public/index.html");
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        if (stream == null) return null;
+
+        String mimeType = resolveMimeType(resolvedPath);
+        WebResourceResponse response = new WebResourceResponse(mimeType, "UTF-8", stream);
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Access-Control-Allow-Origin", "*");
+        headers.put("Cache-Control", "no-cache");
+        response.setResponseHeaders(headers);
+        return response;
+    }
+
+    private String resolveMimeType(String path) {
+        String lower = path != null ? path.toLowerCase() : "";
+        if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html";
+        if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "application/javascript";
+        if (lower.endsWith(".css")) return "text/css";
+        if (lower.endsWith(".json") || lower.endsWith(".webmanifest")) return "application/json";
+        if (lower.endsWith(".svg")) return "image/svg+xml";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".webp")) return "image/webp";
+        if (lower.endsWith(".ico")) return "image/x-icon";
+        if (lower.endsWith(".wav")) return "audio/wav";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".woff2")) return "font/woff2";
+        if (lower.endsWith(".woff")) return "font/woff";
+        return "application/octet-stream";
+    }
+
     private void capturePendingIntentPayload(Intent intent) {
         if (intent == null) return;
         try {
@@ -643,6 +714,8 @@ public class MainActivity extends AppCompatActivity {
             }
             String callId = intent.getStringExtra("callId");
             String callType = intent.getStringExtra("callType");
+            String callerId = intent.getStringExtra("callerId");
+            String callerName = intent.getStringExtra("callerName");
             String callAction = intent.getStringExtra("callAction");
 
             Uri dataUri = intent.getData();
@@ -650,6 +723,8 @@ public class MainActivity extends AppCompatActivity {
                 if (chatId == null) chatId = dataUri.getQueryParameter("chatId");
                 if (callId == null) callId = dataUri.getQueryParameter("callId");
                 if (callType == null) callType = dataUri.getQueryParameter("callType");
+                if (callerId == null) callerId = dataUri.getQueryParameter("callerId");
+                if (callerName == null) callerName = dataUri.getQueryParameter("callerName");
                 if (callAction == null) callAction = dataUri.getQueryParameter("callAction");
             }
 
@@ -658,6 +733,8 @@ public class MainActivity extends AppCompatActivity {
                 if (chatId != null && !chatId.isEmpty()) obj.put("chatId", chatId);
                 if (callId != null && !callId.isEmpty()) obj.put("callId", callId);
                 if (callType != null && !callType.isEmpty()) obj.put("callType", callType);
+                if (callerId != null && !callerId.isEmpty()) obj.put("callerId", callerId);
+                if (callerName != null && !callerName.isEmpty()) obj.put("callerName", callerName);
                 if (callAction != null && !callAction.isEmpty()) obj.put("callAction", callAction);
                 pendingIntentPayloadJson = obj.toString();
             }
@@ -675,6 +752,8 @@ public class MainActivity extends AppCompatActivity {
         }
         String callId = intent.getStringExtra("callId");
         String callType = intent.getStringExtra("callType");
+        String callerId = intent.getStringExtra("callerId");
+        String callerName = intent.getStringExtra("callerName");
         String callAction = intent.getStringExtra("callAction");
 
         Uri dataUri = intent.getData();
@@ -682,6 +761,8 @@ public class MainActivity extends AppCompatActivity {
             if (chatId == null) chatId = dataUri.getQueryParameter("chatId");
             if (callId == null) callId = dataUri.getQueryParameter("callId");
             if (callType == null) callType = dataUri.getQueryParameter("callType");
+            if (callerId == null) callerId = dataUri.getQueryParameter("callerId");
+            if (callerName == null) callerName = dataUri.getQueryParameter("callerName");
             if (callAction == null) callAction = dataUri.getQueryParameter("callAction");
         }
 
@@ -689,6 +770,8 @@ public class MainActivity extends AppCompatActivity {
         if (chatId != null && !chatId.isEmpty()) builder.appendQueryParameter("chatId", chatId);
         if (callId != null && !callId.isEmpty()) builder.appendQueryParameter("callId", callId);
         if (callType != null && !callType.isEmpty()) builder.appendQueryParameter("callType", callType);
+        if (callerId != null && !callerId.isEmpty()) builder.appendQueryParameter("callerId", callerId);
+        if (callerName != null && !callerName.isEmpty()) builder.appendQueryParameter("callerName", callerName);
         if (callAction != null && !callAction.isEmpty()) builder.appendQueryParameter("callAction", callAction);
         return builder.build().toString();
     }
@@ -702,12 +785,16 @@ public class MainActivity extends AppCompatActivity {
             }
             String callId = intent.getStringExtra("callId");
             String callType = intent.getStringExtra("callType");
+            String callerId = intent.getStringExtra("callerId");
+            String callerName = intent.getStringExtra("callerName");
             String callAction = intent.getStringExtra("callAction");
 
             if (callId != null && !callId.isEmpty()) {
                 JSONObject obj = new JSONObject();
                 obj.put("callId", callId);
                 obj.put("callType", callType != null ? callType : "audio");
+                if (callerId != null && !callerId.isEmpty()) obj.put("callerId", callerId);
+                if (callerName != null && !callerName.isEmpty()) obj.put("callerName", callerName);
                 if (chatId != null && !chatId.isEmpty()) obj.put("chatId", chatId);
                 obj.put("action", callAction != null ? callAction : "open");
                 String js = "window.__osaReceiveNativeCallAction && window.__osaReceiveNativeCallAction(" + obj.toString() + ");";

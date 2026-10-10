@@ -60,7 +60,7 @@
                 <data android:scheme="osa" />
             </intent-filter>
 
-            <!-- App Links into https://ddg2jnv78j-maker.github.io/OSA/ -->
+            <!-- App Links into https://ddg2jnv78j-maker.github.io/OSA/ and https://osa-chat.com/ -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -69,8 +69,22 @@
                     android:scheme="https"
                     android:host="ddg2jnv78j-maker.github.io"
                     android:pathPrefix="/OSA" />
+                <data
+                    android:scheme="https"
+                    android:host="osa-chat.com" />
+                <data
+                    android:scheme="https"
+                    android:host="www.osa-chat.com" />
             </intent-filter>
         </activity>
+
+        <!-- Default Firebase Cloud Messaging Notification Channel & Icon (Android 8.0+ / API 34) -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="osa_messages_high_v2" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@android:drawable/sym_action_chat" />
 
         <!-- Firebase Cloud Messaging Service for Closed/Background Messages & Calls -->
         <service

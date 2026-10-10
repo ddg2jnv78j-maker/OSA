@@ -406,12 +406,16 @@ export function initializeNativeMobileBridge(
           chatId?: string;
           callId?: string;
           callType?: 'audio' | 'video';
+          callerId?: string;
+          callerName?: string;
           callAction?: 'accept' | 'reject' | 'open';
         };
         if (parsed.callId) {
           callbacks.onNativeCallAction({
             callId: parsed.callId,
             callType: parsed.callType || 'audio',
+            callerId: parsed.callerId,
+            callerName: parsed.callerName,
             chatId: parsed.chatId || null,
             action: parsed.callAction || 'open',
           });
