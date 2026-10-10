@@ -692,7 +692,25 @@ Deno.serve(async (req: Request) => {
                 validate_only: true,
                 message: {
                   token: dev.push_token,
+                  notification: {
+                    title: 'OSA',
+                    body: 'Validation check',
+                  },
                   data: { type: 'ping' },
+                  android: {
+                    priority: 'HIGH',
+                    ttl: '60s',
+                    collapse_key: 'osa-ping',
+                    notification: {
+                      channel_id: 'osa_messages_high_v2',
+                      tag: 'osa-ping',
+                      sound: 'default',
+                      default_sound: true,
+                      default_vibrate_timings: true,
+                      notification_priority: 'PRIORITY_MAX',
+                      visibility: 'PUBLIC',
+                    },
+                  },
                 },
               }),
             }
@@ -1307,7 +1325,7 @@ Deno.serve(async (req: Request) => {
 
           if (res.status >= 200 && res.status < 300) {
             sentCount++;
-          } else if (res.status === 404 || res.status === 410) {
+          } else if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 410) {
             cleanedCount++;
             await adminClient
               .from('push_subscriptions')
@@ -1384,39 +1402,11 @@ Deno.serve(async (req: Request) => {
                   'Content-Type': 'application/json',
                 };
 
-                // Packet 1: High-priority data-only FCM message to wake OSAFirebaseMessagingService
-                // (starts OSACallNotificationService for incoming calls or grouped message notification)
-                const dataOnlyRes = await fetch(fcmEndpoint, {
-                  method: 'POST',
-                  headers: fcmHeaders,
-                  body: JSON.stringify({
-                    message: {
-                      token: dev.push_token,
-                      data: dataStrings,
-                      android: {
-                        priority: 'HIGH',
-                        ttl: isIncomingCall || isCancelCall ? '60s' : '86400s',
-                      },
-                    },
-                  }),
-                });
-
-                if (dataOnlyRes.ok) {
-                  deliveredAndroid = true;
-                  nativeSentCount++;
-                } else if (dataOnlyRes.status === 404) {
-                  const errBody = await dataOnlyRes.text().catch(() => '');
-                  if (errBody.includes('UNREGISTERED')) {
-                    await adminClient
-                      .from('user_devices')
-                      .update({ is_active: false, updated_at: new Date().toISOString() })
-                      .eq('id', dev.id);
-                  }
-                }
-
-                // Packet 2: System-tray guaranteed notification payload handled directly by Google Play Services
+                // Packet 1: System-tray guaranteed notification payload handled directly by Google Play Services
                 // even when the app is swiped closed or force-stopped by OEM battery savers (TECNO, Xiaomi, etc.).
-                // Uses the exact same notification tag + ID 0 slot as OSAFirebaseMessagingService so it never duplicates.
+                // Sent FIRST at (tag: sysTag, id: 0) so that when Packet 2 wakes OSAFirebaseMessagingService /
+                // OSACallNotificationService milliseconds later, the native service either upgrades (tag, 0)
+                // in-place (for messages) or cancels (tag, 0) and starts full-screen call ringing (for calls).
                 if (!isCancelCall && (isMessagePush || isIncomingCall)) {
                   const sysTitle = isIncomingCall ? callNotificationTitle : msgFormatted.title;
                   const sysBody = isIncomingCall ? callNotificationBody : msgFormatted.body;
@@ -1455,9 +1445,48 @@ Deno.serve(async (req: Request) => {
                       },
                     }),
                   });
-                  if (sysNotifRes.ok && !deliveredAndroid) {
+                  if (sysNotifRes.ok) {
                     deliveredAndroid = true;
                     nativeSentCount++;
+                  } else if (sysNotifRes.status === 404) {
+                    const errBody = await sysNotifRes.text().catch(() => '');
+                    if (errBody.includes('UNREGISTERED')) {
+                      await adminClient
+                        .from('user_devices')
+                        .update({ is_active: false, updated_at: new Date().toISOString() })
+                        .eq('id', dev.id);
+                    }
+                  }
+                }
+
+                // Packet 2: High-priority data-only FCM message to wake OSAFirebaseMessagingService
+                // (starts OSACallNotificationService for incoming calls, stops it for cancel_call,
+                // or upgrades the message notification to rich InboxStyle).
+                const dataOnlyRes = await fetch(fcmEndpoint, {
+                  method: 'POST',
+                  headers: fcmHeaders,
+                  body: JSON.stringify({
+                    message: {
+                      token: dev.push_token,
+                      data: dataStrings,
+                      android: {
+                        priority: 'HIGH',
+                        ttl: isIncomingCall || isCancelCall ? '60s' : '86400s',
+                      },
+                    },
+                  }),
+                });
+
+                if (dataOnlyRes.ok && !deliveredAndroid) {
+                  deliveredAndroid = true;
+                  nativeSentCount++;
+                } else if (dataOnlyRes.status === 404) {
+                  const errBody = await dataOnlyRes.text().catch(() => '');
+                  if (errBody.includes('UNREGISTERED')) {
+                    await adminClient
+                      .from('user_devices')
+                      .update({ is_active: false, updated_at: new Date().toISOString() })
+                      .eq('id', dev.id);
                   }
                 }
               }
