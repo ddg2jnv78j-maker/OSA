@@ -1,6 +1,6 @@
 const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
 const PRODUCTION_APP_URL = 'https://osa-chat.com/';
-const CACHE_NAME = 'osa-pwa-cache-v10';
+const CACHE_NAME = 'osa-pwa-cache-v11';
 const OFFLINE_URL = `${BASE_PATH}offline.html`;
 const PRECACHE_ASSETS = [
   'offline.html',
@@ -54,13 +54,25 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(
         keys.map((key) => (key !== CACHE_NAME ? caches.delete(key) : Promise.resolve()))
-      )
-    )
+      );
+      await self.clients.claim();
+      const windowClients = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true,
+      });
+      for (const client of windowClients) {
+        try {
+          client.postMessage({ type: 'OSA_PUSH_SUBSCRIPTION_CHANGED' });
+        } catch {
+          // Ignore
+        }
+      }
+    })()
   );
-  self.clients.claim();
 });
 
 self.addEventListener('message', (event) => {

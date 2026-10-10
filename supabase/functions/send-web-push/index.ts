@@ -233,6 +233,30 @@ async function resolveFcmV1AccessToken(
  * 2. If not set in env secrets, reads or generates once in `public.push_vapid_keys` via service_role.
  * NEVER exposes privateKey to clients.
  */
+async function isValidVapidKeyPair(publicKey: string, privateKey: string): Promise<boolean> {
+  if (!publicKey || !privateKey || publicKey === privateKey) return false;
+  try {
+    const pubBytes = base64UrlToUint8Array(publicKey);
+    const privBytes = base64UrlToUint8Array(privateKey);
+    if (pubBytes.length !== 65 || pubBytes[0] !== 0x04 || privBytes.length !== 32) {
+      return false;
+    }
+    const x = uint8ArrayToBase64Url(pubBytes.slice(1, 33));
+    const y = uint8ArrayToBase64Url(pubBytes.slice(33, 65));
+    const d = privateKey.trim().replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    await crypto.subtle.importKey(
+      'jwk',
+      { kty: 'EC', crv: 'P-256', x, y, d, ext: true },
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign']
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function resolveServerVapidConfig(adminClient: SupabaseClient): Promise<{
   publicKey: string;
   privateKey: string;
@@ -245,10 +269,10 @@ async function resolveServerVapidConfig(adminClient: SupabaseClient): Promise<{
   ).trim();
   const envPrivate = (Deno.env.get('VAPID_PRIVATE_KEY') || '').trim();
   const envSubject = (
-    Deno.env.get('VAPID_SUBJECT') || 'mailto:support@osa-messaging.app'
+    Deno.env.get('VAPID_SUBJECT') || 'mailto:support@osa-chat.com'
   ).trim();
 
-  if (envPublic && envPrivate) {
+  if (envPublic && envPrivate && (await isValidVapidKeyPair(envPublic, envPrivate))) {
     return {
       publicKey: envPublic,
       privateKey: envPrivate,
@@ -259,15 +283,19 @@ async function resolveServerVapidConfig(adminClient: SupabaseClient): Promise<{
   try {
     const { data: existing } = await adminClient
       .from('push_vapid_keys')
-      .select('public_key, private_key, subject')
+      .select('public_key, private_key, private_key_jwk, subject')
       .eq('id', 1)
       .maybeSingle();
 
-    if (existing?.public_key && existing?.private_key) {
+    const dbPub = String(existing?.public_key || '').trim();
+    const jwkObj = (existing?.private_key_jwk as Record<string, unknown> | null) || null;
+    const dbPriv = String(existing?.private_key || jwkObj?.d || '').trim();
+
+    if (dbPub && dbPriv && (await isValidVapidKeyPair(dbPub, dbPriv))) {
       return {
-        publicKey: String(existing.public_key).trim(),
-        privateKey: String(existing.private_key).trim(),
-        subject: String(existing.subject || envSubject).trim(),
+        publicKey: dbPub,
+        privateKey: dbPriv,
+        subject: String(existing?.subject || envSubject).trim(),
       };
     }
 
@@ -289,6 +317,7 @@ async function resolveServerVapidConfig(adminClient: SupabaseClient): Promise<{
           id: 1,
           public_key: publicKey,
           private_key: privateKey,
+          private_key_jwk: jwkPrivate,
           subject: envSubject,
           updated_at: new Date().toISOString(),
         },
@@ -1375,14 +1404,20 @@ Deno.serve(async (req: Request) => {
               'Content-Encoding': 'aes128gcm',
               'Content-Type': 'application/octet-stream',
               TTL: isIncomingCall || isCancelCall ? '60' : '86400',
-              Urgency: isIncomingCall || isCancelCall ? 'high' : 'normal',
+              Urgency: 'high',
             },
             body: encryptedBody,
           });
 
           if (res.status >= 200 && res.status < 300) {
             sentCount++;
-          } else if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 410) {
+          } else if (
+            res.status === 400 ||
+            res.status === 401 ||
+            res.status === 403 ||
+            res.status === 404 ||
+            res.status === 410
+          ) {
             cleanedCount++;
             await adminClient
               .from('push_subscriptions')

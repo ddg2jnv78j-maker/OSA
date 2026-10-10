@@ -199,16 +199,6 @@ export async function resolveVapidPublicKey(): Promise<string | null> {
   }
 
   try {
-    const stored = localStorage.getItem(VAPID_PUB_CACHE_KEY);
-    if (stored && stored.trim()) {
-      cachedVapidPublicKey = stored.trim();
-      return cachedVapidPublicKey;
-    }
-  } catch {
-    // Ignore storage error
-  }
-
-  try {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData?.session?.access_token;
     const { data, error } = await supabase.functions.invoke('send-web-push', {
@@ -243,6 +233,16 @@ export async function resolveVapidPublicKey(): Promise<string | null> {
     }
   } catch {
     // Ignore if RPC not yet created
+  }
+
+  try {
+    const stored = localStorage.getItem(VAPID_PUB_CACHE_KEY);
+    if (stored && stored.trim()) {
+      cachedVapidPublicKey = stored.trim();
+      return cachedVapidPublicKey;
+    }
+  } catch {
+    // Ignore storage error
   }
 
   return null;
@@ -424,13 +424,36 @@ export async function ensureUserPushSubscription(
         return null;
       }
 
+      const vapidPublicKey = await resolveVapidPublicKey();
+      if (!vapidPublicKey) {
+        return null;
+      }
+      const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
+
       let subscription = await registration.pushManager.getSubscription();
-      if (!subscription) {
-        const vapidPublicKey = await resolveVapidPublicKey();
-        if (!vapidPublicKey) {
-          return null;
+      if (subscription) {
+        let keyMatches = false;
+        try {
+          const existingServerKey = subscription.options?.applicationServerKey;
+          if (existingServerKey) {
+            const existingBytes = new Uint8Array(existingServerKey);
+            if (existingBytes.length === applicationServerKey.length) {
+              keyMatches = existingBytes.every((b, idx) => b === applicationServerKey[idx]);
+            }
+          } else {
+            keyMatches = localStorage.getItem('osa_subscribed_vapid_key') === vapidPublicKey;
+          }
+        } catch {
+          keyMatches = false;
         }
-        const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
+
+        if (!keyMatches) {
+          await subscription.unsubscribe().catch(() => {});
+          subscription = null;
+        }
+      }
+
+      if (!subscription) {
         try {
           subscription = await registration.pushManager.subscribe({
             userVisibleOnly: true,
@@ -447,6 +470,12 @@ export async function ensureUserPushSubscription(
             applicationServerKey: applicationServerKey as unknown as BufferSource,
           });
         }
+      }
+
+      try {
+        localStorage.setItem('osa_subscribed_vapid_key', vapidPublicKey);
+      } catch {
+        // Ignore
       }
 
       return await savePushSubscriptionToSupabase(userId, subscription, true);

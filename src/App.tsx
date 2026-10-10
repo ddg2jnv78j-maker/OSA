@@ -698,6 +698,9 @@ export default function App() {
 
     const handleVisibilityChange = () => {
       const visibleNow = document.visibilityState === 'visible';
+      if (visibleNow) {
+        ensureUserPushSubscription(currentUser.id).catch(() => {});
+      }
       reportActiveChatForPush(
         currentUser.id,
         visibleNow && activeTab === 'chats' ? selectedChatId : null,
