@@ -1,9 +1,28 @@
 import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { runAndroidSha1Diagnostic } from './verify-android-sha1.mjs';
 
 // 1. Run the standard Vite production build
 console.log('Running Vite production build...');
 execSync('npx vite build', { stdio: 'inherit' });
+
+// 1b. Ensure CNAME, 404.html SPA fallback, and /OSA/ legacy path compatibility exist in ./dist
+const distDir = path.resolve(process.cwd(), 'dist');
+if (fs.existsSync(distDir)) {
+  fs.writeFileSync(path.join(distDir, 'CNAME'), 'osa-chat.com\n', 'utf8');
+  const indexHtmlPath = path.join(distDir, 'index.html');
+  if (fs.existsSync(indexHtmlPath)) {
+    fs.copyFileSync(indexHtmlPath, path.join(distDir, '404.html'));
+    const legacyOsaDir = path.join(distDir, 'OSA');
+    fs.mkdirSync(legacyOsaDir, { recursive: true });
+    fs.copyFileSync(indexHtmlPath, path.join(legacyOsaDir, 'index.html'));
+    const assetsDir = path.join(distDir, 'assets');
+    if (fs.existsSync(assetsDir)) {
+      fs.cpSync(assetsDir, path.join(legacyOsaDir, 'assets'), { recursive: true });
+    }
+  }
+}
 
 // 2. Verify and report the Android APK signing certificate SHA-1 and SHA-256 fingerprints
 runAndroidSha1Diagnostic();

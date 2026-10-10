@@ -606,7 +606,63 @@ Deno.serve(async (req: Request) => {
       );
 
       let keySyncStatus: Record<string, unknown> = { synced: false };
+      let firebaseAuthDomainsStatus: Record<string, unknown> = { checked: false };
       if (cloudAuth?.accessToken) {
+        try {
+          const authConfigUrl =
+            'https://identitytoolkit.googleapis.com/admin/v2/projects/osa-app-88c1e/config';
+          const getAuthCfgRes = await fetch(authConfigUrl, {
+            headers: { Authorization: `Bearer ${cloudAuth.accessToken}` },
+          });
+          const authCfgJson = await getAuthCfgRes.json().catch(() => ({}));
+          if (getAuthCfgRes.ok && Array.isArray(authCfgJson.authorizedDomains)) {
+            const existingDomains: string[] = authCfgJson.authorizedDomains;
+            const mergedDomains = Array.from(
+              new Set([...existingDomains, 'osa-chat.com', 'www.osa-chat.com'])
+            );
+            if (mergedDomains.length !== existingDomains.length) {
+              const patchAuthRes = await fetch(
+                `${authConfigUrl}?updateMask=authorizedDomains`,
+                {
+                  method: 'PATCH',
+                  headers: {
+                    Authorization: `Bearer ${cloudAuth.accessToken}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ authorizedDomains: mergedDomains }),
+                }
+              );
+              const patchAuthJson = await patchAuthRes.json().catch(() => ({}));
+              firebaseAuthDomainsStatus = {
+                checked: true,
+                updated: patchAuthRes.ok,
+                status: patchAuthRes.status,
+                authorizedDomains: patchAuthJson.authorizedDomains || mergedDomains,
+              };
+            } else {
+              firebaseAuthDomainsStatus = {
+                checked: true,
+                updated: false,
+                status: 200,
+                authorizedDomains: existingDomains,
+              };
+            }
+          } else {
+            firebaseAuthDomainsStatus = {
+              checked: true,
+              updated: false,
+              status: getAuthCfgRes.status,
+              error: authCfgJson?.error?.message || authCfgJson,
+            };
+          }
+        } catch (e) {
+          firebaseAuthDomainsStatus = {
+            checked: true,
+            updated: false,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+
         try {
           const keyName = 'projects/935163585205/locations/global/keys/osa-android-fcm-key-v2';
           const getKeyRes = await fetch(`https://apikeys.googleapis.com/v2/${keyName}`, {
@@ -733,6 +789,7 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           keySyncStatus,
+          firebaseAuthDomainsStatus,
           tokenChecks,
         }),
         {
@@ -1156,7 +1213,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // 5. Build target URL & payload for Message vs Audio/Video Call
-    const baseAppUrl = 'https://ddg2jnv78j-maker.github.io/OSA/';
+    const baseAppUrl = 'https://osa-chat.com/';
     const urlParams = new URLSearchParams();
     if (resolvedChatId) urlParams.set('chatId', resolvedChatId);
     if (body.callId) urlParams.set('callId', body.callId);

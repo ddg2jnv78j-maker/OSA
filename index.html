@@ -13,6 +13,8 @@
     <meta property="og:title" content="OSA — Real-Time Messaging" />
     <meta property="og:description" content="OSA is a complete real-time messaging, status, group collaboration, and WebRTC audio/video calling application." />
     <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://osa-chat.com/" />
+    <link rel="canonical" href="https://osa-chat.com/" />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
@@ -25,6 +27,38 @@
     <div id="root"></div>
     <script>
       (function () {
+        try {
+          if (
+            (location.hostname === 'osa-chat.com' || location.hostname === 'www.osa-chat.com') &&
+            (location.pathname === '/OSA' || location.pathname.startsWith('/OSA/'))
+          ) {
+            var cleanSubpath = location.pathname.replace(/^\/OSA\/?/, '/');
+            history.replaceState(null, '', cleanSubpath + (location.search || '') + (location.hash || ''));
+          }
+        } catch (err) {}
+
+        async function purgeCachesAndReload(forceBust) {
+          try {
+            if (navigator.serviceWorker) {
+              var r = await navigator.serviceWorker.getRegistrations();
+              for (var i = 0; i < r.length; i++) await r[i].unregister();
+            }
+            if (window.caches) {
+              var k = await caches.keys();
+              for (var j = 0; j < k.length; j++) await caches.delete(k[j]);
+            }
+          } catch (e) {}
+          if (forceBust) {
+            var u = new URL(location.href);
+            u.searchParams.set('_osa_v', String(Date.now()));
+            location.replace(u.toString());
+          } else {
+            location.reload();
+          }
+        }
+
+        window.__osaPurgeAndReload = purgeCachesAndReload;
+
         function showFallback(msg) {
           var root = document.getElementById('root');
           if (!root || root.children.length > 0) return;
@@ -36,14 +70,27 @@
             '<p style="margin:0 0 18px;font-size:12px;color:#94a3b8;line-height:1.5;">' +
             (msg || 'Refreshing application assets...') +
             '</p>' +
-            '<button onclick="(async function(){try{if(navigator.serviceWorker){var r=await navigator.serviceWorker.getRegistrations();for(var i=0;i<r.length;i++)await r[i].unregister();}if(window.caches){var k=await caches.keys();for(var j=0;j<k.length;j++)await caches.delete(k[j]);}}catch(e){}location.reload(true);})()" style="width:100%;padding:12px;border:0;border-radius:12px;background:#2563eb;color:#fff;font-weight:600;font-size:13px;cursor:pointer;">Clear Cache &amp; Reload OSA</button>' +
+            '<button onclick="window.__osaPurgeAndReload(true)" style="width:100%;padding:12px;border:0;border-radius:12px;background:#2563eb;color:#fff;font-weight:600;font-size:13px;cursor:pointer;">Clear Cache &amp; Reload OSA</button>' +
             '</div></div>';
         }
+
         window.addEventListener('error', function (e) {
           if (e && e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) {
-            showFallback('A cached resource was updated. Tap below to reload the latest version of OSA.');
-          } else if (e && e.message) {
-            showFallback(e.message);
+            var url = e.target.src || e.target.href || '';
+            if (!url || url.indexOf('fonts.googleapis.com') !== -1 || url.indexOf('fonts.gstatic.com') !== -1) {
+              return;
+            }
+            if (url.indexOf('/assets/') !== -1 || url.indexOf('/src/main') !== -1) {
+              try {
+                var alreadyRetried = sessionStorage.getItem('osa_asset_auto_retry_v2');
+                if (!alreadyRetried) {
+                  sessionStorage.setItem('osa_asset_auto_retry_v2', '1');
+                  purgeCachesAndReload(true);
+                  return;
+                }
+              } catch (err) {}
+              showFallback('A cached resource was updated. Tap below to reload the latest version of OSA.');
+            }
           }
         }, true);
       })();

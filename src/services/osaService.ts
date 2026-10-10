@@ -46,7 +46,7 @@ export function classifyFileType(mimeType: string, fileName: string): 'image' | 
 // 1. AUTHENTICATION & ACCOUNT
 // ============================================================================
 
-export const OSA_PASSWORD_RESET_REDIRECT_URL = 'https://ddg2jnv78j-maker.github.io/OSA/';
+export const OSA_PASSWORD_RESET_REDIRECT_URL = 'https://osa-chat.com/';
 
 export function describeSupabaseError(err: unknown, fallbackMessage: string): string {
   const rawMessage = err instanceof Error ? err.message : String(err || '');
@@ -104,6 +104,7 @@ export async function signUpWithEmail(fullName: string, email: string, password:
     email: cleanEmail,
     password,
     options: {
+      emailRedirectTo: OSA_PASSWORD_RESET_REDIRECT_URL,
       data: {
         full_name: cleanName,
       },

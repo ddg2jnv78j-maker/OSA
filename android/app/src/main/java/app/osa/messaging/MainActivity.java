@@ -55,7 +55,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String CHANNEL_BG_SYNC = "osa_background_sync_silent_v2";
     private static final String PREFS_NAME = "osa_native_prefs";
     private static final String VIRTUAL_ASSET_HOST = "appassets.androidplatform.net";
-    private static final String PRODUCTION_WEB_URL = "https://ddg2jnv78j-maker.github.io/OSA/";
+    private static final String PRODUCTION_WEB_URL = "https://osa-chat.com/";
     private static final String BUNDLED_HTTPS_WEB_URL = "https://appassets.androidplatform.net/OSA/index.html";
     private static final String LOCAL_ASSET_URL = "file:///android_asset/public/index.html";
 

@@ -1,6 +1,6 @@
 const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
-const PRODUCTION_APP_URL = 'https://ddg2jnv78j-maker.github.io/OSA/';
-const CACHE_NAME = 'osa-pwa-cache-v9';
+const PRODUCTION_APP_URL = 'https://osa-chat.com/';
+const CACHE_NAME = 'osa-pwa-cache-v10';
 const OFFLINE_URL = `${BASE_PATH}offline.html`;
 const PRECACHE_ASSETS = [
   'offline.html',
@@ -156,10 +156,17 @@ function buildSafeAppUrl(data, action) {
     try {
       const parsed = new URL(data.url, originBase);
       if (
+        (parsed.hostname === 'osa-chat.com' || parsed.hostname === 'www.osa-chat.com') &&
+        parsed.pathname.startsWith('/OSA')
+      ) {
+        parsed.pathname = parsed.pathname.replace(/^\/OSA\/?/, '/');
+        return parsed.href;
+      }
+      if (
         parsed.hostname === 'ddg2jnv78j-maker.github.io' &&
         !parsed.pathname.startsWith('/OSA/')
       ) {
-        return `${PRODUCTION_APP_URL}${query}`;
+        return `https://ddg2jnv78j-maker.github.io/OSA/${query}`;
       }
       return parsed.href;
     } catch {

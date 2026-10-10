@@ -8,8 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export default defineConfig((): UserConfig => {
-  const base =
-    process.env.VITE_BASE_PATH || (process.env.GITHUB_ACTIONS === 'true' ? '/OSA/' : '/');
+  const base = process.env.VITE_BASE_PATH || '/';
 
   return {
     base,
