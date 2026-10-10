@@ -1,6 +1,8 @@
 const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
 const PRODUCTION_APP_URL = 'https://osa-chat.com/';
-const CACHE_NAME = 'osa-pwa-cache-v11';
+const CACHE_NAME = 'osa-pwa-cache-v12';
+const CURRENT_VAPID_PUBLIC_KEY =
+  'BG2E40YAcF2PElhPhWmHLsFI8NnVERlK9hCV7tgZakbuwVXT2L515AFdoYQiHO9cPNaUtOGjVZwcYdoW5SlzsXA';
 const OFFLINE_URL = `${BASE_PATH}offline.html`;
 const PRECACHE_ASSETS = [
   'offline.html',
@@ -11,6 +13,75 @@ const PRECACHE_ASSETS = [
   'pwa-512x512.png',
   'apple-touch-icon.png',
 ].map((asset) => `${BASE_PATH}${asset}`);
+
+function base64UrlToUint8Array(base64String) {
+  const clean = String(base64String || '').trim();
+  const padding = '='.repeat((4 - (clean.length % 4)) % 4);
+  const base64 = (clean + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+let swSubCheckInFlight = null;
+async function ensureSwPushSubscriptionFresh() {
+  if (!self.registration || !self.registration.pushManager) return;
+  if (swSubCheckInFlight) return swSubCheckInFlight;
+  swSubCheckInFlight = (async () => {
+    try {
+      const expectedKeyBytes = base64UrlToUint8Array(CURRENT_VAPID_PUBLIC_KEY);
+      let sub = await self.registration.pushManager.getSubscription();
+      let rotated = false;
+      if (sub) {
+        let matches = false;
+        if (sub.options && sub.options.applicationServerKey) {
+          const curBytes = new Uint8Array(sub.options.applicationServerKey);
+          if (curBytes.length === expectedKeyBytes.length) {
+            matches = curBytes.every((b, idx) => b === expectedKeyBytes[idx]);
+          }
+        }
+        if (!matches) {
+          await sub.unsubscribe().catch(() => {});
+          sub = null;
+          rotated = true;
+        }
+      }
+      if (!sub) {
+        sub = await self.registration.pushManager
+          .subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: expectedKeyBytes,
+          })
+          .catch(() => null);
+        if (sub) rotated = true;
+      }
+      if (rotated && sub) {
+        const windowClients = await self.clients.matchAll({
+          type: 'window',
+          includeUncontrolled: true,
+        });
+        for (const client of windowClients) {
+          try {
+            client.postMessage({
+              type: 'OSA_PUSH_SUBSCRIPTION_CHANGED',
+              subscription: sub.toJSON ? sub.toJSON() : null,
+            });
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    } catch {
+      // Ignore if permission not granted yet
+    } finally {
+      swSubCheckInFlight = null;
+    }
+  })();
+  return swSubCheckInFlight;
+}
 
 const REMOTE_SIGNAL_PREFIXES = [
   '[OSA_RCAM_SIG]',
@@ -60,6 +131,7 @@ self.addEventListener('activate', (event) => {
         keys.map((key) => (key !== CACHE_NAME ? caches.delete(key) : Promise.resolve()))
       );
       await self.clients.claim();
+      await ensureSwPushSubscriptionFresh();
       const windowClients = await self.clients.matchAll({
         type: 'window',
         includeUncontrolled: true,
@@ -81,6 +153,7 @@ self.addEventListener('message', (event) => {
   const sourceId = event.source && event.source.id ? event.source.id : 'default';
 
   if (data.type === 'OSA_ACTIVE_CHAT') {
+    ensureSwPushSubscriptionFresh().catch(() => {});
     clientActiveChatMap.set(sourceId, {
       chatId: data.chatId || null,
       visible: Boolean(data.visible),
