@@ -184,17 +184,17 @@ export function getWebPushSupportInfo(): {
   };
 }
 
+const PRODUCTION_VAPID_PUBLIC_KEY =
+  'BG2E40YAcF2PElhPhWmHLsFI8NnVERlK9hCV7tgZakbuwVXT2L515AFdoYQiHO9cPNaUtOGjVZwcYdoW5SlzsXA';
+const RETIRED_VAPID_PUBLIC_KEYS = new Set([
+  'BKEG2bhekeWKSYHidhcAgtwGNn4rw1BMshn0CJEi0Vgg54ubP1qaEYl59ngZBJOxW9s2qmv_6z11H-gdeBO3WxQ',
+]);
+
 /**
- * Retrieves the configured VAPID Public Key from VITE_VAPID_PUBLIC_KEY or the send-web-push Edge Function.
+ * Retrieves the configured VAPID Public Key from the send-web-push Edge Function or active production fallback.
  */
 export async function resolveVapidPublicKey(): Promise<string | null> {
-  const envKey = (import.meta.env.VITE_VAPID_PUBLIC_KEY || '').trim();
-  if (envKey) {
-    cachedVapidPublicKey = envKey;
-    return envKey;
-  }
-
-  if (cachedVapidPublicKey) {
+  if (cachedVapidPublicKey && !RETIRED_VAPID_PUBLIC_KEYS.has(cachedVapidPublicKey)) {
     return cachedVapidPublicKey;
   }
 
@@ -207,13 +207,15 @@ export async function resolveVapidPublicKey(): Promise<string | null> {
     });
     if (!error && data && typeof data.vapidPublicKey === 'string' && data.vapidPublicKey.trim()) {
       const resolvedKey = data.vapidPublicKey.trim();
-      cachedVapidPublicKey = resolvedKey;
-      try {
-        localStorage.setItem(VAPID_PUB_CACHE_KEY, resolvedKey);
-      } catch {
-        // Ignore
+      if (!RETIRED_VAPID_PUBLIC_KEYS.has(resolvedKey)) {
+        cachedVapidPublicKey = resolvedKey;
+        try {
+          localStorage.setItem(VAPID_PUB_CACHE_KEY, resolvedKey);
+        } catch {
+          // Ignore
+        }
+        return resolvedKey;
       }
-      return resolvedKey;
     }
   } catch {
     // Edge Function not yet deployed or unreachable
@@ -223,21 +225,29 @@ export async function resolveVapidPublicKey(): Promise<string | null> {
     const { data: rpcKey, error: rpcErr } = await supabase.rpc('get_public_vapid_key');
     if (!rpcErr && typeof rpcKey === 'string' && rpcKey.trim()) {
       const resolvedKey = rpcKey.trim();
-      cachedVapidPublicKey = resolvedKey;
-      try {
-        localStorage.setItem(VAPID_PUB_CACHE_KEY, resolvedKey);
-      } catch {
-        // Ignore
+      if (!RETIRED_VAPID_PUBLIC_KEYS.has(resolvedKey)) {
+        cachedVapidPublicKey = resolvedKey;
+        try {
+          localStorage.setItem(VAPID_PUB_CACHE_KEY, resolvedKey);
+        } catch {
+          // Ignore
+        }
+        return resolvedKey;
       }
-      return resolvedKey;
     }
   } catch {
     // Ignore if RPC not yet created
   }
 
+  const envKey = (import.meta.env.VITE_VAPID_PUBLIC_KEY || '').trim();
+  if (envKey && !RETIRED_VAPID_PUBLIC_KEYS.has(envKey)) {
+    cachedVapidPublicKey = envKey;
+    return envKey;
+  }
+
   try {
     const stored = localStorage.getItem(VAPID_PUB_CACHE_KEY);
-    if (stored && stored.trim()) {
+    if (stored && stored.trim() && !RETIRED_VAPID_PUBLIC_KEYS.has(stored.trim())) {
       cachedVapidPublicKey = stored.trim();
       return cachedVapidPublicKey;
     }
@@ -245,7 +255,8 @@ export async function resolveVapidPublicKey(): Promise<string | null> {
     // Ignore storage error
   }
 
-  return null;
+  cachedVapidPublicKey = PRODUCTION_VAPID_PUBLIC_KEY;
+  return PRODUCTION_VAPID_PUBLIC_KEY;
 }
 
 /**
@@ -435,7 +446,7 @@ export async function ensureUserPushSubscription(
         let keyMatches = false;
         try {
           const existingServerKey = subscription.options?.applicationServerKey;
-          if (existingServerKey) {
+          if (existingServerKey && existingServerKey.byteLength > 0) {
             const existingBytes = new Uint8Array(existingServerKey);
             if (existingBytes.length === applicationServerKey.length) {
               keyMatches = existingBytes.every((b, idx) => b === applicationServerKey[idx]);
@@ -669,6 +680,7 @@ export async function reportActiveChatForPush(
       .then((reg) => {
         reg?.active?.postMessage({
           type: 'OSA_ACTIVE_CHAT',
+          userId: userId || null,
           chatId: isVisible ? chatId : null,
           visible: isVisible,
         });

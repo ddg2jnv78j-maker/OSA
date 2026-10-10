@@ -1,6 +1,10 @@
 const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
 const PRODUCTION_APP_URL = 'https://osa-chat.com/';
-const CACHE_NAME = 'osa-pwa-cache-v12';
+const CACHE_NAME = 'osa-pwa-cache-v13';
+const SW_META_CACHE = 'osa-sw-meta-v1';
+const SW_META_URL = 'https://osa-chat.com/__sw_sub_meta';
+const SUPABASE_PUSH_FN_URL =
+  'https://wldwnchorvymaulzzlya.supabase.co/functions/v1/send-web-push';
 const CURRENT_VAPID_PUBLIC_KEY =
   'BG2E40YAcF2PElhPhWmHLsFI8NnVERlK9hCV7tgZakbuwVXT2L515AFdoYQiHO9cPNaUtOGjVZwcYdoW5SlzsXA';
 const OFFLINE_URL = `${BASE_PATH}offline.html`;
@@ -26,29 +30,101 @@ function base64UrlToUint8Array(base64String) {
   return outputArray;
 }
 
+function extractUserIdFromAuthHeader(authHeader) {
+  try {
+    const token = String(authHeader || '')
+      .replace(/^Bearer\s+/i, '')
+      .trim();
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const clean = parts[1];
+    const padding = '='.repeat((4 - (clean.length % 4)) % 4);
+    const json = JSON.parse(atob((clean + padding).replace(/-/g, '+').replace(/_/g, '/')));
+    if (
+      json &&
+      json.role === 'authenticated' &&
+      typeof json.sub === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(json.sub)
+    ) {
+      return json.sub;
+    }
+  } catch {
+    // Ignore malformed token
+  }
+  return null;
+}
+
+async function readSwSubMeta() {
+  try {
+    const cache = await caches.open(SW_META_CACHE);
+    const res = await cache.match(SW_META_URL);
+    if (res) {
+      return (await res.json()) || {};
+    }
+  } catch {
+    // Ignore
+  }
+  return {};
+}
+
+async function writeSwSubMeta(meta) {
+  try {
+    const cache = await caches.open(SW_META_CACHE);
+    await cache.put(
+      SW_META_URL,
+      new Response(JSON.stringify(meta || {}), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+  } catch {
+    // Ignore
+  }
+}
+
 let swSubCheckInFlight = null;
-async function ensureSwPushSubscriptionFresh() {
-  if (!self.registration || !self.registration.pushManager) return;
+let lastKnownUserId = null;
+let lastKnownAuthHeader = null;
+
+async function ensureSwPushSubscriptionFresh(userIdHint, authHeaderHint) {
+  if (userIdHint) lastKnownUserId = userIdHint;
+  if (authHeaderHint) lastKnownAuthHeader = authHeaderHint;
+  if (!self.registration || !self.registration.pushManager) return null;
   if (swSubCheckInFlight) return swSubCheckInFlight;
+
   swSubCheckInFlight = (async () => {
     try {
+      const meta = await readSwSubMeta();
+      const resolvedUserId = lastKnownUserId || meta.userId || null;
       const expectedKeyBytes = base64UrlToUint8Array(CURRENT_VAPID_PUBLIC_KEY);
       let sub = await self.registration.pushManager.getSubscription();
-      let rotated = false;
+      let oldEndpoint = null;
+
       if (sub) {
         let matches = false;
-        if (sub.options && sub.options.applicationServerKey) {
+        if (
+          sub.options &&
+          sub.options.applicationServerKey &&
+          sub.options.applicationServerKey.byteLength > 0
+        ) {
           const curBytes = new Uint8Array(sub.options.applicationServerKey);
           if (curBytes.length === expectedKeyBytes.length) {
             matches = curBytes.every((b, idx) => b === expectedKeyBytes[idx]);
           }
+        } else {
+          matches = Boolean(
+            meta.endpoint &&
+              meta.endpoint === sub.endpoint &&
+              meta.vapidPublicKey === CURRENT_VAPID_PUBLIC_KEY
+          );
         }
+
         if (!matches) {
+          oldEndpoint = sub.endpoint;
           await sub.unsubscribe().catch(() => {});
           sub = null;
-          rotated = true;
         }
       }
+
       if (!sub) {
         sub = await self.registration.pushManager
           .subscribe({
@@ -56,30 +132,64 @@ async function ensureSwPushSubscriptionFresh() {
             applicationServerKey: expectedKeyBytes,
           })
           .catch(() => null);
-        if (sub) rotated = true;
       }
-      if (rotated && sub) {
-        const windowClients = await self.clients.matchAll({
-          type: 'window',
-          includeUncontrolled: true,
-        });
-        for (const client of windowClients) {
-          try {
-            client.postMessage({
-              type: 'OSA_PUSH_SUBSCRIPTION_CHANGED',
-              subscription: sub.toJSON ? sub.toJSON() : null,
+
+      if (!sub) return null;
+
+      const subJson = sub.toJSON ? sub.toJSON() : null;
+      const nextMeta = {
+        endpoint: sub.endpoint,
+        vapidPublicKey: CURRENT_VAPID_PUBLIC_KEY,
+        userId: resolvedUserId || meta.userId || null,
+        syncedUserId: meta.syncedUserId || null,
+        syncedEndpoint: meta.syncedEndpoint || null,
+      };
+      await writeSwSubMeta(nextMeta);
+
+      const needsServerSync =
+        Boolean(oldEndpoint) ||
+        meta.syncedEndpoint !== sub.endpoint ||
+        (resolvedUserId && meta.syncedUserId !== resolvedUserId);
+
+      if (needsServerSync && subJson && subJson.endpoint && subJson.keys) {
+        try {
+          const syncRes = await fetch(SUPABASE_PUSH_FN_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(lastKnownAuthHeader ? { Authorization: lastKnownAuthHeader } : {}),
+            },
+            body: JSON.stringify({
+              action: 'sync_subscription',
+              userId: resolvedUserId,
+              oldEndpoint: oldEndpoint || meta.endpoint || null,
+              subscription: subJson,
+              userAgent: self.navigator ? self.navigator.userAgent : '',
+            }),
+          });
+          const syncData = await syncRes.json().catch(() => ({}));
+          if (syncRes.ok && syncData && syncData.synced) {
+            await writeSwSubMeta({
+              endpoint: sub.endpoint,
+              vapidPublicKey: CURRENT_VAPID_PUBLIC_KEY,
+              userId: syncData.userId || resolvedUserId || null,
+              syncedUserId: syncData.userId || resolvedUserId || 'synced',
+              syncedEndpoint: sub.endpoint,
             });
-          } catch {
-            // Ignore
           }
+        } catch {
+          // Will retry on next activity
         }
       }
+
+      return sub;
     } catch {
-      // Ignore if permission not granted yet
+      return null;
     } finally {
       swSubCheckInFlight = null;
     }
   })();
+
   return swSubCheckInFlight;
 }
 
@@ -128,21 +238,12 @@ self.addEventListener('activate', (event) => {
     (async () => {
       const keys = await caches.keys();
       await Promise.all(
-        keys.map((key) => (key !== CACHE_NAME ? caches.delete(key) : Promise.resolve()))
+        keys.map((key) =>
+          key !== CACHE_NAME && key !== SW_META_CACHE ? caches.delete(key) : Promise.resolve()
+        )
       );
       await self.clients.claim();
-      await ensureSwPushSubscriptionFresh();
-      const windowClients = await self.clients.matchAll({
-        type: 'window',
-        includeUncontrolled: true,
-      });
-      for (const client of windowClients) {
-        try {
-          client.postMessage({ type: 'OSA_PUSH_SUBSCRIPTION_CHANGED' });
-        } catch {
-          // Ignore
-        }
-      }
+      await ensureSwPushSubscriptionFresh(null, null);
     })()
   );
 });
@@ -153,7 +254,10 @@ self.addEventListener('message', (event) => {
   const sourceId = event.source && event.source.id ? event.source.id : 'default';
 
   if (data.type === 'OSA_ACTIVE_CHAT') {
-    ensureSwPushSubscriptionFresh().catch(() => {});
+    if (data.userId) {
+      lastKnownUserId = String(data.userId);
+    }
+    ensureSwPushSubscriptionFresh(data.userId || null, null).catch(() => {});
     clientActiveChatMap.set(sourceId, {
       chatId: data.chatId || null,
       visible: Boolean(data.visible),
@@ -183,8 +287,66 @@ self.addEventListener('message', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
+
+  // Passively capture authenticated userId from Supabase requests and ensure push subscription uses valid VAPID key
+  if (url.hostname === 'wldwnchorvymaulzzlya.supabase.co') {
+    const authHeader = event.request.headers.get('Authorization') || '';
+    const jwtUserId = extractUserIdFromAuthHeader(authHeader);
+    if (jwtUserId) {
+      lastKnownUserId = jwtUserId;
+      lastKnownAuthHeader = authHeader;
+    }
+
+    if (
+      event.request.method === 'POST' &&
+      url.pathname.includes('/rest/v1/push_subscriptions')
+    ) {
+      const clonedReq = event.request.clone();
+      event.respondWith(
+        (async () => {
+          try {
+            const rawBody = await clonedReq.json().catch(() => null);
+            const rowObj = Array.isArray(rawBody) ? rawBody[0] : rawBody;
+            const bodyUserId = (rowObj && rowObj.user_id) || jwtUserId || lastKnownUserId;
+            const oldEp = (rowObj && rowObj.endpoint) || null;
+            if (oldEp && bodyUserId) {
+              const meta = await readSwSubMeta();
+              if (!meta.endpoint) {
+                await writeSwSubMeta({ ...meta, endpoint: oldEp, userId: bodyUserId });
+              }
+            }
+            const validSub = await ensureSwPushSubscriptionFresh(bodyUserId, authHeader);
+            if (validSub && validSub.toJSON) {
+              const sj = validSub.toJSON();
+              if (sj && sj.endpoint && sj.keys && sj.keys.p256dh && sj.keys.auth && rowObj) {
+                rowObj.endpoint = sj.endpoint;
+                rowObj.p256dh = sj.keys.p256dh;
+                rowObj.auth = sj.keys.auth;
+                rowObj.is_active = true;
+                return fetch(event.request.url, {
+                  method: event.request.method,
+                  headers: event.request.headers,
+                  body: JSON.stringify(Array.isArray(rawBody) ? [rowObj] : rowObj),
+                });
+              }
+            }
+          } catch {
+            // Fall through to original request
+          }
+          return fetch(event.request);
+        })()
+      );
+      return;
+    }
+
+    if (jwtUserId && !url.pathname.includes('/functions/v1/send-web-push')) {
+      ensureSwPushSubscriptionFresh(jwtUserId, authHeader).catch(() => {});
+    }
+    return;
+  }
+
+  if (event.request.method !== 'GET') return;
   if (url.origin !== self.location.origin) return;
 
   if (

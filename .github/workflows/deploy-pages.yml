@@ -39,7 +39,7 @@ jobs:
           VITE_WEBRTC_TURN_URL: ${{ secrets.VITE_WEBRTC_TURN_URL }}
           VITE_WEBRTC_TURN_USERNAME: ${{ secrets.VITE_WEBRTC_TURN_USERNAME }}
           VITE_WEBRTC_TURN_CREDENTIAL: ${{ secrets.VITE_WEBRTC_TURN_CREDENTIAL }}
-          VITE_VAPID_PUBLIC_KEY: ${{ secrets.VITE_VAPID_PUBLIC_KEY }}
+          VITE_VAPID_PUBLIC_KEY: BG2E40YAcF2PElhPhWmHLsFI8NnVERlK9hCV7tgZakbuwVXT2L515AFdoYQiHO9cPNaUtOGjVZwcYdoW5SlzsXA
           VITE_GOOGLE_AI_API_KEY: ${{ secrets.VITE_GOOGLE_AI_API_KEY }}
           
       - name: Configure Pages

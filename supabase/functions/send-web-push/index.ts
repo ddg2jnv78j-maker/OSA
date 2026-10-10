@@ -548,8 +548,24 @@ function formatMediaPreviewBody(
 }
 
 interface PushRequestBody {
-  action?: 'send' | 'get_vapid_public_key' | 'reject_call' | 'verify_and_sync_android_fcm';
+  action?:
+    | 'send'
+    | 'get_vapid_public_key'
+    | 'sync_subscription'
+    | 'reject_call'
+    | 'verify_and_sync_android_fcm';
   extraSha1s?: string[];
+  userId?: string | null;
+  oldEndpoint?: string | null;
+  subscription?: {
+    endpoint?: string;
+    keys?: {
+      p256dh?: string;
+      auth?: string;
+    };
+  } | null;
+  userAgent?: string | null;
+  deviceMetadata?: Record<string, unknown> | null;
   senderId?: string;
   senderName?: string;
   recipientIds?: string[];
@@ -614,6 +630,130 @@ Deno.serve(async (req: Request) => {
           status: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         }
+      );
+    }
+
+    // 1a. Direct Service Worker / Client PushSubscription sync endpoint
+    if (body.action === 'sync_subscription') {
+      const subObj = body.subscription;
+      const endpoint = String(subObj?.endpoint || '').trim();
+      const p256dh = String(subObj?.keys?.p256dh || '').trim();
+      const auth = String(subObj?.keys?.auth || '').trim();
+      const oldEndpoint = String(body.oldEndpoint || '').trim();
+      if (!endpoint || !p256dh || !auth) {
+        return new Response(
+          JSON.stringify({ synced: false, error: 'Missing subscription endpoint or keys' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      let resolvedUserId = '';
+      let fallbackMeta: Record<string, unknown> | null = null;
+      let fallbackUa = '';
+
+      const authHeader = req.headers.get('Authorization') || '';
+      if (authHeader) {
+        const bearerJwt = authHeader.replace(/^Bearer\s+/i, '').trim();
+        if (bearerJwt && bearerJwt !== supabaseAnonKey && bearerJwt !== supabaseServiceRoleKey) {
+          const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+            global: { headers: { Authorization: authHeader } },
+          });
+          const {
+            data: { user: authUser },
+          } = await userClient.auth.getUser(bearerJwt);
+          if (authUser?.id) {
+            resolvedUserId = authUser.id;
+          }
+        }
+      }
+
+      if (!resolvedUserId && body.userId && uuidRegex.test(String(body.userId).trim())) {
+        resolvedUserId = String(body.userId).trim();
+      }
+
+      if (oldEndpoint) {
+        const { data: oldRow } = await adminClient
+          .from('push_subscriptions')
+          .select('user_id, device_metadata, user_agent')
+          .eq('endpoint', oldEndpoint)
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (oldRow) {
+          if (!resolvedUserId && oldRow.user_id) {
+            resolvedUserId = String(oldRow.user_id);
+          }
+          fallbackMeta = (oldRow.device_metadata as Record<string, unknown>) || null;
+          fallbackUa = String(oldRow.user_agent || '');
+        }
+      }
+
+      if (!resolvedUserId) {
+        const { data: existingRow } = await adminClient
+          .from('push_subscriptions')
+          .select('user_id, device_metadata, user_agent')
+          .eq('endpoint', endpoint)
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (existingRow?.user_id) {
+          resolvedUserId = String(existingRow.user_id);
+          fallbackMeta = (existingRow.device_metadata as Record<string, unknown>) || fallbackMeta;
+          fallbackUa = String(existingRow.user_agent || fallbackUa);
+        }
+      }
+
+      if (!resolvedUserId) {
+        return new Response(
+          JSON.stringify({ synced: false, reason: 'Could not resolve userId for subscription' }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const ua = String(body.userAgent || fallbackUa || req.headers.get('user-agent') || '');
+      const isIOS = /iPad|iPhone|iPod/.test(ua);
+      const isAndroid = /Android/.test(ua);
+      const meta = body.deviceMetadata ||
+        fallbackMeta || {
+          deviceType: isIOS ? 'iOS' : isAndroid ? 'Android' : 'Desktop',
+          browser: /CriOS|Chrome/.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : 'Browser',
+          isStandalonePWA: true,
+        };
+
+      const nowIso = new Date().toISOString();
+      await adminClient.from('push_subscriptions').upsert(
+        {
+          user_id: resolvedUserId,
+          endpoint,
+          p256dh,
+          auth,
+          user_agent: ua,
+          device_metadata: meta,
+          is_active: true,
+          updated_at: nowIso,
+        },
+        { onConflict: 'user_id,endpoint' }
+      );
+
+      if (oldEndpoint && oldEndpoint !== endpoint) {
+        await adminClient
+          .from('push_subscriptions')
+          .delete()
+          .eq('user_id', resolvedUserId)
+          .eq('endpoint', oldEndpoint);
+      }
+
+      await adminClient
+        .from('push_subscriptions')
+        .delete()
+        .eq('user_id', resolvedUserId)
+        .eq('is_active', false)
+        .neq('endpoint', endpoint);
+
+      return new Response(
+        JSON.stringify({ synced: true, userId: resolvedUserId, endpoint }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -1423,7 +1563,6 @@ Deno.serve(async (req: Request) => {
               .from('push_subscriptions')
               .update({ is_active: false, updated_at: new Date().toISOString() })
               .eq('id', sub.id);
-            await adminClient.from('push_subscriptions').delete().eq('id', sub.id);
           }
         } catch {
           // Ignore individual endpoint network failure
