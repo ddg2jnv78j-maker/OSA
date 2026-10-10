@@ -252,6 +252,28 @@ export async function resolveVapidPublicKey(): Promise<string | null> {
  * Ensures the existing unified OSA Service Worker (`service-worker.js`) is registered under `/OSA/` or `/`.
  * Never registers a second competing service worker.
  */
+async function getActiveServiceWorkerRegistration(
+  timeoutMs = 1500
+): Promise<ServiceWorkerRegistration | null> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return null;
+  }
+  try {
+    const baseUrl = import.meta.env.BASE_URL || '/';
+    const existing = await navigator.serviceWorker.getRegistration(baseUrl);
+    if (existing && (existing.active || existing.waiting || existing.installing)) {
+      return existing;
+    }
+    const readyRace = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+    return readyRace;
+  } catch {
+    return null;
+  }
+}
+
 export async function getOrRegisterOSAServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
     return null;
@@ -265,7 +287,10 @@ export async function getOrRegisterOSAServiceWorker(): Promise<ServiceWorkerRegi
       return existing;
     }
     const reg = await navigator.serviceWorker.register(swUrl, { scope: baseUrl });
-    await navigator.serviceWorker.ready;
+    await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
     return reg;
   } catch {
     return null;
@@ -611,16 +636,15 @@ export async function reportActiveChatForPush(
     }
   }
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      reg.active?.postMessage({
-        type: 'OSA_ACTIVE_CHAT',
-        chatId: isVisible ? chatId : null,
-        visible: isVisible,
-      });
-    } catch {
-      // Ignore
-    }
+    getActiveServiceWorkerRegistration(1000)
+      .then((reg) => {
+        reg?.active?.postMessage({
+          type: 'OSA_ACTIVE_CHAT',
+          chatId: isVisible ? chatId : null,
+          visible: isVisible,
+        });
+      })
+      .catch(() => {});
   }
 
   if (!userId) return;
@@ -808,10 +832,14 @@ export async function dispatchWebPushNotification(params: {
     return;
   }
 
+  // Dispatch the first message immediately so single messages never wait 2 seconds,
+  // while opening a 2-second batch window to coalesce any rapid follow-up messages.
+  executeWebPushInvoke(invokeParams).catch(() => {});
+
   const timerId = window.setTimeout(() => {
     const finished = pendingMessageBatches.get(batchKey);
     pendingMessageBatches.delete(batchKey);
-    if (finished) {
+    if (finished && finished.count > 1) {
       executeWebPushInvoke(finished.latestParams).catch(() => {});
     }
   }, MESSAGE_BATCH_WINDOW_MS);
@@ -835,12 +863,12 @@ export async function dismissIncomingCallSystemNotification(
 
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.ready;
-      reg.active?.postMessage({
+      const reg = await getActiveServiceWorkerRegistration(1200);
+      reg?.active?.postMessage({
         type: 'OSA_DISMISS_CALL_NOTIFICATION',
         callId,
       });
-      if (reg.getNotifications) {
+      if (reg?.getNotifications) {
         const list = await reg.getNotifications({ tag: `osa-call-${callId}` });
         list.forEach((n) => n.close());
       }

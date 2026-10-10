@@ -6,6 +6,7 @@ on:
     branches: ["main"]
     paths:
       - "android/**"
+      - "src/**"
       - ".github/workflows/android-apk-build.yml"
 
 permissions:
@@ -31,26 +32,10 @@ jobs:
           distribution: "temurin"
           java-version: "21"
 
-      - name: Restore persistent CI Debug Keystore
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: osa-android-debug-keystore-v1
-
       - name: Ensure Android Debug Keystore exists
         run: |
           mkdir -p ~/.android
-          if [ ! -f ~/.android/debug.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore ~/.android/debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          cp -f android/app/osa-debug.keystore ~/.android/debug.keystore
 
       - name: Install dependencies
         run: npm install

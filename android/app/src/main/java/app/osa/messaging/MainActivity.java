@@ -55,8 +55,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String CHANNEL_BG_SYNC = "osa_background_sync_silent_v2";
     private static final String PREFS_NAME = "osa_native_prefs";
     private static final String VIRTUAL_ASSET_HOST = "appassets.androidplatform.net";
-    private static final String PRODUCTION_WEB_URL = "https://appassets.androidplatform.net/index.html";
-    private static final String LEGACY_PAGES_WEB_URL = "https://ddg2jnv78j-maker.github.io/OSA/";
+    private static final String PRODUCTION_WEB_URL = "https://ddg2jnv78j-maker.github.io/OSA/";
+    private static final String BUNDLED_HTTPS_WEB_URL = "https://appassets.androidplatform.net/OSA/index.html";
     private static final String LOCAL_ASSET_URL = "file:///android_asset/public/index.html";
 
     private static final int REQ_INITIAL_NOTIFICATIONS = 1000;
@@ -69,12 +69,34 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_WEBVIEW_GEO = 1021;
 
     private static WeakReference<MainActivity> activeInstanceRef;
+    private static volatile boolean isAppInForeground = false;
+    private static volatile String activeForegroundChatId = null;
 
     private WebView webView;
     private PermissionRequest pendingWebPermissionRequest;
     private GeolocationPermissions.Callback pendingGeoCallback;
     private String pendingGeoOrigin;
     private String pendingIntentPayloadJson = null;
+    private int fcmTokenRetryCount = 0;
+
+    public static boolean isUserActivelyViewingChat(String conversationId) {
+        if (!isAppInForeground || conversationId == null || conversationId.trim().isEmpty()) {
+            return false;
+        }
+        String current = activeForegroundChatId;
+        return current != null && current.equals(conversationId.trim());
+    }
+
+    public static boolean isAppActiveInForeground() {
+        return isAppInForeground;
+    }
+
+    public static void notifyAuthSessionRefreshedFromService(String newAccessToken, String newRefreshToken) {
+        MainActivity activity = activeInstanceRef != null ? activeInstanceRef.get() : null;
+        if (activity != null) {
+            activity.pushRefreshedAuthSessionToWebView(newAccessToken, newRefreshToken);
+        }
+    }
 
     public static void ensureNotificationChannels(Context context) {
         if (context == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
@@ -202,6 +224,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                syncNativeSessionToWebViewIfNewer();
                 probeSupabaseSessionFromWebView();
                 fetchAndSyncFcmToken();
                 dispatchIntentToWebApp(getIntent());
@@ -216,10 +239,10 @@ public class MainActivity extends AppCompatActivity {
                 super.onReceivedError(view, request, error);
                 if (request != null && request.isForMainFrame()) {
                     String failingUrl = request.getUrl() != null ? request.getUrl().toString() : "";
-                    if (!failingUrl.startsWith(PRODUCTION_WEB_URL) && !failingUrl.startsWith(LOCAL_ASSET_URL)) {
-                        view.loadUrl(PRODUCTION_WEB_URL);
-                    } else if (failingUrl.startsWith(LEGACY_PAGES_WEB_URL)) {
-                        view.loadUrl(PRODUCTION_WEB_URL);
+                    if (failingUrl.startsWith(PRODUCTION_WEB_URL)) {
+                        view.loadUrl(BUNDLED_HTTPS_WEB_URL);
+                    } else if (!failingUrl.startsWith(BUNDLED_HTTPS_WEB_URL) && !failingUrl.startsWith(LOCAL_ASSET_URL)) {
+                        view.loadUrl(BUNDLED_HTTPS_WEB_URL);
                     }
                 }
             }
@@ -237,12 +260,14 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        isAppInForeground = true;
         activeInstanceRef = new WeakReference<>(this);
         OSABackgroundMessagingService.ensureStarted(this);
         fetchAndSyncFcmToken();
         if (webView != null) {
             webView.onResume();
             webView.resumeTimers();
+            syncNativeSessionToWebViewIfNewer();
             probeSupabaseSessionFromWebView();
             webView.post(() -> webView.evaluateJavascript(
                     "window.__osaOnAppResume && window.__osaOnAppResume();",
@@ -253,9 +278,19 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        isAppInForeground = false;
+        activeForegroundChatId = null;
         probeSupabaseSessionFromWebView();
         OSABackgroundMessagingService.ensureStarted(this);
         super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        isAppInForeground = false;
+        activeForegroundChatId = null;
+        OSABackgroundMessagingService.ensureStarted(this);
+        super.onStop();
     }
 
     @Override
@@ -322,13 +357,19 @@ public class MainActivity extends AppCompatActivity {
             if (!jwt.isEmpty() && (apiKey == null || !jwt.equals(apiKey))) {
                 String extractedUserId = extractUserIdFromJwt(jwt);
                 if (extractedUserId != null && !extractedUserId.isEmpty()) {
-                    if (!jwt.equals(prefs.getString("auth_access_token", ""))) {
-                        editor.putString("auth_access_token", jwt);
-                        changed = true;
-                    }
-                    if (!extractedUserId.equals(prefs.getString("auth_user_id", ""))) {
-                        editor.putString("auth_user_id", extractedUserId);
-                        changed = true;
+                    String existingJwt = prefs.getString("auth_access_token", "");
+                    String existingUserId = prefs.getString("auth_user_id", "");
+                    long incomingExp = extractExpFromJwt(jwt);
+                    long existingExp = extractExpFromJwt(existingJwt);
+                    if (!extractedUserId.equals(existingUserId) || incomingExp >= existingExp) {
+                        if (!jwt.equals(existingJwt)) {
+                            editor.putString("auth_access_token", jwt);
+                            changed = true;
+                        }
+                        if (!extractedUserId.equals(existingUserId)) {
+                            editor.putString("auth_user_id", extractedUserId);
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -357,6 +398,58 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {
         }
         return null;
+    }
+
+    public static long extractExpFromJwt(String jwt) {
+        if (jwt == null || jwt.isEmpty()) return 0L;
+        try {
+            String[] parts = jwt.split("\\.");
+            if (parts.length < 2) return 0L;
+            byte[] decoded = Base64.decode(parts[1], Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+            String payloadJson = new String(decoded, StandardCharsets.UTF_8);
+            JSONObject obj = new JSONObject(payloadJson);
+            return obj.optLong("exp", 0L);
+        } catch (Exception ignored) {
+            return 0L;
+        }
+    }
+
+    private void pushRefreshedAuthSessionToWebView(String newAccessToken, String newRefreshToken) {
+        if (webView == null || newAccessToken == null || newAccessToken.isEmpty()) return;
+        try {
+            long newExp = extractExpFromJwt(newAccessToken);
+            JSONObject payload = new JSONObject();
+            payload.put("accessToken", newAccessToken);
+            payload.put("refreshToken", newRefreshToken != null ? newRefreshToken : "");
+            payload.put("expiresAt", newExp);
+            String js = "(function(p){"
+                    + "try {"
+                    + "  var raw = localStorage.getItem('osa-auth-token');"
+                    + "  if (!raw) return;"
+                    + "  var parsed = JSON.parse(raw);"
+                    + "  var s = parsed.currentSession || parsed.session || parsed;"
+                    + "  if (!s) return;"
+                    + "  var curExp = Number(s.expires_at || 0);"
+                    + "  if (p.expiresAt > 0 && p.expiresAt >= curExp) {"
+                    + "    s.access_token = p.accessToken;"
+                    + "    if (p.refreshToken) s.refresh_token = p.refreshToken;"
+                    + "    s.expires_at = p.expiresAt;"
+                    + "    localStorage.setItem('osa-auth-token', JSON.stringify(parsed));"
+                    + "  }"
+                    + "} catch(e){}"
+                    + "})(" + payload.toString() + ");";
+            webView.post(() -> webView.evaluateJavascript(js, null));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void syncNativeSessionToWebViewIfNewer() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String nativeAccess = prefs.getString("auth_access_token", "");
+        String nativeRefresh = prefs.getString("auth_refresh_token", "");
+        if (nativeAccess != null && !nativeAccess.isEmpty()) {
+            pushRefreshedAuthSessionToWebView(nativeAccess, nativeRefresh);
+        }
     }
 
     /**
@@ -569,11 +662,19 @@ public class MainActivity extends AppCompatActivity {
         } else if (requestCode == REQ_SINGLE_LOCATION) {
             notifyWebPermissionResult("location", evaluateOsPermissionState("location"));
         } else if (requestCode == REQ_SINGLE_NOTIFICATIONS || requestCode == REQ_INITIAL_NOTIFICATIONS) {
+            if (grantResults.length > 0) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .edit()
+                        .putBoolean("perm_asked_notifications", true)
+                        .apply();
+            }
             String state = evaluateOsPermissionState("notifications");
             if ("granted".equals(state)) {
                 fetchAndSyncFcmToken();
+                OSABackgroundMessagingService.ensureStarted(this);
             }
             notifyWebPermissionResult("notifications", state);
+            requestBatteryOptimizationExemptionIfNeeded();
         }
 
         if (webView != null) {
@@ -588,16 +689,14 @@ public class MainActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
-                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-                boolean alreadyAsked = prefs.getBoolean("perm_asked_notifications", false);
-                if (!alreadyAsked) {
-                    prefs.edit().putBoolean("perm_asked_notifications", true).apply();
-                    ActivityCompat.requestPermissions(
-                            this,
-                            new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                            REQ_INITIAL_NOTIFICATIONS
-                    );
-                }
+                ActivityCompat.requestPermissions(
+                        this,
+                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                        REQ_INITIAL_NOTIFICATIONS
+                );
+                // Do not start battery optimization activity while POST_NOTIFICATIONS dialog is active;
+                // onRequestPermissionsResult will trigger requestBatteryOptimizationExemptionIfNeeded().
+                return;
             }
         }
         requestBatteryOptimizationExemptionIfNeeded();
@@ -634,6 +733,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void clearConversationUnreadCounter(String conversationId) {
         if (conversationId == null || conversationId.isEmpty()) return;
+        if (isAppInForeground) {
+            activeForegroundChatId = conversationId.trim();
+        }
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         prefs.edit()
                 .remove("unread_" + conversationId)
@@ -642,6 +744,7 @@ public class MainActivity extends AppCompatActivity {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
             int notificationId = ((("osa_chat_" + conversationId).hashCode()) & 0x7FFFFFFF) % 1000000 + 2000;
+            manager.cancel("osa-chat-" + conversationId, 0);
             manager.cancel("osa-chat-" + conversationId, notificationId);
         }
     }
@@ -818,10 +921,22 @@ public class MainActivity extends AppCompatActivity {
                 OSABackgroundMessagingService.syncFcmTokenToSupabaseAsync(this);
             }
 
+            requestFcmTokenInternal(prefs);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void requestFcmTokenInternal(SharedPreferences prefs) {
+        try {
             FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
                 if (!task.isSuccessful()) {
                     android.util.Log.w("OSA_DIAG", "[OSA_FCM_TOKEN] getToken() failed: "
                             + (task.getException() != null ? task.getException().getMessage() : "unknown"));
+                    if (fcmTokenRetryCount < 4 && webView != null) {
+                        fcmTokenRetryCount++;
+                        long delayMs = fcmTokenRetryCount * 4000L;
+                        webView.postDelayed(() -> requestFcmTokenInternal(prefs), delayMs);
+                    }
                     return;
                 }
                 String token = task.getResult();
@@ -830,6 +945,7 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
 
+                fcmTokenRetryCount = 0;
                 String cleanToken = token.trim();
                 android.util.Log.i("OSA_DIAG", "[OSA_FCM_TOKEN] generated len=" + cleanToken.length()
                         + " prefix=" + cleanToken.substring(0, Math.min(8, cleanToken.length())) + "...");
@@ -939,11 +1055,23 @@ public class MainActivity extends AppCompatActivity {
 
                 if (!userId.isEmpty() && !accessToken.isEmpty()) {
                     SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                    String existingUserId = prefs.getString("auth_user_id", "");
+                    String existingAccess = prefs.getString("auth_access_token", "");
+                    long incomingExp = extractExpFromJwt(accessToken);
+                    long existingExp = extractExpFromJwt(existingAccess);
+
                     SharedPreferences.Editor editor = prefs.edit();
-                    editor.putString("auth_user_id", userId);
-                    editor.putString("auth_access_token", accessToken);
-                    if (!refreshToken.isEmpty()) {
-                        editor.putString("auth_refresh_token", refreshToken);
+                    if (!userId.equals(existingUserId) || incomingExp >= existingExp) {
+                        editor.putString("auth_user_id", userId);
+                        editor.putString("auth_access_token", accessToken);
+                        if (!refreshToken.isEmpty()) {
+                            editor.putString("auth_refresh_token", refreshToken);
+                        }
+                    } else if (!existingAccess.isEmpty()) {
+                        pushRefreshedAuthSessionToWebView(
+                                existingAccess,
+                                prefs.getString("auth_refresh_token", "")
+                        );
                     }
                     if (!supabaseUrl.isEmpty() && !supabaseUrl.contains("placeholder")) {
                         editor.putString("auth_supabase_url", supabaseUrl);

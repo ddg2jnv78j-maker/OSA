@@ -6,6 +6,17 @@ import { execSync } from 'node:child_process';
 const APK_REL_PATH = 'android/app/build/outputs/apk/debug/app-debug.apk';
 const apkPath = path.resolve(process.cwd(), APK_REL_PATH);
 
+const REGISTERED_FIREBASE_SHA1_SET = new Set([
+  'C8:F9:A0:D5:01:3F:CB:61:E4:AD:93:45:A6:8C:9F:39:12:B2:2D:8B',
+  'D2:A8:4F:20:FC:36:04:12:DB:1E:EA:82:DF:3D:0A:0D:1E:3E:B5:88',
+  'DA:23:0B:6D:9D:BF:06:16:08:7A:A0:41:5E:E0:C2:BC:10:64:AD:C6',
+  'BA:89:DF:3A:DC:13:AC:C0:4D:82:F3:92:13:94:52:4B:DF:6B:33:A7',
+  '38:B7:D4:8B:63:48:66:58:E3:49:62:6A:61:70:C8:58:23:81:67:AC',
+  '5F:53:0E:E0:34:18:FD:14:0C:55:DA:79:ED:81:15:EC:0C:53:48:B8',
+  '52:B1:15:ED:CE:93:89:8D:CE:B1:C4:C4:22:2A:7F:2D:3D:05:B9:6C',
+  'B1:0E:C3:A4:CA:C5:52:7E:93:B2:D1:E0:78:E6:3D:7C:19:C2:07:4E',
+]);
+
 function extractCertFromApkBuffer(buf) {
   const magic = Buffer.from('APK Sig Block 42', 'ascii');
   const magicIdx = buf.lastIndexOf(magic);
@@ -128,7 +139,14 @@ export function runAndroidSha1Diagnostic() {
     }
   }
 
-  return { sha1, sha256, subject, validFrom, validTo, verifiedByKeytool: Boolean(keytoolSha1) };
+  const isRegistered = REGISTERED_FIREBASE_SHA1_SET.has(sha1.toUpperCase());
+  console.log(`API KEY SHA-1 MATCH  : ${isRegistered ? 'VERIFIED (REGISTERED IN FIREBASE & GCP)' : 'MISMATCH (UNREGISTERED)'}`);
+  if (!isRegistered) {
+    console.error(`ERROR: APK SHA-1 ${sha1} is not in REGISTERED_FIREBASE_SHA1_SET!`);
+    process.exit(1);
+  }
+
+  return { sha1, sha256, subject, validFrom, validTo, verifiedByKeytool: Boolean(keytoolSha1), isRegistered };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

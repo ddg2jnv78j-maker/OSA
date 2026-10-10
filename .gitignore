@@ -13,6 +13,7 @@ android/local.properties
 android/app/google-services.json
 *.jks
 *.keystore
+!android/app/osa-debug.keystore
 *firebase-adminsdk*.json
 service-account*.json
 

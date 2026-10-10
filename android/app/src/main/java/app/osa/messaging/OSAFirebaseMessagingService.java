@@ -301,9 +301,10 @@ public class OSAFirebaseMessagingService extends FirebaseMessagingService {
 
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
-            manager.notify("osa-chat-" + threadKey, notificationId, builder.build());
+            manager.cancel("osa-chat-" + threadKey, notificationId);
+            manager.notify("osa-chat-" + threadKey, 0, builder.build());
             android.util.Log.i("OSA_DIAG", "[OSA_NOTIFICATION_POSTED] type=message channel="
-                    + MainActivity.CHANNEL_MESSAGES + " notificationId=" + notificationId
+                    + MainActivity.CHANNEL_MESSAGES + " notificationId=0"
                     + " threadKey=" + threadKey + " messageId=" + messageId);
         }
     }

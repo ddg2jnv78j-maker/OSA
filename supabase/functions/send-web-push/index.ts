@@ -145,8 +145,15 @@ function extractConfiguredFcmFields(): {
   return { projectId, clientEmail, privateKeyPem };
 }
 
-async function resolveFcmV1AccessToken(): Promise<{ accessToken: string; projectId: string } | null> {
-  if (cachedFcmAccessToken && Date.now() < cachedFcmAccessToken.expiresAt - 60_000) {
+async function resolveFcmV1AccessToken(
+  customScope = 'https://www.googleapis.com/auth/firebase.messaging'
+): Promise<{ accessToken: string; projectId: string } | null> {
+  const isDefaultScope = customScope === 'https://www.googleapis.com/auth/firebase.messaging';
+  if (
+    isDefaultScope &&
+    cachedFcmAccessToken &&
+    Date.now() < cachedFcmAccessToken.expiresAt - 60_000
+  ) {
     return {
       accessToken: cachedFcmAccessToken.token,
       projectId: cachedFcmAccessToken.projectId,
@@ -164,7 +171,7 @@ async function resolveFcmV1AccessToken(): Promise<{ accessToken: string; project
     const header = { alg: 'RS256', typ: 'JWT' };
     const claimSet = {
       iss: clientEmail,
-      scope: 'https://www.googleapis.com/auth/firebase.messaging',
+      scope: customScope,
       aud: 'https://oauth2.googleapis.com/token',
       iat: nowSec,
       exp: nowSec + 3600,
@@ -204,13 +211,15 @@ async function resolveFcmV1AccessToken(): Promise<{ accessToken: string; project
     if (!tokenData?.access_token) return null;
 
     const expiresInSec = Number(tokenData.expires_in || 3600);
-    cachedFcmAccessToken = {
-      token: String(tokenData.access_token),
-      expiresAt: Date.now() + expiresInSec * 1000,
-      projectId,
-    };
+    if (isDefaultScope) {
+      cachedFcmAccessToken = {
+        token: String(tokenData.access_token),
+        expiresAt: Date.now() + expiresInSec * 1000,
+        projectId,
+      };
+    }
     return {
-      accessToken: cachedFcmAccessToken.token,
+      accessToken: String(tokenData.access_token),
       projectId,
     };
   } catch {
@@ -510,7 +519,8 @@ function formatMediaPreviewBody(
 }
 
 interface PushRequestBody {
-  action?: 'send' | 'get_vapid_public_key' | 'reject_call';
+  action?: 'send' | 'get_vapid_public_key' | 'reject_call' | 'verify_and_sync_android_fcm';
+  extraSha1s?: string[];
   senderId?: string;
   senderName?: string;
   recipientIds?: string[];
@@ -523,7 +533,8 @@ interface PushRequestBody {
     | 'missed_call'
     | 'status_update'
     | 'system'
-    | 'INSERT';
+    | 'INSERT'
+    | 'UPDATE';
   table?: string;
   record?: Record<string, unknown>;
   title?: string;
@@ -569,6 +580,142 @@ Deno.serve(async (req: Request) => {
           configured: Boolean(vapidConfig?.publicKey && vapidConfig?.privateKey),
           fcmConfigured: Boolean(fcmAuth?.accessToken && fcmAuth?.projectId),
           fcmProjectId: fcmAuth?.projectId || fcmFields.projectId || null,
+        }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    // 1b. Verify and synchronize Android API Key SHA-1 fingerprints & validate registered device tokens
+    if (body.action === 'verify_and_sync_android_fcm') {
+      const cloudAuth = await resolveFcmV1AccessToken(
+        'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/firebase https://www.googleapis.com/auth/firebase.messaging'
+      );
+      const fcmAuth = await resolveFcmV1AccessToken();
+      const requiredSha1s = Array.from(
+        new Set([
+          'C8:F9:A0:D5:01:3F:CB:61:E4:AD:93:45:A6:8C:9F:39:12:B2:2D:8B',
+          'D2:A8:4F:20:FC:36:04:12:DB:1E:EA:82:DF:3D:0A:0D:1E:3E:B5:88',
+          'DA:23:0B:6D:9D:BF:06:16:08:7A:A0:41:5E:E0:C2:BC:10:64:AD:C6',
+          'BA:89:DF:3A:DC:13:AC:C0:4D:82:F3:92:13:94:52:4B:DF:6B:33:A7',
+          '38:B7:D4:8B:63:48:66:58:E3:49:62:6A:61:70:C8:58:23:81:67:AC',
+          ...(Array.isArray(body.extraSha1s) ? body.extraSha1s : []),
+        ])
+      );
+
+      let keySyncStatus: Record<string, unknown> = { synced: false };
+      if (cloudAuth?.accessToken) {
+        try {
+          const keyName = 'projects/935163585205/locations/global/keys/osa-android-fcm-key-v2';
+          const getKeyRes = await fetch(`https://apikeys.googleapis.com/v2/${keyName}`, {
+            headers: { Authorization: `Bearer ${cloudAuth.accessToken}` },
+          });
+          const currentKey = await getKeyRes.json();
+          const apiTargets = currentKey?.restrictions?.apiTargets || [
+            { service: 'firebaseinstallations.googleapis.com' },
+            { service: 'fcmregistrations.googleapis.com' },
+            { service: 'firebase.googleapis.com' },
+            { service: 'firebaselogging-pa.googleapis.com' },
+          ];
+          const patchRes = await fetch(
+            `https://apikeys.googleapis.com/v2/${keyName}?updateMask=restrictions`,
+            {
+              method: 'PATCH',
+              headers: {
+                Authorization: `Bearer ${cloudAuth.accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                restrictions: {
+                  androidKeyRestrictions: {
+                    allowedApplications: requiredSha1s.map((sha1Fingerprint) => ({
+                      packageName: 'app.osa.messaging',
+                      sha1Fingerprint,
+                    })),
+                  },
+                  apiTargets,
+                },
+              }),
+            }
+          );
+          const patchData = await patchRes.json();
+          keySyncStatus = {
+            synced: patchRes.ok,
+            status: patchRes.status,
+            allowedApplicationsCount: requiredSha1s.length,
+            operation: patchData?.name || null,
+          };
+
+          // Also ensure SHA-1s are registered on Firebase Android App
+          const appShaUrl =
+            'https://firebase.googleapis.com/v1beta1/projects/osa-app-88c1e/androidApps/1:935163585205:android:b677da9c8886d371a76a61/sha';
+          for (const sha1 of requiredSha1s) {
+            await fetch(appShaUrl, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${cloudAuth.accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                shaHash: sha1.replace(/:/g, '').toLowerCase(),
+                certType: 'SHA_1',
+              }),
+            }).catch(() => {});
+          }
+        } catch (e) {
+          keySyncStatus = {
+            synced: false,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      }
+
+      const { data: devices } = await adminClient
+        .from('user_devices')
+        .select('id, user_id, platform, device_id, device_model, os_version, is_active, updated_at, push_token')
+        .eq('platform', 'android');
+
+      const tokenChecks: Array<Record<string, unknown>> = [];
+      if (fcmAuth?.accessToken && devices) {
+        for (const dev of devices) {
+          const checkRes = await fetch(
+            `https://fcm.googleapis.com/v1/projects/${fcmAuth.projectId}/messages:send`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${fcmAuth.accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                validate_only: true,
+                message: {
+                  token: dev.push_token,
+                  data: { type: 'ping' },
+                },
+              }),
+            }
+          );
+          const checkJson = await checkRes.json().catch(() => ({}));
+          tokenChecks.push({
+            id: dev.id,
+            user_id: dev.user_id,
+            device_id: dev.device_id,
+            device_model: dev.device_model,
+            is_active: dev.is_active,
+            updated_at: dev.updated_at,
+            fcmStatus: checkRes.status,
+            fcmOk: checkRes.ok,
+            fcmError: checkRes.ok ? null : checkJson?.error?.message || checkJson,
+          });
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          keySyncStatus,
+          tokenChecks,
         }),
         {
           status: 200,
@@ -682,25 +829,50 @@ Deno.serve(async (req: Request) => {
       senderUserId = authUser?.id || (body.senderId && body.senderId.trim()) || '';
     }
 
-    // Normalize Database Webhook payloads if triggered via Supabase Webhook on messages or calls
-    if (body.type === 'INSERT' && body.record && typeof body.record === 'object') {
+    // Normalize Database Webhook / pg_net trigger payloads on messages or calls
+    if (
+      (body.type === 'INSERT' || body.type === 'UPDATE') &&
+      body.record &&
+      typeof body.record === 'object'
+    ) {
       const rec = body.record;
-      if (body.table === 'messages') {
-        body.type = 'message';
-        body.messageId = String(rec.id || '');
-        body.chatId = String(rec.chat_id || '');
-        body.conversationId = String(rec.chat_id || '');
-        body.messageType = String(rec.message_type || 'text');
-        body.body = String(rec.content || '');
-        senderUserId = String(rec.sender_id || senderUserId);
-      } else if (body.table === 'calls') {
-        body.type = 'incoming_call';
-        body.callId = String(rec.id || '');
-        body.callType = (rec.call_type === 'video' ? 'video' : 'audio') as 'audio' | 'video';
-        body.chatId = rec.chat_id ? String(rec.chat_id) : null;
-        body.callerId = String(rec.caller_id || '');
-        body.recipientIds = rec.receiver_id ? [String(rec.receiver_id)] : [];
-        senderUserId = String(rec.caller_id || senderUserId);
+      if (body.table === 'messages' && rec.id) {
+        const { data: verifiedMsg } = await adminClient
+          .from('messages')
+          .select('id, chat_id, sender_id, content, message_type')
+          .eq('id', String(rec.id))
+          .maybeSingle();
+        if (verifiedMsg) {
+          body.type = 'message';
+          body.messageId = String(verifiedMsg.id);
+          body.chatId = String(verifiedMsg.chat_id);
+          body.conversationId = String(verifiedMsg.chat_id);
+          body.messageType = String(verifiedMsg.message_type || 'text');
+          body.body = String(verifiedMsg.content || '');
+          senderUserId = String(verifiedMsg.sender_id);
+        }
+      } else if (body.table === 'calls' && rec.id) {
+        const { data: verifiedCall } = await adminClient
+          .from('calls')
+          .select('id, chat_id, caller_id, receiver_id, call_type, status')
+          .eq('id', String(rec.id))
+          .maybeSingle();
+        if (verifiedCall) {
+          const st = String(verifiedCall.status || '');
+          if (body.type === 'UPDATE' && ['ended', 'missed', 'rejected', 'cancelled'].includes(st)) {
+            body.type = 'cancel_call';
+          } else {
+            body.type = 'incoming_call';
+          }
+          body.callId = String(verifiedCall.id);
+          body.callType = (verifiedCall.call_type === 'video' ? 'video' : 'audio') as
+            | 'audio'
+            | 'video';
+          body.chatId = verifiedCall.chat_id ? String(verifiedCall.chat_id) : null;
+          body.callerId = String(verifiedCall.caller_id);
+          body.recipientIds = verifiedCall.receiver_id ? [String(verifiedCall.receiver_id)] : [];
+          senderUserId = String(verifiedCall.caller_id);
+        }
       }
     }
 
@@ -1206,29 +1378,87 @@ Deno.serve(async (req: Request) => {
 
               // 7a. Prefer Firebase Cloud Messaging HTTP v1 API if service account is configured
               if (fcmV1Auth) {
-                const v1Res = await fetch(
-                  `https://fcm.googleapis.com/v1/projects/${fcmV1Auth.projectId}/messages:send`,
-                  {
-                    method: 'POST',
-                    headers: {
-                      Authorization: `Bearer ${fcmV1Auth.accessToken}`,
-                      'Content-Type': 'application/json',
+                const fcmEndpoint = `https://fcm.googleapis.com/v1/projects/${fcmV1Auth.projectId}/messages:send`;
+                const fcmHeaders = {
+                  Authorization: `Bearer ${fcmV1Auth.accessToken}`,
+                  'Content-Type': 'application/json',
+                };
+
+                // Packet 1: High-priority data-only FCM message to wake OSAFirebaseMessagingService
+                // (starts OSACallNotificationService for incoming calls or grouped message notification)
+                const dataOnlyRes = await fetch(fcmEndpoint, {
+                  method: 'POST',
+                  headers: fcmHeaders,
+                  body: JSON.stringify({
+                    message: {
+                      token: dev.push_token,
+                      data: dataStrings,
+                      android: {
+                        priority: 'HIGH',
+                        ttl: isIncomingCall || isCancelCall ? '60s' : '86400s',
+                      },
                     },
+                  }),
+                });
+
+                if (dataOnlyRes.ok) {
+                  deliveredAndroid = true;
+                  nativeSentCount++;
+                } else if (dataOnlyRes.status === 404) {
+                  const errBody = await dataOnlyRes.text().catch(() => '');
+                  if (errBody.includes('UNREGISTERED')) {
+                    await adminClient
+                      .from('user_devices')
+                      .update({ is_active: false, updated_at: new Date().toISOString() })
+                      .eq('id', dev.id);
+                  }
+                }
+
+                // Packet 2: System-tray guaranteed notification payload handled directly by Google Play Services
+                // even when the app is swiped closed or force-stopped by OEM battery savers (TECNO, Xiaomi, etc.).
+                // Uses the exact same notification tag + ID 0 slot as OSAFirebaseMessagingService so it never duplicates.
+                if (!isCancelCall && (isMessagePush || isIncomingCall)) {
+                  const sysTitle = isIncomingCall ? callNotificationTitle : msgFormatted.title;
+                  const sysBody = isIncomingCall ? callNotificationBody : msgFormatted.body;
+                  const sysChannelId = isIncomingCall
+                    ? 'osa_incoming_calls_high_v2'
+                    : 'osa_messages_high_v2';
+                  const sysTag = isIncomingCall
+                    ? `osa-call-${body.callId || senderUserId}`
+                    : `osa-chat-${resolvedChatId || senderUserId}`;
+
+                  const sysNotifRes = await fetch(fcmEndpoint, {
+                    method: 'POST',
+                    headers: fcmHeaders,
                     body: JSON.stringify({
                       message: {
                         token: dev.push_token,
+                        notification: {
+                          title: sysTitle,
+                          body: sysBody,
+                        },
                         data: dataStrings,
                         android: {
                           priority: 'HIGH',
-                          ttl: isIncomingCall || isCancelCall ? '60s' : '86400s',
+                          ttl: isIncomingCall ? '35s' : '86400s',
+                          collapse_key: sysTag,
+                          notification: {
+                            channel_id: sysChannelId,
+                            tag: sysTag,
+                            sound: 'default',
+                            default_sound: true,
+                            default_vibrate_timings: true,
+                            notification_priority: 'PRIORITY_MAX',
+                            visibility: 'PUBLIC',
+                          },
                         },
                       },
                     }),
+                  });
+                  if (sysNotifRes.ok && !deliveredAndroid) {
+                    deliveredAndroid = true;
+                    nativeSentCount++;
                   }
-                );
-                if (v1Res.ok) {
-                  deliveredAndroid = true;
-                  nativeSentCount++;
                 }
               }
 

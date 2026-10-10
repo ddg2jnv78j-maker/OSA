@@ -914,6 +914,7 @@ public class OSABackgroundMessagingService extends Service {
                         editor.putString("auth_refresh_token", newRefresh);
                     }
                     editor.commit();
+                    MainActivity.notifyAuthSessionRefreshedFromService(newAccess, newRefresh);
                     return newAccess;
                 }
             }

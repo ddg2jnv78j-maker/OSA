@@ -149,6 +149,11 @@ public class OSACallNotificationService extends Service {
         currentRingingCallId = callId.trim();
         MainActivity.ensureNotificationChannels(context);
 
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) {
+            nm.cancel("osa-call-" + callId.trim(), 0);
+        }
+
         // Immediately post the high-priority heads-up/full-screen notification first so there is zero delay
         postDirectCallNotificationFallback(context, intent);
 
@@ -173,6 +178,7 @@ public class OSACallNotificationService extends Service {
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null && callId != null && !callId.isEmpty()) {
             int notificationId = computeCallNotificationId(callId);
+            manager.cancel("osa-call-" + callId.trim(), 0);
             manager.cancel("osa-call-" + callId.trim(), notificationId);
             manager.cancel(notificationId);
         }
