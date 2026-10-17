@@ -51,8 +51,26 @@ export interface OsaAiCodeProposal {
   content: string;
 }
 
-export async function generateCodeChangeProposal(task: string): Promise<OsaAiCodeProposal> {
-  const raw = await invokeOsaAi({ action: 'code', prompt: task.slice(0, 12000) });
+export async function generateCodeChangeProposal(task: string, targetPath: string): Promise<OsaAiCodeProposal> {
+  const config = getSupabaseConfig();
+  if (!config.isConfigured) throw new Error('Supabase is not configured.');
+  const { data: inspected, error: inspectError } = await supabase.functions.invoke('osa-ai-github', {
+    body: { action: 'inspect_file', path: targetPath },
+  });
+  if (inspectError) throw new Error(inspectError.message || 'Could not inspect the current GitHub file.');
+  if (!inspected || typeof inspected.content !== 'string' || inspected.readOnly !== true) {
+    throw new Error(inspected?.error || 'Could not read the current source file from GitHub.');
+  }
+  const prompt = [
+    'Modify the existing file shown below to satisfy the task. Preserve unrelated functionality and existing project conventions.',
+    'Return ONLY JSON with keys path, message, content. The path must be exactly the target path. content must be the complete replacement file.',
+    'Do not claim tests ran. Do not add secrets or change authentication, authorization, privacy, permissions, or deployment behavior.',
+    `TARGET PATH: ${targetPath}`,
+    `TASK: ${task.slice(0, 8000)}`,
+    'CURRENT FILE CONTENT:',
+    inspected.content.slice(0, 12000),
+  ].join('\n\n');
+  const raw = await invokeOsaAi({ action: 'code', prompt });
   const jsonStart = raw.indexOf('{');
   const jsonEnd = raw.lastIndexOf('}');
   if (jsonStart < 0 || jsonEnd <= jsonStart) throw new Error('OSA AI did not return a valid code proposal.');
@@ -60,7 +78,8 @@ export async function generateCodeChangeProposal(task: string): Promise<OsaAiCod
   if (typeof proposal.path !== 'string' || typeof proposal.message !== 'string' || typeof proposal.content !== 'string') {
     throw new Error('OSA AI code proposal is missing required fields.');
   }
-  if (!proposal.path || !proposal.content) throw new Error(proposal.message || 'OSA AI needs a clearer request before proposing code.');
+  if (proposal.path !== targetPath) throw new Error('OSA AI proposed a different file than the one requested; no change was applied.');
+  if (!proposal.content.trim()) throw new Error(proposal.message || 'OSA AI needs a clearer request before proposing code.');
   if (proposal.content.length > 250000) throw new Error('Proposed source file exceeds the 250 KB safety limit.');
   return { path: proposal.path, message: proposal.message, content: proposal.content };
 }
