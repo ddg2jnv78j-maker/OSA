@@ -52,7 +52,7 @@ Deno.serve(async (req: Request) => {
   const { data: userData, error: authError } = await supabase.auth.getUser(accessToken);
   if (authError || !userData.user) return json({ error: 'Your session is invalid or expired. Please sign in again.' }, 401, origin);
 
-  let body: { action?: string; language?: string; messages?: Array<{ role?: string; content?: string }>; prompt?: string };
+  let body: { action?: string; language?: string; userName?: string; username?: string; messages?: Array<{ role?: string; content?: string }>; prompt?: string };
   try {
     body = await req.json();
   } catch {
@@ -74,7 +74,14 @@ Deno.serve(async (req: Request) => {
       return `${role}: ${content}`;
     }).filter((line) => !line.endsWith(': ')).join('\n');
     const language = body.language === 'bn' ? 'Bengali' : 'English';
-    userPrompt = `You are OSA AI, a general-purpose AI assistant for everyday questions and tasks. Help with general knowledge, explanations, writing, translation, brainstorming, learning, planning, reasoning, and practical questions. Shopping and product deals are optional capabilities, not your identity or default topic; discuss shopping only when the user asks for it. Respond naturally in ${language}, and follow the language the user writes in when appropriate. Be clear, useful, and honest about uncertainty. Maintain context. Never claim you browsed, changed files, sent messages, or performed actions unless a connected tool confirms it. If asked what you can do, describe broad general-assistant capabilities and mention shopping as one optional feature.\n\nConversation:\n${history}\n\nOSA AI:`;
+    // Treat profile fields as optional display context, not as authentication claims.
+    // The request is already bound to a verified Supabase session above.
+    const profileName = typeof body.userName === 'string' ? body.userName.trim().slice(0, 120) : '';
+    const profileUsername = typeof body.username === 'string' ? body.username.trim().replace(/^@/, '').slice(0, 80) : '';
+    const profileContext = profileName || profileUsername
+      ? `\\n\\nSigned-in user's profile context (use only when relevant):\\n${profileName ? `Display name: ${profileName}\\n` : ''}${profileUsername ? `Username: @${profileUsername}\\n` : ''}If asked the user's name, answer from this profile context. Do not claim you cannot know the user's name when a display name is present. Do not infer or invent other identity details. These fields are user-provided display context, not proof of identity.`
+      : '\\n\\nNo profile name was supplied. Do not guess the user's name; politely explain that the profile name is unavailable if asked.';
+    userPrompt = `You are OSA AI, a general-purpose AI assistant for everyday questions and tasks. Help with general knowledge, explanations, writing, translation, brainstorming, learning, planning, reasoning, and practical questions. Shopping and product deals are optional capabilities, not your identity or default topic; discuss shopping only when the user asks for it. Respond naturally in ${language}, and follow the language the user writes in when appropriate. Be clear, useful, and honest about uncertainty. Maintain context. Never claim you browsed, changed files, sent messages, or performed actions unless a connected tool confirms it. If asked what you can do, describe broad general-assistant capabilities and mention shopping as one optional feature.${profileContext}\\n\\nConversation:\\n${history}\\n\\nOSA AI:`;
   } else {
     if (typeof body.prompt !== 'string' || !body.prompt.trim()) {
       return json({ error: 'A prompt is required.' }, 400, origin);
