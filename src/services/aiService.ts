@@ -139,9 +139,6 @@ export function detectShoppingIntent(query: string): ShoppingIntentAnalysis {
     // English triggers
     'buy',
     'purchase',
-    'recommend',
-    'suggest',
-    'best',
     'deal',
     'deals',
     'price',
@@ -164,8 +161,6 @@ export function detectShoppingIntent(query: string): ShoppingIntentAnalysis {
     'কিনব',
     'কিনতে',
     'সাজেস্ট',
-    'পরামর্শ',
-    'সেরা',
     'দাম',
     'বাজেট',
     'ডিল',
