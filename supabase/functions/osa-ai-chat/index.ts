@@ -24,7 +24,8 @@ Deno.serve(async (req: Request) => {
     return json({ error: 'Origin not allowed.' }, 403, origin);
   }
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    const allowedOrigin = origin === 'https://www.osa-chat.com' ? origin : 'https://osa-chat.com';
+    return new Response('ok', { headers: { ...corsHeaders, 'Access-Control-Allow-Origin': allowedOrigin } });
   }
   if (req.method !== 'POST') return json({ error: 'Method not allowed.' }, 405);
 
