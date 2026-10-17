@@ -1,0 +1,178 @@
+name: OSA AI DevOps Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Select an approved OSA engineering task
+        type: choice
+        required: true
+        default: audit
+        options:
+          - audit
+          - tests
+          - build
+          - deploy-supabase
+      create_issue_on_failure:
+        description: Create a GitHub issue if checks fail
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: osa-ai-devops-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Run real repository checks
+    if: ${{ inputs.task != 'deploy-supabase' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript checks
+        if: ${{ inputs.task == 'audit' || inputs.task == 'tests' }}
+        run: npm run lint
+
+      - name: Run application regression tests
+        if: ${{ inputs.task == 'audit' || inputs.task == 'tests' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:audio-call
+          npm run test:voice-notification
+          npm run test:auth-email
+          npm run test:auto-update
+          npm run test:affiliate
+          npm run test:shopping
+          npm run test:showcase
+          npm run test:redirect
+          npm run test:feed-sync
+          npm run test:agent
+
+      - name: Production build
+        if: ${{ inputs.task == 'audit' || inputs.task == 'build' }}
+        env:
+          VITE_SUPABASE_URL: https://wldwnchorvymaulzzlya.supabase.co
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
+
+      - name: Upload build artifact
+        if: ${{ success() && (inputs.task == 'audit' || inputs.task == 'build') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: osa-ai-devops-build
+          path: dist/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Open a bug-tracking issue on failure
+        if: ${{ failure() && inputs.create_issue_on_failure }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="OSA AI DevOps checks failed — run #${GITHUB_RUN_NUMBER}"
+          body="Automated repository checks failed.\n\n- Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\n- Commit: ${GITHUB_SHA}\n- Branch: ${GITHUB_REF_NAME}\n\nReview the failing step logs before proposing or applying a fix. This issue does not contain secret values."
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" --label "bug" || {
+            echo "::warning::Could not create issue (the 'bug' label may not exist or issue permissions may be disabled)."
+          }
+
+  deploy-supabase:
+    name: Deploy and verify OSA AI Edge Function
+    if: ${{ inputs.task == 'deploy-supabase' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+    env:
+      SUPABASE_PROJECT_REF: wldwnchorvymaulzzlya
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate secrets without printing values
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::Missing SUPABASE_ACCESS_TOKEN"; exit 1; }
+          [[ -n "$GOOGLE_AI_API_KEY" ]] || { echo "::error::Missing GOOGLE_AI_API_KEY"; exit 1; }
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Set Gemini key as server-side Supabase secret
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SUPABASE_ACCESS_TOKEN
+          secret_file="$RUNNER_TEMP/osa-ai-secrets.env"
+          umask 077
+          trap 'rm -f "$secret_file"' EXIT
+          printf 'GOOGLE_AI_API_KEY=%s\n' "$GOOGLE_AI_API_KEY" > "$secret_file"
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_REF" --env-file "$secret_file"
+          rm -f "$secret_file"
+          trap - EXIT
+
+      - name: Deploy function
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          export SUPABASE_ACCESS_TOKEN
+          test -f supabase/functions/osa-ai-chat/index.ts || {
+            echo "::error::supabase/functions/osa-ai-chat/index.ts is missing on this branch."
+            exit 1
+          }
+          supabase functions deploy osa-ai-chat --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Verify production endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          endpoint="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/osa-ai-chat"
+          headers="$RUNNER_TEMP/osa-ai-headers.txt"
+          body="$RUNNER_TEMP/osa-ai-body.txt"
+          trap 'rm -f "$headers" "$body"' EXIT
+          status="$(curl --silent --show-error --max-time 20 -D "$headers" -o "$body" -w '%{http_code}' \
+            -X OPTIONS "$endpoint" \
+            -H 'Origin: https://osa-chat.com' \
+            -H 'Access-Control-Request-Method: POST' \
+            -H 'Access-Control-Request-Headers: authorization, apikey, content-type')"
+          [[ "$status" == "200" ]] || { echo "::error::CORS preflight failed: HTTP $status"; cat "$body"; exit 1; }
+          grep -qi '^access-control-allow-origin: https://osa-chat.com' "$headers" || {
+            echo "::error::Production CORS origin was not allowed."
+            cat "$headers"
+            exit 1
+          }
+          status="$(curl --silent --show-error --max-time 20 -D "$headers" -o "$body" -w '%{http_code}' \
+            -X POST "$endpoint" -H 'Origin: https://osa-chat.com' -H 'Content-Type: application/json' \
+            --data '{"action":"chat","messages":[{"role":"user","content":"deployment smoke test"}]}')"
+          [[ "$status" == "401" ]] || { echo "::error::Expected unauthenticated request HTTP 401, got $status"; cat "$body"; exit 1; }
+          echo "PASS: endpoint reachable, CORS allowed, unauthenticated access denied."
+          echo "This smoke test does not prove an authenticated Gemini conversation."
