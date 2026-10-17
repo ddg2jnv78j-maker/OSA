@@ -96,7 +96,7 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
 
       // Explicit local commands are handled by a fixed allowlist, never by model-generated tool names.
       const normalizedCommand = text.toLowerCase().trim();
-      const appCommand = normalizedCommand.match(/^(?:osa:|app:)?\\s*(?:open settings|settings খুলুন|সেটিংস খুলুন|চ্যাট খুলুন|open chats|open deals|ডিল খুলুন|open calls|কল খুলুন|dark mode|ডার্ক মোড|light mode|লাইট মোড|বাংলা ভাষা|switch to bengali|english language|switch to english)\\s*$/i);
+      const appCommand = normalizedCommand.match(/^(?:osa:|app:)?\s*(?:open settings|settings খুলুন|সেটিংস খুলুন|চ্যাট খুলুন|open chats|open deals|ডিল খুলুন|open calls|কল খুলুন|dark mode|ডার্ক মোড|light mode|লাইট মোড|বাংলা ভাষা|switch to bengali|english language|switch to english)\s*$/i);
       if (appCommand && onAppAction) {
         let result: string | undefined;
         if (/settings খুলুন|সেটিংস খুলুন|open settings/i.test(text)) result = onAppAction('open_settings');
@@ -114,8 +114,8 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
       }
 
       // Explicit GitHub task prefix generates a reviewable proposal; it does not write until confirmed.
-      if (/^(?:\\/github|github:|গিটহাব:|কোড পরিবর্তন:)\\s*/i.test(text)) {
-        const task = text.replace(/^(?:\\/github|github:|গিটহাব:|কোড পরিবর্তন:)\\s*/i, '').trim();
+      if (/^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i.test(text)) {
+        const task = text.replace(/^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i, '').trim();
         if (!task) throw new Error(isBn ? 'কোডের কাজটি লিখুন। উদাহরণ: /github AgentWorkbench-এ একটি নিরাপদ ফিচার যোগ করো' : 'Describe the code task. Example: /github add a safe feature to AgentWorkbench');
         const proposal = await generateCodeChangeProposal(task);
         setPendingCodeChange(proposal);
