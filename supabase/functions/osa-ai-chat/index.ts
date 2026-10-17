@@ -85,26 +85,55 @@ Deno.serve(async (req: Request) => {
   }
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-  let upstream: Response;
-  try {
-    upstream = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
-      }),
-    });
-  } catch {
-    return json({ error: 'Could not connect to the Google Gemini API. Please try again.' }, 502, origin);
+  const requestBody = JSON.stringify({
+    contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
+  });
+
+  // Gemini may temporarily return 429/5xx during capacity spikes. Retry only
+  // transient failures with bounded exponential backoff and jitter.
+  const retryableStatuses = new Set([408, 429, 500, 502, 503, 504]);
+  const maxAttempts = 3;
+  let upstream: Response | null = null;
+  let networkFailure = false;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      upstream = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: requestBody,
+      });
+      networkFailure = false;
+      if (upstream.ok || !retryableStatuses.has(upstream.status) || attempt === maxAttempts - 1) break;
+    } catch {
+      networkFailure = true;
+      if (attempt === maxAttempts - 1) break;
+    }
+
+    const baseDelayMs = 800 * (2 ** attempt);
+    const jitterMs = Math.floor(Math.random() * 400);
+    await new Promise((resolve) => setTimeout(resolve, baseDelayMs + jitterMs));
+  }
+
+  if (!upstream) {
+    return json({
+      error: networkFailure
+        ? 'Could not connect to the Google Gemini API after several attempts. Please try again shortly.'
+        : 'Gemini request failed after several attempts.',
+      retryable: true,
+    }, 503, origin);
   }
 
   const result = await upstream.json().catch(() => ({}));
   if (!upstream.ok) {
     const message = typeof result?.error?.message === 'string' ? result.error.message : 'Gemini request failed.';
     const status = upstream.status === 400 || upstream.status === 401 || upstream.status === 403 ||
-      upstream.status === 404 || upstream.status === 429 ? upstream.status : 502;
-    return json({ error: message, upstreamStatus: upstream.status }, status, origin);
+      upstream.status === 404 || upstream.status === 429 || upstream.status === 503 ? upstream.status : 502;
+    return json({
+      error: message,
+      upstreamStatus: upstream.status,
+      retryable: retryableStatuses.has(upstream.status),
+    }, status, origin);
   }
   const reply = result?.candidates?.[0]?.content?.parts
     ?.map((part: { text?: string }) => part.text || '')
