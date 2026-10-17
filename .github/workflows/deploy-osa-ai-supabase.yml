@@ -1,0 +1,111 @@
+name: Deploy OSA AI Supabase Edge Function
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_function:
+        description: Deploy osa-ai-chat to the production Supabase project
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osa-ai-supabase-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-verify:
+    name: Deploy and verify osa-ai-chat
+    if: ${{ inputs.deploy_function }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      SUPABASE_PROJECT_REF: wldwnchorvymaulzzlya
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required repository secrets
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo "::error::Missing repository secret SUPABASE_ACCESS_TOKEN"; exit 1; }
+          [[ -n "$GOOGLE_AI_API_KEY" ]] || { echo "::error::Missing repository secret GOOGLE_AI_API_KEY"; exit 1; }
+          echo "Required secrets are present (values are not displayed)."
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Configure server-side Gemini secret
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+        run: |
+          set -euo pipefail
+          export SUPABASE_ACCESS_TOKEN
+          secret_file="$RUNNER_TEMP/osa-ai-edge-secrets.env"
+          trap 'rm -f "$secret_file"' EXIT
+          umask 077
+          printf 'GOOGLE_AI_API_KEY=%s\n' "$GOOGLE_AI_API_KEY" > "$secret_file"
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_REF" --env-file "$secret_file"
+          rm -f "$secret_file"
+          trap - EXIT
+          echo "Gemini key configured as a Supabase Edge Function secret."
+
+      - name: Deploy osa-ai-chat
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          export SUPABASE_ACCESS_TOKEN
+          supabase functions deploy osa-ai-chat --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Verify deployed function endpoint and CORS preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          endpoint="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/osa-ai-chat"
+          headers="$RUNNER_TEMP/osa-ai-headers.txt"
+          body="$RUNNER_TEMP/osa-ai-body.txt"
+          trap 'rm -f "$headers" "$body"' EXIT
+
+          status="$(curl --silent --show-error --max-time 20 -D "$headers" -o "$body" -w '%{http_code}' \
+            -X OPTIONS "$endpoint" \
+            -H 'Origin: https://osa-chat.com' \
+            -H 'Access-Control-Request-Method: POST' \
+            -H 'Access-Control-Request-Headers: authorization, apikey, content-type')"
+          if [[ "$status" != "200" ]]; then
+            echo "::error::CORS preflight verification failed (HTTP $status)."
+            cat "$body"
+            exit 1
+          fi
+          grep -qi '^access-control-allow-origin: https://osa-chat.com' "$headers" || {
+            echo "::error::Expected production CORS origin was not returned."
+            cat "$headers"
+            exit 1
+          }
+
+          # Without a signed-in user's bearer token, the endpoint must reject the request.
+          # This checks reachability and auth enforcement, not a successful Gemini chat.
+          status="$(curl --silent --show-error --max-time 20 -D "$headers" -o "$body" -w '%{http_code}' \
+            -X POST "$endpoint" \
+            -H 'Origin: https://osa-chat.com' \
+            -H 'Content-Type: application/json' \
+            --data '{"action":"chat","messages":[{"role":"user","content":"deployment smoke test"}]}')"
+          if [[ "$status" != "401" ]]; then
+            echo "::error::Expected unauthenticated request to be rejected with HTTP 401, got HTTP $status."
+            cat "$body"
+            exit 1
+          fi
+          echo "PASS: deployed endpoint is reachable, production CORS preflight passes, and unauthenticated requests are rejected."
+          echo "NOTE: This is an infrastructure smoke test, not a signed-in end-to-end Gemini chat test."
