@@ -60,7 +60,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const action = body.action;
-  if (!['chat', 'draft', 'shopping'].includes(action || '')) {
+  if (!['chat', 'draft', 'shopping', 'code'].includes(action || '')) {
     return json({ error: 'Unsupported OSA AI action.' }, 400, origin);
   }
   let userPrompt = '';
