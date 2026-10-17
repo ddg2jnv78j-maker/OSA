@@ -51,7 +51,9 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
   ]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);\n  const [pendingCodeChange, setPendingCodeChange] = useState<OsaAiCodeProposal | null>(null);\n  const [isApplyingCodeChange, setIsApplyingCodeChange] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [pendingCodeChange, setPendingCodeChange] = useState<OsaAiCodeProposal | null>(null);
+  const [isApplyingCodeChange, setIsApplyingCodeChange] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
