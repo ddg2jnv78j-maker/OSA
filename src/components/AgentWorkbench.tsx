@@ -43,7 +43,12 @@ function inferSafeCodeRoute(request: string): SafeCodeRoute | null {
     { path: 'src/services/aiService.ts', label: 'AI service and request routing', matches: /ai service|api call|request routing|prompt|gemini|shopping assistant|ডিল|শপিং|এআই সার্ভিস|প্রম্পট|জেমিনি/i },
     { path: 'src/components/AgentWorkbench.tsx', label: 'OSA app user interface', matches: /button|screen|page|interface|ui|layout|design|বাটন|স্ক্রিন|পেজ|ইন্টারফেস|ডিজাইন/i },
   ];
-  return routes.find((route) => route.matches.test(text)) || null;
+  // For broad app-feature requests, start with the agent workbench rather than forcing the user to know a file path.
+  return routes.find((route) => route.matches.test(text)) || {
+    path: 'src/components/AgentWorkbench.tsx',
+    label: 'general OSA app feature request (single-file safe proposal)',
+    matches: /.*/,
+  };
 }
 
 interface AgentWorkbenchProps {
