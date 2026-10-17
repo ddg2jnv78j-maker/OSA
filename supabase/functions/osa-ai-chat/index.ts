@@ -88,7 +88,7 @@ Deno.serve(async (req: Request) => {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const requestBody = JSON.stringify({
     contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-    generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
+    generationConfig: { temperature: action === 'code' ? 8192 : 2048, maxOutputTokens: action === 'code' ? 8192 : 2048 },
   });
 
   // Gemini may temporarily return 429/5xx during capacity spikes. Retry only
