@@ -10,17 +10,18 @@ const corsHeaders = {
   'Vary': 'Origin',
 };
 
-function json(body: unknown, status = 200) {
+function json(body: unknown, status = 200, origin?: string | null) {
+  const allowedOrigin = origin === 'https://www.osa-chat.com' ? origin : 'https://osa-chat.com';
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
+    headers: { ...corsHeaders, 'Access-Control-Allow-Origin': allowedOrigin, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
 Deno.serve(async (req: Request) => {
   const origin = req.headers.get('origin');
   if (origin && origin !== 'https://osa-chat.com' && origin !== 'https://www.osa-chat.com') {
-    return json({ error: 'Origin not allowed.' }, 403);
+    return json({ error: 'Origin not allowed.' }, 403, origin);
   }
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -29,7 +30,7 @@ Deno.serve(async (req: Request) => {
 
   const authHeader = req.headers.get('authorization') || '';
   const accessToken = authHeader.replace(/^Bearer\s+/i, '').trim();
-  if (!accessToken) return json({ error: 'Please sign in to use OSA AI.' }, 401);
+  if (!accessToken) return json({ error: 'Please sign in to use OSA AI.' }, 401, origin);
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') || Deno.env.get('SUPABASE_PUBLISHABLE_KEY') || '';
@@ -37,10 +38,10 @@ Deno.serve(async (req: Request) => {
   const model = (Deno.env.get('GEMINI_MODEL') || 'gemini-3.8-flash').trim();
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    return json({ error: 'OSA AI backend auth is not configured. Set the Supabase URL and anon/publishable key for this function.' }, 503);
+    return json({ error: 'OSA AI backend auth is not configured. Set the Supabase URL and anon/publishable key for this function.' }, 503, origin);
   }
   if (!apiKey) {
-    return json({ error: 'OSA AI server is missing the GOOGLE_AI_API_KEY secret.' }, 503);
+    return json({ error: 'OSA AI server is missing the GOOGLE_AI_API_KEY secret.' }, 503, origin);
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -48,23 +49,23 @@ Deno.serve(async (req: Request) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const { data: userData, error: authError } = await supabase.auth.getUser(accessToken);
-  if (authError || !userData.user) return json({ error: 'Your session is invalid or expired. Please sign in again.' }, 401);
+  if (authError || !userData.user) return json({ error: 'Your session is invalid or expired. Please sign in again.' }, 401, origin);
 
   let body: { action?: string; language?: string; messages?: Array<{ role?: string; content?: string }>; prompt?: string };
   try {
     body = await req.json();
   } catch {
-    return json({ error: 'Request body must be valid JSON.' }, 400);
+    return json({ error: 'Request body must be valid JSON.' }, 400, origin);
   }
 
   const action = body.action;
   if (!['chat', 'draft', 'shopping'].includes(action || '')) {
-    return json({ error: 'Unsupported OSA AI action.' }, 400);
+    return json({ error: 'Unsupported OSA AI action.' }, 400, origin);
   }
   let userPrompt = '';
   if (action === 'chat') {
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
-      return json({ error: 'Add a message before sending.' }, 400);
+      return json({ error: 'Add a message before sending.' }, 400, origin);
     }
     const history = body.messages.slice(-20).map((m) => {
       const role = m?.role === 'assistant' ? 'OSA AI' : 'User';
@@ -75,7 +76,7 @@ Deno.serve(async (req: Request) => {
     userPrompt = `You are OSA AI, a helpful, accurate assistant for OSA. Respond naturally in ${language}; use the language the user writes in when appropriate. Maintain context and do not claim actions you did not perform.\n\nConversation:\n${history}\n\nOSA AI:`;
   } else {
     if (typeof body.prompt !== 'string' || !body.prompt.trim()) {
-      return json({ error: 'A prompt is required.' }, 400);
+      return json({ error: 'A prompt is required.' }, 400, origin);
     }
     userPrompt = body.prompt.slice(0, 24000);
     if (action === 'draft') userPrompt = `You are OSA AI. Return only the polished message text, without quotes.\n\n${userPrompt}`;
@@ -94,7 +95,7 @@ Deno.serve(async (req: Request) => {
       }),
     });
   } catch {
-    return json({ error: 'Could not connect to the Google Gemini API. Please try again.' }, 502);
+    return json({ error: 'Could not connect to the Google Gemini API. Please try again.' }, 502, origin);
   }
 
   const result = await upstream.json().catch(() => ({}));
@@ -102,12 +103,12 @@ Deno.serve(async (req: Request) => {
     const message = typeof result?.error?.message === 'string' ? result.error.message : 'Gemini request failed.';
     const status = upstream.status === 400 || upstream.status === 401 || upstream.status === 403 ||
       upstream.status === 404 || upstream.status === 429 ? upstream.status : 502;
-    return json({ error: message, upstreamStatus: upstream.status }, status);
+    return json({ error: message, upstreamStatus: upstream.status }, status, origin);
   }
   const reply = result?.candidates?.[0]?.content?.parts
     ?.map((part: { text?: string }) => part.text || '')
     .join('')
     .trim();
-  if (!reply) return json({ error: 'Gemini returned an empty response.' }, 502);
-  return json({ reply });
+  if (!reply) return json({ error: 'Gemini returned an empty response.' }, 502, origin);
+  return json({ reply }, 200, origin);
 });
