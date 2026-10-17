@@ -17,7 +17,16 @@ assert.equal(intentBn.language, 'bn', 'Bengali language must be detected');
 
 const intentChat = detectShoppingIntent('Hello how are you doing today?');
 assert.equal(intentChat.isShoppingIntent, false, 'Ordinary chat query must NOT trigger shopping intent');
-console.log('✓ Passed: Shopping intent detected accurately for both English and Bengali without breaking ordinary chat');
+
+const intentCapabilities = detectShoppingIntent('তুমি কী কী করতে পারো? আমাকে suggest করো');
+assert.equal(intentCapabilities.isShoppingIntent, false, 'General capability questions and generic suggestions must not trigger shopping');
+
+const intentPhoneAddiction = detectShoppingIntent('Explain phone addiction and its effects on mental health');
+assert.equal(intentPhoneAddiction.isShoppingIntent, false, 'A product word in an informational question must not trigger shopping');
+
+const intentRecommend = detectShoppingIntent('Recommend a phone under 30000 BDT');
+assert.equal(intentRecommend.isShoppingIntent, true, 'Explicit product recommendations must still trigger shopping');
+console.log('✓ Passed: English/Bengali shopping queries work and general questions remain in general chat');
 
 // 2. Verify aiService export and grounded assistant structure
 console.log('\n[2/6] Verifying aiService implementation structure...');
@@ -49,8 +58,8 @@ assert.ok(!aiServiceCode.includes('service_role'), 'No service role key in AI se
 assert.ok(!aiServiceCode.includes('eval('), 'No unsafe eval');
 console.log('✓ Passed: Zero secret leakage or unsafe operations');
 
-// 6. Full build and type-check verification
-console.log('\n[6/6] Verifying project build and TypeScript compilation...');
-console.log('✓ Passed: TypeScript compilation and bundle build verified in test runner');
+// 6. Build verification is performed by the dedicated GitHub Actions CI workflow.
+console.log('\\n[6/6] Build/type-check verification...');
+console.log('ℹ️ This script does not execute the build; rely on the dedicated CI workflow for build and type-check results.');
 
 console.log('\nAll 6 AI Shopping Assistant verification tests passed successfully!\n');
