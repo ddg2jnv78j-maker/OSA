@@ -2849,7 +2849,22 @@ export default function App() {
           {activeTab === 'deals' && <DealsPage t={t} />}
 
           {activeTab === 'agent' && (
-            <AgentWorkbench currentUser={currentUser} t={t} />
+            <AgentWorkbench
+              currentUser={currentUser}
+              t={t}
+              onAppAction={(action) => {
+                switch (action) {
+                  case 'open_settings': setActiveTab('settings'); return 'Settings opened.';
+                  case 'open_chats': setActiveTab('chats'); return 'Chats opened.';
+                  case 'open_deals': setActiveTab('deals'); return 'Deals opened.';
+                  case 'open_calls': setActiveTab('calls'); return 'Calls opened.';
+                  case 'theme_dark': handleThemeChange('dark'); return 'Dark mode enabled.';
+                  case 'theme_light': handleThemeChange('light'); return 'Light mode enabled.';
+                  case 'language_bn': handleLanguageChange('bn'); return 'অ্যাপের ভাষা বাংলায় করা হয়েছে।';
+                  case 'language_en': handleLanguageChange('en'); return 'App language changed to English.';
+                }
+              }}
+            />
           )}
 
           {activeTab === 'settings' && (
