@@ -147,7 +147,10 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
         }));
         historyForAI.push({ role: 'user', content: text });
 
-        assistantReply = await generateConversationalReply(historyForAI, lang);
+        assistantReply = await generateConversationalReply(historyForAI, lang, {
+          fullName: currentUser.full_name,
+          username: currentUser.username,
+        });
       }
 
       const aiMsg: ChatMessage = {
