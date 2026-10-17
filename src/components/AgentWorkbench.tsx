@@ -302,7 +302,7 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
           <div className="text-sm font-bold text-slate-900 dark:text-white">{isBn ? 'GitHub পরিবর্তন পর্যালোচনা' : 'Review GitHub source change'}</div>
           <div className="text-xs text-slate-600 dark:text-slate-300 mt-1">{pendingCodeChange.message}</div>
           <div className="text-xs font-mono mt-2 break-all">{pendingCodeChange.path}</div>
-          <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-slate-950 text-slate-100 p-2 text-[10px] whitespace-pre-wrap">{pendingCodeChange.content.slice(0, 12000)}{pendingCodeChange.content.length > 12000 ? '\\n… preview truncated …' : ''}</pre>
+          <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-slate-950 text-slate-100 p-2 text-[10px] whitespace-pre-wrap">{pendingCodeChange.content}</pre>
           <div className="text-[11px] text-amber-800 dark:text-amber-200 mt-2">{isBn ? 'অনুমোদন দিলে GitHub token-সহ server-side function administrator অনুমতি যাচাই করে নতুন branch/PR তৈরি করবে। Merge বা production deploy হবে না।' : 'Approval sends the proposal to a server-side function that checks administrator access and creates a new branch/PR only. No merge or production deployment.'}</div>
           <div className="flex gap-2 mt-3">
             <button type="button" disabled={isApplyingCodeChange} onClick={async () => {
