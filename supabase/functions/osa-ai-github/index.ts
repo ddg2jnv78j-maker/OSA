@@ -16,6 +16,12 @@ const allowedOrigin = (o: string | null) => !o || o === 'https://osa-chat.com' |
 const ghHeaders = (token: string) => ({ Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' });
 const api = 'https://api.github.com';
 
+function decodeBase64Utf8(value: string): string {
+  const binary = atob(value.replace(/\\s/g, ''));
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 Deno.serve(async (req: Request) => {
   const origin = req.headers.get('origin');
   if (!allowedOrigin(origin)) return json({ error: 'Origin not allowed.' }, 403, origin);
