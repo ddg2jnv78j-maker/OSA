@@ -50,7 +50,7 @@ export async function generateSmartDraftOrReply(params: {
       }`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     contents: prompt,
   });
 
@@ -90,7 +90,7 @@ Provide clear, accurate, natural, and polite answers. Avoid robotic phrases.
 Maintain the context of the ongoing conversation.`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     contents: `${systemPrompt}\n\nConversation History:\n${formattedHistory}\n\nOSA AI:`,
   });
 
@@ -362,7 +362,7 @@ CRITICAL INTEGRITY RULES:
     try {
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents: `${systemInstruction}\n\nAPPROVED CATALOG:\n${catalogContext}\n\nUser Question: ${userQuery}`,
       });
       explanation = response.text?.trim() || '';
