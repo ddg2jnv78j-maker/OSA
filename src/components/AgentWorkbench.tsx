@@ -131,7 +131,7 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
         id: 'err_' + Math.random().toString(36).substring(2, 9),
         role: 'assistant',
         content: isBn
-          ? `দুঃখিত, এআই সার্ভারের সাথে সংযোগ স্থাপন করা যায়নি: ${errText}\nদয়া করে আপনার এআই এপিআই কি (VITE_GOOGLE_AI_API_KEY) যাচাই করুন অথবা আবার চেষ্টা করুন।`
+          ? `দুঃখিত, OSA AI backend-এ সমস্যা হয়েছে: ${errText}\nঅনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।`
           : `Sorry, OSA AI encountered a backend error: ${errText}\nPlease try again in a moment.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isError: true,
