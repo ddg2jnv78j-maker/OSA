@@ -136,14 +136,16 @@ export function detectShoppingIntent(query: string): ShoppingIntentAnalysis {
 
   // Route shopping only when the user expresses a commercial or product-recommendation intent.
   // A product word alone (e.g. "phone addiction") must not hijack general chat.
-  const explicitCommerceIntent = /\b(buy|purchase|shop|shopping|deal|deals|price|cost|cheap|budget|discount|sale|order|where to buy|under|below)\b/i.test(clean)
+  const explicitCommerceIntent = /\b(buy|purchase|shop|shopping|deal|deals|price|cost|cheap|budget|discount|sale|order|where to buy)\b/i.test(clean)
     || /(কিনব|কিনতে চাই|কেনা|দাম|বাজেট|ডিল|অফার|কোথায় কিনব|টাকার মধ্যে)/.test(clean);
   const productCategoryMention = /\b(laptop|computer|phone|smartphone|mobile|headphones?|earphones?|earbuds|smartwatch|watch|camera|blender|gadget|shirt|dress|shoes?|book)\b/i.test(clean)
     || /(মোবাইল|ফোন|ল্যাপটপ|কম্পিউটার|হেডফোন|ইয়ারফোন|ঘড়ি|ব্লেন্ডার|জামা|জুতা|বই)/.test(clean);
   const explicitProductRecommendation = /\b(recommend|recommendation|suggest|best|top|compare|which|what|find)\b/i.test(clean)
     || /(সেরা|ভালো|কোনটি|কোনটা|সাজেস্ট|পরামর্শ|তুলনা)/.test(clean);
   const hasShoppingTrigger = explicitCommerceIntent
-    || (productCategoryMention && explicitProductRecommendation);
+    || (productCategoryMention && explicitProductRecommendation)
+    || (productCategoryMention && /\b(under|below|within|budget)\b/i.test(clean) && /[0-9]{2,}/.test(clean))
+    || (productCategoryMention && /(টাকার মধ্যে|বাজেট|এর নিচে)/.test(clean) && /[০-৯0-9]{2,}/.test(clean));
 
   if (!hasShoppingTrigger) {
     return { isShoppingIntent: false, keywords: [], language: lang };
