@@ -97,24 +97,26 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
     try {
       const lang = isBn ? 'bn' : 'en';
 
-      // Explicit local commands are handled by a fixed allowlist, never by model-generated tool names.
+      // Natural-language app actions use a fixed allowlist; model output never selects action names.
       const normalizedCommand = text.toLowerCase().trim();
-      const appCommand = normalizedCommand.match(/^(?:osa:|app:)?\s*(?:open settings|settings খুলুন|সেটিংস খুলুন|চ্যাট খুলুন|open chats|open groups|গ্রুপ খুলুন|গ্রুপ দেখাও|open status|স্ট্যাটাস খুলুন|স্ট্যাটাস দেখাও|open notifications|নোটিফিকেশন খুলুন|নোটিফিকেশন দেখাও|open deals|ডিল খুলুন|open calls|কল খুলুন|dark mode|ডার্ক মোড|light mode|লাইট মোড|বাংলা ভাষা|switch to bengali|english language|switch to english)\s*$/i);
-      if (appCommand && onAppAction) {
-        let result: string | undefined;
-        if (/settings খুলুন|সেটিংস খুলুন|open settings/i.test(text)) result = onAppAction('open_settings');
-        else if (/চ্যাট খুলুন|open chats/i.test(text)) result = onAppAction('open_chats');
-        else if (/গ্রুপ খুলুন|গ্রুপ দেখাও|open groups/i.test(text)) result = onAppAction('open_groups');
-        else if (/স্ট্যাটাস খুলুন|স্ট্যাটাস দেখাও|open status/i.test(text)) result = onAppAction('open_status');
-        else if (/নোটিফিকেশন খুলুন|নোটিফিকেশন দেখাও|open notifications/i.test(text)) result = onAppAction('open_notifications');
-        else if (/ডিল খুলুন|open deals/i.test(text)) result = onAppAction('open_deals');
-        else if (/কল খুলুন|open calls/i.test(text)) result = onAppAction('open_calls');
-        else if (/dark mode|ডার্ক মোড/i.test(text)) result = onAppAction('theme_dark');
-        else if (/light mode|লাইট মোড/i.test(text)) result = onAppAction('theme_light');
-        else if (/বাংলা ভাষা|switch to bengali/i.test(text)) result = onAppAction('language_bn');
-        else if (/english language|switch to english/i.test(text)) result = onAppAction('language_en');
+      const appCommandRules: Array<{ action: NonNullable<AgentWorkbenchProps['onAppAction']> extends (action: infer A) => string | undefined ? A : never; pattern: RegExp }> = [
+        { action: 'open_settings', pattern: /(?:\b(?:open|show|go to|take me to)\s+settings\b|settings\s+(?:please\s+)?(?:open|show)\b|সেটিংস\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও|এ নিয়ে যাও|এ নিয়ে চলো)|আমাকে\s+সেটিংসে\s*(?:নিয়ে যাও|নিয়ে চলো))/i },
+        { action: 'open_chats', pattern: /(?:\b(?:open|show|go to)\s+chats?\b|চ্যাট\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও)|মেসেজ\s*(?:খুলে দাও|দেখাও))/i },
+        { action: 'open_groups', pattern: /(?:\b(?:open|show|go to)\s+groups?\b|গ্রুপ\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও))/i },
+        { action: 'open_status', pattern: /(?:\b(?:open|show|go to)\s+status\b|স্ট্যাটাস\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও))/i },
+        { action: 'open_notifications', pattern: /(?:\b(?:open|show|check)\s+notifications?\b|নোটিফিকেশন\s*(?:খুলে দাও|খুলুন|দেখাও|চেক করো))/i },
+        { action: 'open_deals', pattern: /(?:\b(?:open|show|go to)\s+deals\b|ডিল\s*(?:খুলে দাও|খুলুন|দেখাও))/i },
+        { action: 'open_calls', pattern: /(?:\b(?:open|show|go to)\s+calls?\b|কল\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও))/i },
+        { action: 'theme_dark', pattern: /(?:\b(?:enable|turn on|switch to|use)\s+dark mode\b|dark mode\s*(?:on|please)?|ডার্ক মোড\s*(?:চালু করো|করো|দাও))/i },
+        { action: 'theme_light', pattern: /(?:\b(?:enable|turn on|switch to|use)\s+light mode\b|light mode\s*(?:on|please)?|লাইট মোড\s*(?:চালু করো|করো|দাও))/i },
+        { action: 'language_bn', pattern: /(?:\b(?:switch to|change to|use)\s+bengali\b|বাংলা\s*(?:ভাষা\s*)?(?:করো|চালু করো|দাও)|বাংলায়\s*(?:করো|দাও|চালাও))/i },
+        { action: 'language_en', pattern: /(?:\b(?:switch to|change to|use)\s+english\b|ইংরেজি\s*(?:ভাষা\s*)?(?:করো|চালু করো|দাও)|ইংলিশে\s*(?:করো|দাও))/i },
+      ];
+      const matchedAppCommand = appCommandRules.find(({ pattern }) => pattern.test(normalizedCommand));
+      if (matchedAppCommand && onAppAction) {
+        const result = onAppAction(matchedAppCommand.action);
         if (result) {
-          setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: result!, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+          setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: result, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
           return;
         }
       }
