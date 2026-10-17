@@ -132,7 +132,7 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
         role: 'assistant',
         content: isBn
           ? `দুঃখিত, এআই সার্ভারের সাথে সংযোগ স্থাপন করা যায়নি: ${errText}\nদয়া করে আপনার এআই এপিআই কি (VITE_GOOGLE_AI_API_KEY) যাচাই করুন অথবা আবার চেষ্টা করুন।`
-          : `Sorry, unable to reach the OSA AI backend: ${errText}\nPlease check your VITE_GOOGLE_AI_API_KEY configuration or try again.`,
+          : `Sorry, OSA AI encountered a backend error: ${errText}\nPlease try again in a moment.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isError: true,
       };
@@ -163,7 +163,7 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
                 OSA AI
               </h1>
               <span className="px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 text-[10px] font-bold uppercase">
-                Gemini 2.5 Flash
+                Gemini 3.8 Flash
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
