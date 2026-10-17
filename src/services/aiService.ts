@@ -37,10 +37,10 @@ export async function generateSmartDraftOrReply(params: {
   const contextLines = (params.recentMessages || [])
     .slice(-5)
     .map((m) => `${m.senderName}: ${m.content}`)
-    .join('\\n');
+    .join('\n');
   const prompt = params.draftOrTopic.trim()
-    ? `Improve or complete this OSA chat message concisely and naturally (return only the message text, no quotes):\\nDraft: ${params.draftOrTopic.trim()}\\n${contextLines ? `\\nRecent conversation context:\\n${contextLines}` : ''}`
-    : `Suggest a concise, natural, friendly reply for this OSA conversation (return only the reply text, no quotes):\\n${contextLines || 'Greeting a contact on OSA.'}`;
+    ? `Improve or complete this OSA chat message concisely and naturally (return only the message text, no quotes):\nDraft: ${params.draftOrTopic.trim()}\n${contextLines ? `\nRecent conversation context:\n${contextLines}` : ''}`
+    : `Suggest a concise, natural, friendly reply for this OSA conversation (return only the reply text, no quotes):\n${contextLines || 'Greeting a contact on OSA.'}`;
   return invokeOsaAi({ action: 'draft', prompt });
 }
 
@@ -311,7 +311,7 @@ CRITICAL INTEGRITY RULES:
     explanation = await invokeOsaAi({
       action: 'shopping',
       language: isBn ? 'bn' : 'en',
-      prompt: `${systemInstruction}\\n\\nAPPROVED CATALOG:\\n${catalogContext}\\n\\nUser Question: ${userQuery}`,
+      prompt: `${systemInstruction}\n\nAPPROVED CATALOG:\n${catalogContext}\n\nUser Question: ${userQuery}`,
     });
   } catch {
     // Deterministic fallback if the secure AI backend is offline or rate-limited.
