@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { Profile, AffiliateProduct } from '../types/osa';
 import { TranslationDictionary } from '../lib/i18n';
-import { generateConversationalReply, queryShoppingAssistant } from '../services/aiService';
+import { generateConversationalReply, queryShoppingAssistant, generateCodeChangeProposal, submitApprovedGitHubChange, OsaAiCodeProposal } from '../services/aiService';
 import { AffiliateProductCard } from './AffiliateProductCard';
 
 interface ChatMessage {
@@ -34,7 +34,7 @@ interface AgentWorkbenchProps {
   t: TranslationDictionary;
 }
 
-export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }) => {
+export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, onAppAction }) => {
   const isBn = currentUser.language === 'bn';
   const initialGreeting = isBn
     ? 'হ্যালো! আমি OSA AI। আজ আপনাকে কীভাবে সাহায্য করতে পারি? (যেকোনো প্রশ্ন করুন কিংবা বাংলা বা ইংরেজিতে ডিল ও শপিং পরামর্শ চান!)'
@@ -50,7 +50,7 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
   ]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);\n  const [pendingCodeChange, setPendingCodeChange] = useState<OsaAiCodeProposal | null>(null);\n  const [isApplyingCodeChange, setIsApplyingCodeChange] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -93,6 +93,35 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
 
     try {
       const lang = isBn ? 'bn' : 'en';
+
+      // Explicit local commands are handled by a fixed allowlist, never by model-generated tool names.
+      const normalizedCommand = text.toLowerCase().trim();
+      const appCommand = normalizedCommand.match(/^(?:osa:|app:)?\\s*(?:open settings|settings খুলুন|সেটিংস খুলুন|চ্যাট খুলুন|open chats|open deals|ডিল খুলুন|open calls|কল খুলুন|dark mode|ডার্ক মোড|light mode|লাইট মোড|বাংলা ভাষা|switch to bengali|english language|switch to english)\\s*$/i);
+      if (appCommand && onAppAction) {
+        let result: string | undefined;
+        if (/settings খুলুন|সেটিংস খুলুন|open settings/i.test(text)) result = onAppAction('open_settings');
+        else if (/চ্যাট খুলুন|open chats/i.test(text)) result = onAppAction('open_chats');
+        else if (/ডিল খুলুন|open deals/i.test(text)) result = onAppAction('open_deals');
+        else if (/কল খুলুন|open calls/i.test(text)) result = onAppAction('open_calls');
+        else if (/dark mode|ডার্ক মোড/i.test(text)) result = onAppAction('theme_dark');
+        else if (/light mode|লাইট মোড/i.test(text)) result = onAppAction('theme_light');
+        else if (/বাংলা ভাষা|switch to bengali/i.test(text)) result = onAppAction('language_bn');
+        else if (/english language|switch to english/i.test(text)) result = onAppAction('language_en');
+        if (result) {
+          setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: result!, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+          return;
+        }
+      }
+
+      // Explicit GitHub task prefix generates a reviewable proposal; it does not write until confirmed.
+      if (/^(?:\\/github|github:|গিটহাব:|কোড পরিবর্তন:)\\s*/i.test(text)) {
+        const task = text.replace(/^(?:\\/github|github:|গিটহাব:|কোড পরিবর্তন:)\\s*/i, '').trim();
+        if (!task) throw new Error(isBn ? 'কোডের কাজটি লিখুন। উদাহরণ: /github AgentWorkbench-এ একটি নিরাপদ ফিচার যোগ করো' : 'Describe the code task. Example: /github add a safe feature to AgentWorkbench');
+        const proposal = await generateCodeChangeProposal(task);
+        setPendingCodeChange(proposal);
+        setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: isBn ? `GitHub পরিবর্তনের খসড়া তৈরি হয়েছে। ফাইল: ${proposal.path}\\n\\nএটি এখনো GitHub-এ লেখা হয়নি। নিচের Preview দেখে স্পষ্টভাবে অনুমোদন দিলে একটি আলাদা branch ও Pull Request তৈরি হবে; main branch সরাসরি পরিবর্তন হবে না।` : `A GitHub change proposal is ready for review. File: ${proposal.path}\\n\\nNothing has been written to GitHub yet. Review the preview below; explicit approval will create an isolated branch and pull request, never a direct main-branch change.`, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' } }]);
+        return;
+      }
 
       // 1. Check if shopping/deals query
       const shoppingRes = await queryShoppingAssistant(text, lang);
@@ -264,6 +293,30 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
           <div ref={messagesEndRef} />
         </div>
       </div>
+
+      {/* Explicit GitHub source-change approval gate */}
+      {pendingCodeChange && (
+        <div className="mx-3 mb-3 rounded-2xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 p-3 shrink-0">
+          <div className="text-sm font-bold text-slate-900 dark:text-white">{isBn ? 'GitHub পরিবর্তন পর্যালোচনা' : 'Review GitHub source change'}</div>
+          <div className="text-xs text-slate-600 dark:text-slate-300 mt-1">{pendingCodeChange.message}</div>
+          <div className="text-xs font-mono mt-2 break-all">{pendingCodeChange.path}</div>
+          <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-slate-950 text-slate-100 p-2 text-[10px] whitespace-pre-wrap">{pendingCodeChange.content.slice(0, 12000)}{pendingCodeChange.content.length > 12000 ? '\\n… preview truncated …' : ''}</pre>
+          <div className="text-[11px] text-amber-800 dark:text-amber-200 mt-2">{isBn ? 'অনুমোদন দিলে GitHub token-সহ server-side function administrator অনুমতি যাচাই করে নতুন branch/PR তৈরি করবে। Merge বা production deploy হবে না।' : 'Approval sends the proposal to a server-side function that checks administrator access and creates a new branch/PR only. No merge or production deployment.'}</div>
+          <div className="flex gap-2 mt-3">
+            <button type="button" disabled={isApplyingCodeChange} onClick={async () => {
+              setIsApplyingCodeChange(true);
+              try {
+                const result = await submitApprovedGitHubChange(pendingCodeChange);
+                setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: (isBn ? 'Pull Request তৈরি হয়েছে: ' : 'Pull Request created: ') + result.pullRequestUrl + '\\n' + (isBn ? 'এখন CI ফলাফল ও diff পর্যালোচনা করুন; merge করা হয়নি।' : 'Review the diff and CI results; nothing has been merged.'), timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+                setPendingCodeChange(null);
+              } catch (err) {
+                setErrorMessage(err instanceof Error ? err.message : 'GitHub request failed.');
+              } finally { setIsApplyingCodeChange(false); }
+            }} className="rounded-xl bg-blue-600 text-white px-3 py-2 text-xs font-bold disabled:opacity-50">{isApplyingCodeChange ? (isBn ? 'তৈরি হচ্ছে…' : 'Creating…') : (isBn ? 'অনুমোদন করে PR তৈরি' : 'Approve & create PR')}</button>
+            <button type="button" disabled={isApplyingCodeChange} onClick={() => setPendingCodeChange(null)} className="rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-white px-3 py-2 text-xs font-bold">{isBn ? 'বাতিল' : 'Cancel'}</button>
+          </div>
+        </div>
+      )}
 
       {/* Suggested Quick Prompts */}
       <div className="px-4 py-2 bg-white/50 dark:bg-slate-900/50 backdrop-blur-xs border-t border-slate-200 dark:border-slate-800 shrink-0">
