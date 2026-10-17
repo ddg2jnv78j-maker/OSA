@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Network & WebRTC Media Permissions -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Location Permissions -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Native Notifications, Full-Screen Incoming Calls, Background Sync & Vibration -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <!-- Android Package Installer Permission for User-Initiated Releases Auto-Update -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:label="OSA"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="false"
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Custom URI Scheme Deep Links: osa://chat?chatId=... or osa://call?callId=... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="osa" />
+            </intent-filter>
+
+            <!-- App Links into https://ddg2jnv78j-maker.github.io/OSA/ and https://osa-chat.com/ -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="ddg2jnv78j-maker.github.io"
+                    android:pathPrefix="/OSA" />
+                <data
+                    android:scheme="https"
+                    android:host="osa-chat.com" />
+                <data
+                    android:scheme="https"
+                    android:host="www.osa-chat.com" />
+            </intent-filter>
+        </activity>
+
+        <!-- Dedicated Native Full-Screen WhatsApp-Style Incoming Call Activity -->
+        <activity
+            android:name=".OSAIncomingCallActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:showForAllUsers="true"
+            android:showWhenLocked="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
+            android:turnScreenOn="true" />
+
+        <!-- Translucent Zero-UI Background Audio Call Accept Activity -->
+        <activity
+            android:name=".OSAAudioCallAcceptActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:noHistory="true"
+            android:showForAllUsers="true"
+            android:showWhenLocked="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Default Firebase Cloud Messaging Notification Channel & Icon (Android 8.0+ / API 34) -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="osa_messages_high_v2" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@android:drawable/sym_action_chat" />
+
+        <!-- Firebase Cloud Messaging Service for Closed/Background Messages & Calls -->
+        <service
+            android:name=".OSAFirebaseMessagingService"
+            android:exported="false"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Persistent Foreground Incoming & Ongoing Call Service -->
+        <service
+            android:name=".OSACallNotificationService"
+            android:enabled="true"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="phoneCall|mediaPlayback|dataSync|microphone|camera" />
+
+        <!-- Persistent Foreground Background Message & Call Sync Service -->
+        <service
+            android:name=".OSABackgroundMessagingService"
+            android:enabled="true"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- Standalone Native Voice Message Playback & Notification Service -->
+        <service
+            android:name=".OSAVoiceNotificationService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- BroadcastReceiver for Voice Message Play/Pause/Stop/Toggle Actions -->
+        <receiver
+            android:name=".OSAVoiceNotificationReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="app.osa.messaging.ACTION_PLAY_VOICE" />
+                <action android:name="app.osa.messaging.ACTION_PAUSE_VOICE" />
+                <action android:name="app.osa.messaging.ACTION_STOP_VOICE" />
+                <action android:name="app.osa.messaging.ACTION_TOGGLE_PLAY_VOICE" />
+                <action android:name="app.osa.messaging.ACTION_NOOP_VOICE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- BroadcastReceiver for Native Incoming & Ongoing Call Accept / Reject / Mute / Speaker / End Actions -->
+        <receiver
+            android:name=".OSACallActionReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="app.osa.messaging.ACTION_ACCEPT_CALL" />
+                <action android:name="app.osa.messaging.ACTION_REJECT_CALL" />
+                <action android:name="app.osa.messaging.ACTION_END_CALL" />
+                <action android:name="app.osa.messaging.ACTION_TOGGLE_MUTE_CALL" />
+                <action android:name="app.osa.messaging.ACTION_TOGGLE_SPEAKER_CALL" />
+                <action android:name="app.osa.messaging.ACTION_NOOP_CALL_NOTIFICATION" />
+            </intent-filter>
+        </receiver>
+
+        <!-- BroadcastReceiver for Direct Inline Message Replies from Notifications -->
+        <receiver
+            android:name=".OSANotificationReplyReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="app.osa.messaging.ACTION_INLINE_REPLY" />
+            </intent-filter>
+        </receiver>
+
+        <!-- BroadcastReceiver for Restarting Background Sync Service on Task Removal or Reboot -->
+        <receiver
+            android:name=".OSAServiceRestartReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="app.osa.messaging.ACTION_RESTART_BG_SERVICE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Secure FileProvider for Android Package Installer APK launches -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>
