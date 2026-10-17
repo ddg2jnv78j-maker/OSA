@@ -29,6 +29,23 @@ interface ChatMessage {
   isError?: boolean;
 }
 
+type SafeCodeRoute = { path: string; matches: RegExp; label: string };
+
+// Only route clear implementation requests to existing, allowlisted source files.
+// Unsupported or security-sensitive requests remain ordinary chat instead of guessing a target.
+function inferSafeCodeRoute(request: string): SafeCodeRoute | null {
+  const text = request.toLowerCase();
+  const asksForImplementation = /\b(add|build|create|implement|fix|change|update|make|code|develop|integrate|enable|support)\b|যোগ কর|তৈরি কর|বানাও|নির্মাণ কর|ঠিক কর|পরিবর্তন কর|সংশোধন কর|ইমপ্লিমেন্ট|ফিচার যোগ|কাজ করুক|কাজ করতে পারে/i.test(text);
+  if (!asksForImplementation) return null;
+
+  const routes: SafeCodeRoute[] = [
+    { path: 'src/components/AgentWorkbench.tsx', label: 'OSA AI interface and app actions', matches: /agent|osa ai|chat interface|chat ui|voice typing|speech.?to.?text|কথা বলে লিখ|ভয়েস টাইপ|ভয়েস টাইপ|কথা থেকে লেখা|চ্যাট|চ্যাটবট|এজেন্ট|সেটিংস|থিম|ভাষা|ড্যাশবোর্ড/i },
+    { path: 'src/services/aiService.ts', label: 'AI service and request routing', matches: /ai service|api call|request routing|prompt|gemini|shopping assistant|ডিল|শপিং|এআই সার্ভিস|প্রম্পট|জেমিনি/i },
+    { path: 'src/components/AgentWorkbench.tsx', label: 'OSA app user interface', matches: /button|screen|page|interface|ui|layout|design|বাটন|স্ক্রিন|পেজ|ইন্টারফেস|ডিজাইন/i },
+  ];
+  return routes.find((route) => route.matches.test(text)) || null;
+}
+
 interface AgentWorkbenchProps {
   currentUser: Profile;
   t: TranslationDictionary;
