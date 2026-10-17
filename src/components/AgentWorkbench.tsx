@@ -32,6 +32,7 @@ interface ChatMessage {
 interface AgentWorkbenchProps {
   currentUser: Profile;
   t: TranslationDictionary;
+  onAppAction?: (action: 'open_settings' | 'open_chats' | 'open_deals' | 'open_calls' | 'theme_dark' | 'theme_light' | 'language_bn' | 'language_en') => string | undefined;
 }
 
 export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, onAppAction }) => {
