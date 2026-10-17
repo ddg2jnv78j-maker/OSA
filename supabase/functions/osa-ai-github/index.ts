@@ -22,7 +22,7 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: { ...corsHeaders, 'Access-Control-Allow-Origin': origin || 'https://osa-chat.com' } });
   if (req.method !== 'POST') return json({ error: 'Method not allowed.' }, 405, origin);
 
-  const token = (req.headers.get('authorization') || '').replace(/^Bearer\\s+/i, '').trim();
+  const token = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
   if (!token) return json({ error: 'Please sign in.' }, 401, origin);
   const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
   const anon = Deno.env.get('SUPABASE_ANON_KEY') || Deno.env.get('SUPABASE_PUBLISHABLE_KEY') || '';
@@ -43,7 +43,7 @@ Deno.serve(async (req: Request) => {
   const action = body.action;
   const path = (body.path || '').trim();
   // Only ordinary source/config documentation files; never secrets, dependency locks, CI workflows or deployment controls.
-  const safePath = /^(src\/(components|services|pages|lib|hooks)\/[A-Za-z0-9_./-]+\.(tsx?|css)|supabase\/functions\/[a-z0-9-]+\/index\.ts|scripts\/[A-Za-z0-9_.-]+\.mjs|README\.md)$/.test(path)
+  const safePath = /^(src\/(components|services|pages|lib|hooks)\/[A-Za-z0-9_./-]+\.(tsx?|css)|scripts\/[A-Za-z0-9_.-]+\.mjs|README\.md)$/.test(path)
     && !path.split('/').some((part) => part === '..' || part.startsWith('.'))
     && !/(secret|credential|\.env|service-account|\.jks|\.keystore|workflow|deploy|package-lock|yarn\.lock|pnpm-lock)/i.test(path);
   if (action !== 'inspect_file' && action !== 'create_change') return json({ error: 'Unsupported action.' }, 400, origin);
