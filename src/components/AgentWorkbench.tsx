@@ -117,8 +117,9 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
       // Explicit GitHub task prefix generates a reviewable proposal; it does not write until confirmed.
       if (/^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i.test(text)) {
         const task = text.replace(/^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i, '').trim();
-        if (!task) throw new Error(isBn ? 'কোডের কাজটি লিখুন। উদাহরণ: /github AgentWorkbench-এ একটি নিরাপদ ফিচার যোগ করো' : 'Describe the code task. Example: /github add a safe feature to AgentWorkbench');
-        const proposal = await generateCodeChangeProposal(task);
+        const target = task.match(/^([A-Za-z0-9_./-]+\.(?:tsx?|css|mjs|md)):\s*([\s\S]+)$/);
+        if (!target) throw new Error(isBn ? 'ফাইলের path ও কাজ লিখুন। উদাহরণ: /github src/components/AgentWorkbench.tsx: একটি নিরাপদ ফিচার যোগ করো' : 'Include the target file path and task. Example: /github src/components/AgentWorkbench.tsx: add a safe feature');
+        const proposal = await generateCodeChangeProposal(target[2].trim(), target[1]);
         setPendingCodeChange(proposal);
         setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: isBn ? `GitHub পরিবর্তনের খসড়া তৈরি হয়েছে। ফাইল: ${proposal.path}\n\nএটি এখনো GitHub-এ লেখা হয়নি। নিচের Preview দেখে স্পষ্টভাবে অনুমোদন দিলে একটি আলাদা branch ও Pull Request তৈরি হবে; main branch সরাসরি পরিবর্তন হবে না।` : `A GitHub change proposal is ready for review. File: ${proposal.path}\n\nNothing has been written to GitHub yet. Review the preview below; explicit approval will create an isolated branch and pull request, never a direct main-branch change.`, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
         return;
