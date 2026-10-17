@@ -138,6 +138,29 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
         }
       }
 
+      // Natural-language implementation requests can route to an approved existing file without requiring a path.
+      // The target is selected only from this fixed allowlist; every change still requires user review and approval.
+      const hasExplicitGitHubPrefix = /^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i.test(text);
+      if (!hasExplicitGitHubPrefix) {
+        const route = inferSafeCodeRoute(text);
+        if (route) {
+          const proposal = await generateCodeChangeProposal(
+            `Implement this user request in the existing file selected for: ${route.label}. Request: ${text}. Preserve unrelated behavior, follow current project conventions, and return a complete, valid replacement file. If this request cannot safely be completed within this single file, make the smallest safe change and clearly explain the limitation in the proposal message.`,
+            route.path
+          );
+          setPendingCodeChange(proposal);
+          setMessages((prev) => [...prev, {
+            id: 'ai_' + Math.random().toString(36).slice(2, 9),
+            role: 'assistant',
+            content: isBn
+              ? `আপনার অনুরোধটি কোড পরিবর্তনের কাজ হিসেবে শনাক্ত করেছি। উপযুক্ত অনুমোদিত ফাইল: ${proposal.path}\n\nনিচে পরিবর্তনের খসড়া দেখুন। আপনি “অনুমোদন করে PR তৈরি” চাপলে আলাদা GitHub branch ও Pull Request তৈরি হবে। নিজে থেকে merge বা deploy হবে না।`
+              : `I recognized this as an implementation request and selected the approved file: ${proposal.path}.\n\nReview the proposed full-file change below. Only after you click “Approve & create PR” will an isolated branch and pull request be created. Nothing is merged or deployed automatically.`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }]);
+          return;
+        }
+      }
+
       // Explicit GitHub task prefix generates a reviewable proposal; it does not write until confirmed.
       if (/^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i.test(text)) {
         const task = text.replace(/^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i, '').trim();
