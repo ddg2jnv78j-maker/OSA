@@ -134,48 +134,16 @@ export function detectShoppingIntent(query: string): ShoppingIntentAnalysis {
   const isBengali = /[\u0980-\u09FF]/.test(clean);
   const lang: 'bn' | 'en' = isBengali ? 'bn' : 'en';
 
-  // Shopping trigger vocabulary (Bengali + English)
-  const shoppingTriggers = [
-    // English triggers
-    'buy',
-    'purchase',
-    'deal',
-    'deals',
-    'price',
-    'cheap',
-    'budget',
-    'laptop',
-    'phone',
-    'smartphone',
-    'headphone',
-    'earphone',
-    'earbuds',
-    'watch',
-    'smartwatch',
-    'camera',
-    'blender',
-    'gadget',
-    'discount',
-    'under',
-    // Bengali triggers
-    'কিনব',
-    'কিনতে',
-    'সাজেস্ট',
-    'দাম',
-    'বাজেট',
-    'ডিল',
-    'অফার',
-    'মোবাইল',
-    'ফোন',
-    'ল্যাপটপ',
-    'হেডফোন',
-    'ইয়ারফোন',
-    'ঘড়ি',
-    'ব্লেন্ডার',
-    'টাকার মধ্যে',
-  ];
-
-  const hasShoppingTrigger = shoppingTriggers.some((kw) => clean.includes(kw));
+  // Route shopping only when the user expresses a commercial or product-recommendation intent.
+  // A product word alone (e.g. "phone addiction") must not hijack general chat.
+  const explicitCommerceIntent = /\b(buy|purchase|shop|shopping|deal|deals|price|cost|cheap|budget|discount|sale|order|where to buy|recommend|recommendation|suggest|best|top|compare|under|below)\b/i.test(clean)
+    || /(কিনব|কিনতে চাই|কেনা|দাম|বাজেট|ডিল|অফার|কোথায় কিনব|কোনটা ভালো|সেরা|ভালো কোনটি|তুলনা করে|টাকার মধ্যে)/.test(clean);
+  const productCategoryMention = /\b(laptop|computer|phone|smartphone|mobile|headphones?|earphones?|earbuds|smartwatch|watch|camera|blender|gadget|shirt|dress|shoes?|book)\b/i.test(clean)
+    || /(মোবাইল|ফোন|ল্যাপটপ|কম্পিউটার|হেডফোন|ইয়ারফোন|ঘড়ি|ব্লেন্ডার|জামা|জুতা|বই)/.test(clean);
+  const explicitProductRecommendation = /\b(recommend|recommendation|suggest|best|top|compare|which|what|find)\b/i.test(clean)
+    || /(সেরা|ভালো|কোনটি|কোনটা|সাজেস্ট|পরামর্শ|তুলনা)/.test(clean);
+  const hasShoppingTrigger = explicitCommerceIntent
+    || (productCategoryMention && explicitProductRecommendation);
 
   if (!hasShoppingTrigger) {
     return { isShoppingIntent: false, keywords: [], language: lang };
