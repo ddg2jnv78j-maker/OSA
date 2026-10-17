@@ -1,0 +1,62 @@
+name: OSA AI PR CI
+
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osa-ai-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Install, type-check, build and regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Build static site (no deployment)
+        run: npm run build
+        env:
+          VITE_BASE_PATH: /
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY: ci-placeholder-anon-key
+
+      - name: Test audio-call notifications
+        run: npm run test:audio-call
+
+      - name: Test voice-message notifications
+        run: npm run test:voice-notification
+
+      - name: Test authentication email flows
+        run: npm run test:auth-email
+
+      - name: Test Android auto-update
+        run: npm run test:auto-update
+
+      - name: Test affiliate foundation
+        run: npm run test:affiliate
+
+      - name: Test AI shopping assistant
+        run: npm run test:shopping
+
+      - name: Test autonomous agent safety boundaries
+        run: npm run test:agent

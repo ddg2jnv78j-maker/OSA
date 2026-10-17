@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { Profile, AffiliateProduct } from '../types/osa';
 import { TranslationDictionary } from '../lib/i18n';
-import { generateConversationalReply, queryShoppingAssistant } from '../services/aiService';
+import { generateConversationalReply, queryShoppingAssistant, generateCodeChangeProposal, submitApprovedGitHubChange, OsaAiCodeProposal } from '../services/aiService';
 import { AffiliateProductCard } from './AffiliateProductCard';
 
 interface ChatMessage {
@@ -29,12 +29,35 @@ interface ChatMessage {
   isError?: boolean;
 }
 
+type SafeCodeRoute = { path: string; matches: RegExp; label: string };
+
+// Only route clear implementation requests to existing, allowlisted source files.
+// Unsupported or security-sensitive requests remain ordinary chat instead of guessing a target.
+function inferSafeCodeRoute(request: string): SafeCodeRoute | null {
+  const text = request.toLowerCase();
+  const asksForImplementation = /\b(add|build|create|implement|fix|change|update|make|code|develop|integrate|enable|support)\b|যোগ কর|তৈরি কর|বানাও|নির্মাণ কর|ঠিক কর|পরিবর্তন কর|সংশোধন কর|ইমপ্লিমেন্ট|ফিচার যোগ|কাজ করুক|কাজ করতে পারে/i.test(text);
+  if (!asksForImplementation) return null;
+
+  const routes: SafeCodeRoute[] = [
+    { path: 'src/components/AgentWorkbench.tsx', label: 'OSA AI interface and app actions', matches: /agent|osa ai|chat interface|chat ui|voice typing|speech.?to.?text|কথা বলে লিখ|ভয়েস টাইপ|ভয়েস টাইপ|কথা থেকে লেখা|চ্যাট|চ্যাটবট|এজেন্ট|সেটিংস|থিম|ভাষা|ড্যাশবোর্ড/i },
+    { path: 'src/services/aiService.ts', label: 'AI service and request routing', matches: /ai service|api call|request routing|prompt|gemini|shopping assistant|ডিল|শপিং|এআই সার্ভিস|প্রম্পট|জেমিনি/i },
+    { path: 'src/components/AgentWorkbench.tsx', label: 'OSA app user interface', matches: /button|screen|page|interface|ui|layout|design|বাটন|স্ক্রিন|পেজ|ইন্টারফেস|ডিজাইন/i },
+  ];
+  // For broad app-feature requests, start with the agent workbench rather than forcing the user to know a file path.
+  return routes.find((route) => route.matches.test(text)) || {
+    path: 'src/components/AgentWorkbench.tsx',
+    label: 'general OSA app feature request (single-file safe proposal)',
+    matches: /.*/,
+  };
+}
+
 interface AgentWorkbenchProps {
   currentUser: Profile;
   t: TranslationDictionary;
+  onAppAction?: (action: 'open_settings' | 'open_chats' | 'open_groups' | 'open_status' | 'open_notifications' | 'open_deals' | 'open_calls' | 'theme_dark' | 'theme_light' | 'language_bn' | 'language_en') => string | undefined;
 }
 
-export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }) => {
+export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, onAppAction }) => {
   const isBn = currentUser.language === 'bn';
   const initialGreeting = isBn
     ? 'হ্যালো! আমি OSA AI। আজ আপনাকে কীভাবে সাহায্য করতে পারি? (যেকোনো প্রশ্ন করুন কিংবা বাংলা বা ইংরেজিতে ডিল ও শপিং পরামর্শ চান!)'
@@ -51,6 +74,8 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [pendingCodeChange, setPendingCodeChange] = useState<OsaAiCodeProposal | null>(null);
+  const [isApplyingCodeChange, setIsApplyingCodeChange] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -94,6 +119,64 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
     try {
       const lang = isBn ? 'bn' : 'en';
 
+      // Natural-language app actions use a fixed allowlist; model output never selects action names.
+      const normalizedCommand = text.toLowerCase().trim();
+      const appCommandRules: Array<{ action: NonNullable<AgentWorkbenchProps['onAppAction']> extends (action: infer A) => string | undefined ? A : never; pattern: RegExp }> = [
+        { action: 'open_settings', pattern: /(?:\b(?:open|show|go to|take me to)\s+settings\b|settings\s+(?:please\s+)?(?:open|show)\b|সেটিংস\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও|এ নিয়ে যাও|এ নিয়ে চলো)|আমাকে\s+সেটিংসে\s*(?:নিয়ে যাও|নিয়ে চলো))/i },
+        { action: 'open_chats', pattern: /(?:\b(?:open|show|go to)\s+chats?\b|চ্যাট\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও)|মেসেজ\s*(?:খুলে দাও|দেখাও))/i },
+        { action: 'open_groups', pattern: /(?:\b(?:open|show|go to)\s+groups?\b|গ্রুপ\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও))/i },
+        { action: 'open_status', pattern: /(?:\b(?:open|show|go to)\s+status\b|স্ট্যাটাস\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও))/i },
+        { action: 'open_notifications', pattern: /(?:\b(?:open|show|check)\s+notifications?\b|নোটিফিকেশন\s*(?:খুলে দাও|খুলুন|দেখাও|চেক করো))/i },
+        { action: 'open_deals', pattern: /(?:\b(?:open|show|go to)\s+deals\b|ডিল\s*(?:খুলে দাও|খুলুন|দেখাও))/i },
+        { action: 'open_calls', pattern: /(?:\b(?:open|show|go to)\s+calls?\b|কল\s*(?:খুলে দাও|খুলুন|দেখাও|এ যাও))/i },
+        { action: 'theme_dark', pattern: /(?:\b(?:enable|turn on|switch to|use)\s+dark mode\b|dark mode\s*(?:on|please)?|ডার্ক মোড\s*(?:চালু করো|করো|দাও))/i },
+        { action: 'theme_light', pattern: /(?:\b(?:enable|turn on|switch to|use)\s+light mode\b|light mode\s*(?:on|please)?|লাইট মোড\s*(?:চালু করো|করো|দাও))/i },
+        { action: 'language_bn', pattern: /(?:\b(?:switch to|change to|use)\s+bengali\b|বাংলা\s*(?:ভাষা\s*)?(?:করো|চালু করো|দাও)|বাংলায়\s*(?:করো|দাও|চালাও))/i },
+        { action: 'language_en', pattern: /(?:\b(?:switch to|change to|use)\s+english\b|ইংরেজি\s*(?:ভাষা\s*)?(?:করো|চালু করো|দাও)|ইংলিশে\s*(?:করো|দাও))/i },
+      ];
+      const matchedAppCommand = appCommandRules.find(({ pattern }) => pattern.test(normalizedCommand));
+      if (matchedAppCommand && onAppAction) {
+        const result = onAppAction(matchedAppCommand.action);
+        if (result) {
+          setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: result, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+          return;
+        }
+      }
+
+      // Natural-language implementation requests can route to an approved existing file without requiring a path.
+      // The target is selected only from this fixed allowlist; every change still requires user review and approval.
+      const hasExplicitGitHubPrefix = /^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i.test(text);
+      if (!hasExplicitGitHubPrefix) {
+        const route = inferSafeCodeRoute(text);
+        if (route) {
+          const proposal = await generateCodeChangeProposal(
+            `Implement this user request in the existing file selected for: ${route.label}. Request: ${text}. Preserve unrelated behavior, follow current project conventions, and return a complete, valid replacement file. If this request cannot safely be completed within this single file, make the smallest safe change and clearly explain the limitation in the proposal message.`,
+            route.path
+          );
+          setPendingCodeChange(proposal);
+          setMessages((prev) => [...prev, {
+            id: 'ai_' + Math.random().toString(36).slice(2, 9),
+            role: 'assistant',
+            content: isBn
+              ? `আপনার অনুরোধটি কোড পরিবর্তনের কাজ হিসেবে শনাক্ত করেছি। উপযুক্ত অনুমোদিত ফাইল: ${proposal.path}\n\nনিচে পরিবর্তনের খসড়া দেখুন। আপনি “অনুমোদন করে PR তৈরি” চাপলে আলাদা GitHub branch ও Pull Request তৈরি হবে। নিজে থেকে merge বা deploy হবে না।`
+              : `I recognized this as an implementation request and selected the approved file: ${proposal.path}.\n\nReview the proposed full-file change below. Only after you click “Approve & create PR” will an isolated branch and pull request be created. Nothing is merged or deployed automatically.`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }]);
+          return;
+        }
+      }
+
+      // Explicit GitHub task prefix generates a reviewable proposal; it does not write until confirmed.
+      if (/^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i.test(text)) {
+        const task = text.replace(/^(?:\/github|github:|গিটহাব:|কোড পরিবর্তন:)\s*/i, '').trim();
+        const target = task.match(/^([A-Za-z0-9_./-]+\.(?:tsx?|css|mjs|md)):\s*([\s\S]+)$/);
+        if (!target) throw new Error(isBn ? 'ফাইলের path ও কাজ লিখুন। উদাহরণ: /github src/components/AgentWorkbench.tsx: একটি নিরাপদ ফিচার যোগ করো' : 'Include the target file path and task. Example: /github src/components/AgentWorkbench.tsx: add a safe feature');
+        const proposal = await generateCodeChangeProposal(target[2].trim(), target[1]);
+        setPendingCodeChange(proposal);
+        setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: isBn ? `GitHub পরিবর্তনের খসড়া তৈরি হয়েছে। ফাইল: ${proposal.path}\n\nএটি এখনো GitHub-এ লেখা হয়নি। নিচের Preview দেখে স্পষ্টভাবে অনুমোদন দিলে একটি আলাদা branch ও Pull Request তৈরি হবে; main branch সরাসরি পরিবর্তন হবে না।` : `A GitHub change proposal is ready for review. File: ${proposal.path}\n\nNothing has been written to GitHub yet. Review the preview below; explicit approval will create an isolated branch and pull request, never a direct main-branch change.`, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+        return;
+      }
+
       // 1. Check if shopping/deals query
       const shoppingRes = await queryShoppingAssistant(text, lang);
 
@@ -111,7 +194,10 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
         }));
         historyForAI.push({ role: 'user', content: text });
 
-        assistantReply = await generateConversationalReply(historyForAI, lang);
+        assistantReply = await generateConversationalReply(historyForAI, lang, {
+          fullName: currentUser.full_name,
+          username: currentUser.username,
+        });
       }
 
       const aiMsg: ChatMessage = {
@@ -131,8 +217,8 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
         id: 'err_' + Math.random().toString(36).substring(2, 9),
         role: 'assistant',
         content: isBn
-          ? `দুঃখিত, এআই সার্ভারের সাথে সংযোগ স্থাপন করা যায়নি: ${errText}\nদয়া করে আপনার এআই এপিআই কি (VITE_GOOGLE_AI_API_KEY) যাচাই করুন অথবা আবার চেষ্টা করুন।`
-          : `Sorry, unable to reach the OSA AI backend: ${errText}\nPlease check your VITE_GOOGLE_AI_API_KEY configuration or try again.`,
+          ? `দুঃখিত, OSA AI backend-এ সমস্যা হয়েছে: ${errText}\nঅনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।`
+          : `Sorry, OSA AI encountered a backend error: ${errText}\nPlease try again in a moment.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isError: true,
       };
@@ -163,7 +249,7 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
                 OSA AI
               </h1>
               <span className="px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 text-[10px] font-bold uppercase">
-                Gemini 2.5 Flash
+                Gemini 3.8 Flash
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -264,6 +350,30 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
           <div ref={messagesEndRef} />
         </div>
       </div>
+
+      {/* Explicit GitHub source-change approval gate */}
+      {pendingCodeChange && (
+        <div className="mx-3 mb-3 rounded-2xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 p-3 shrink-0">
+          <div className="text-sm font-bold text-slate-900 dark:text-white">{isBn ? 'GitHub পরিবর্তন পর্যালোচনা' : 'Review GitHub source change'}</div>
+          <div className="text-xs text-slate-600 dark:text-slate-300 mt-1">{pendingCodeChange.message}</div>
+          <div className="text-xs font-mono mt-2 break-all">{pendingCodeChange.path}</div>
+          <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-slate-950 text-slate-100 p-2 text-[10px] whitespace-pre-wrap">{pendingCodeChange.content}</pre>
+          <div className="text-[11px] text-amber-800 dark:text-amber-200 mt-2">{isBn ? 'অনুমোদন দিলে GitHub token-সহ server-side function administrator অনুমতি যাচাই করে নতুন branch/PR তৈরি করবে। Merge বা production deploy হবে না।' : 'Approval sends the proposal to a server-side function that checks administrator access and creates a new branch/PR only. No merge or production deployment.'}</div>
+          <div className="flex gap-2 mt-3">
+            <button type="button" disabled={isApplyingCodeChange} onClick={async () => {
+              setIsApplyingCodeChange(true);
+              try {
+                const result = await submitApprovedGitHubChange(pendingCodeChange);
+                setMessages((prev) => [...prev, { id: 'ai_' + Math.random().toString(36).slice(2, 9), role: 'assistant', content: (isBn ? 'Pull Request তৈরি হয়েছে: ' : 'Pull Request created: ') + result.pullRequestUrl + '\\n' + (isBn ? 'এখন CI ফলাফল ও diff পর্যালোচনা করুন; merge করা হয়নি।' : 'Review the diff and CI results; nothing has been merged.'), timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+                setPendingCodeChange(null);
+              } catch (err) {
+                setErrorMessage(err instanceof Error ? err.message : 'GitHub request failed.');
+              } finally { setIsApplyingCodeChange(false); }
+            }} className="rounded-xl bg-blue-600 text-white px-3 py-2 text-xs font-bold disabled:opacity-50">{isApplyingCodeChange ? (isBn ? 'তৈরি হচ্ছে…' : 'Creating…') : (isBn ? 'অনুমোদন করে PR তৈরি' : 'Approve & create PR')}</button>
+            <button type="button" disabled={isApplyingCodeChange} onClick={() => setPendingCodeChange(null)} className="rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-white px-3 py-2 text-xs font-bold">{isBn ? 'বাতিল' : 'Cancel'}</button>
+          </div>
+        </div>
+      )}
 
       {/* Suggested Quick Prompts */}
       <div className="px-4 py-2 bg-white/50 dark:bg-slate-900/50 backdrop-blur-xs border-t border-slate-200 dark:border-slate-800 shrink-0">

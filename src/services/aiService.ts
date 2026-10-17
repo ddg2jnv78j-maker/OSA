@@ -1,24 +1,32 @@
-import { GoogleGenAI } from '@google/genai';
 import { AffiliateProduct } from '../types/osa';
 import { fetchActiveAffiliateProducts } from './osaService';
+import { getSupabaseConfig, supabase } from '../lib/supabase';
 
-function getConfiguredGeminiKey(): string {
-  const raw = import.meta.env.VITE_GOOGLE_AI_API_KEY as string | undefined;
-  if (!raw) return '';
-  const cleaned = raw.trim().replace(/^["']+|["']+$/g, '').trim();
-  if (
-    !cleaned ||
-    cleaned === 'your-google-ai-api-key' ||
-    cleaned === 'MY_GEMINI_API_KEY' ||
-    cleaned.length < 12
-  ) {
-    return '';
+type OsaAiAction = 'chat' | 'draft' | 'shopping' | 'code';
+
+async function invokeOsaAi(payload: {
+  action: OsaAiAction;
+  messages?: ChatMessageItem[];
+  language?: 'en' | 'bn';
+  userName?: string;
+  username?: string;
+  prompt?: string;
+}): Promise<string> {
+  const config = getSupabaseConfig();
+  if (!config.isConfigured) {
+    throw new Error('OSA AI backend is not configured: Supabase URL and anon key are missing.');
   }
-  return cleaned;
-}
-
-export function isGoogleAiConfigured(): boolean {
-  return Boolean(getConfiguredGeminiKey());
+  const { data, error } = await supabase.functions.invoke('osa-ai-chat', { body: payload });
+  if (error) {
+    const context = (error as { context?: { json?: () => Promise<{ error?: string }> } }).context;
+    let detail = '';
+    try { detail = (await context?.json?.())?.error || ''; } catch { /* response may not be JSON */ }
+    throw new Error(detail || error.message || 'OSA AI backend request failed.');
+  }
+  if (!data || typeof data.reply !== 'string' || !data.reply.trim()) {
+    throw new Error('OSA AI backend returned an empty response.');
+  }
+  return data.reply.trim();
 }
 
 /**
@@ -28,37 +36,65 @@ export async function generateSmartDraftOrReply(params: {
   draftOrTopic: string;
   recentMessages?: { senderName: string; content: string }[];
 }): Promise<string> {
-  const apiKey = getConfiguredGeminiKey();
-  if (!apiKey) {
-    throw new Error(
-      'Google AI (VITE_GOOGLE_AI_API_KEY) is not configured in this build environment.'
-    );
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
   const contextLines = (params.recentMessages || [])
     .slice(-5)
     .map((m) => `${m.senderName}: ${m.content}`)
     .join('\n');
-
   const prompt = params.draftOrTopic.trim()
-    ? `Improve or complete this OSA chat message concisely and naturally (return only the message text, no quotes):\nDraft: ${params.draftOrTopic.trim()}\n${
-        contextLines ? `\nRecent conversation context:\n${contextLines}` : ''
-      }`
-    : `Suggest a concise, natural, friendly reply for this OSA conversation (return only the reply text, no quotes):\n${
-        contextLines || 'Greeting a contact on OSA.'
-      }`;
+    ? `Improve or complete this OSA chat message concisely and naturally (return only the message text, no quotes):\nDraft: ${params.draftOrTopic.trim()}\n${contextLines ? `\nRecent conversation context:\n${contextLines}` : ''}`
+    : `Suggest a concise, natural, friendly reply for this OSA conversation (return only the reply text, no quotes):\n${contextLines || 'Greeting a contact on OSA.'}`;
+  return invokeOsaAi({ action: 'draft', prompt });
+}
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
-    contents: prompt,
+
+export interface OsaAiCodeProposal {
+  path: string;
+  message: string;
+  content: string;
+}
+
+export async function generateCodeChangeProposal(task: string, targetPath: string): Promise<OsaAiCodeProposal> {
+  const config = getSupabaseConfig();
+  if (!config.isConfigured) throw new Error('Supabase is not configured.');
+  const { data: inspected, error: inspectError } = await supabase.functions.invoke('osa-ai-github', {
+    body: { action: 'inspect_file', path: targetPath },
   });
-
-  const output = response.text?.trim();
-  if (!output) {
-    throw new Error('No response returned from Google Gemini API.');
+  if (inspectError) throw new Error(inspectError.message || 'Could not inspect the current GitHub file.');
+  if (!inspected || typeof inspected.content !== 'string' || inspected.readOnly !== true) {
+    throw new Error(inspected?.error || 'Could not read the current source file from GitHub.');
   }
-  return output;
+  const prompt = [
+    'Modify the existing file shown below to satisfy the task. Preserve unrelated functionality and existing project conventions.',
+    'Return ONLY JSON with keys path, message, content. The path must be exactly the target path. content must be the complete replacement file.',
+    'Do not claim tests ran. Do not add secrets or change authentication, authorization, privacy, permissions, or deployment behavior.',
+    `TARGET PATH: ${targetPath}`,
+    `TASK: ${task.slice(0, 8000)}`,
+    'CURRENT FILE CONTENT:',
+    inspected.content.slice(0, 12000),
+  ].join('\n\n');
+  const raw = await invokeOsaAi({ action: 'code', prompt });
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+  if (jsonStart < 0 || jsonEnd <= jsonStart) throw new Error('OSA AI did not return a valid code proposal.');
+  const proposal = JSON.parse(raw.slice(jsonStart, jsonEnd + 1)) as Partial<OsaAiCodeProposal>;
+  if (typeof proposal.path !== 'string' || typeof proposal.message !== 'string' || typeof proposal.content !== 'string') {
+    throw new Error('OSA AI code proposal is missing required fields.');
+  }
+  if (proposal.path !== targetPath) throw new Error('OSA AI proposed a different file than the one requested; no change was applied.');
+  if (!proposal.content.trim()) throw new Error(proposal.message || 'OSA AI needs a clearer request before proposing code.');
+  if (proposal.content.length > 250000) throw new Error('Proposed source file exceeds the 250 KB safety limit.');
+  return { path: proposal.path, message: proposal.message, content: proposal.content };
+}
+
+export async function submitApprovedGitHubChange(proposal: OsaAiCodeProposal): Promise<{ pullRequestUrl: string; branch: string }> {
+  const config = getSupabaseConfig();
+  if (!config.isConfigured) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.functions.invoke('osa-ai-github', {
+    body: { action: 'create_change', path: proposal.path, content: proposal.content, message: proposal.message, confirmed: true },
+  });
+  if (error) throw new Error(error.message || 'GitHub change request failed.');
+  if (!data?.success || typeof data.pullRequestUrl !== 'string') throw new Error(data?.error || 'GitHub change was not created.');
+  return { pullRequestUrl: data.pullRequestUrl, branch: data.branch };
 }
 
 export interface ChatMessageItem {
@@ -68,41 +104,16 @@ export interface ChatMessageItem {
 
 export async function generateConversationalReply(
   messages: ChatMessageItem[],
-  userLanguage: 'en' | 'bn' = 'en'
+  userLanguage: 'en' | 'bn' = 'en',
+  profile?: { fullName?: string | null; username?: string | null }
 ): Promise<string> {
-  const apiKey = getConfiguredGeminiKey();
-  if (!apiKey) {
-    throw new Error(
-      userLanguage === 'bn'
-        ? 'গুগল এআই (Google AI API Key) এই পরিবেশে কনফিগার করা হয়নি।'
-        : 'Google AI (VITE_GOOGLE_AI_API_KEY) is not configured in this build environment.'
-    );
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-  const formattedHistory = messages
-    .map((m) => `${m.role === 'user' ? 'User' : 'OSA AI'}: ${m.content}`)
-    .join('\n');
-
-  const systemPrompt = `You are OSA AI, an advanced, friendly, helpful AI assistant built into the OSA Digital Platform.
-You fluently understand and converse in both Bengali and English.
-Provide clear, accurate, natural, and polite answers. Avoid robotic phrases.
-Maintain the context of the ongoing conversation.`;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
-    contents: `${systemPrompt}\n\nConversation History:\n${formattedHistory}\n\nOSA AI:`,
+  return invokeOsaAi({
+    action: 'chat',
+    messages: messages.slice(-20),
+    language: userLanguage,
+    userName: profile?.fullName?.trim().slice(0, 120) || undefined,
+    username: profile?.username?.trim().slice(0, 80) || undefined,
   });
-
-  const reply = response.text?.trim();
-  if (!reply) {
-    throw new Error(
-      userLanguage === 'bn'
-        ? 'এআই থেকে কোনো রেসপন্স পাওয়া যায়নি।'
-        : 'No response returned from Google Gemini API.'
-    );
-  }
-  return reply;
 }
 
 // ============================================================================
@@ -132,53 +143,18 @@ export function detectShoppingIntent(query: string): ShoppingIntentAnalysis {
   const isBengali = /[\u0980-\u09FF]/.test(clean);
   const lang: 'bn' | 'en' = isBengali ? 'bn' : 'en';
 
-  // Shopping trigger vocabulary (Bengali + English)
-  const shoppingTriggers = [
-    // English triggers
-    'buy',
-    'purchase',
-    'recommend',
-    'suggest',
-    'best',
-    'deal',
-    'deals',
-    'price',
-    'cheap',
-    'budget',
-    'laptop',
-    'phone',
-    'smartphone',
-    'headphone',
-    'earphone',
-    'earbuds',
-    'watch',
-    'smartwatch',
-    'camera',
-    'blender',
-    'gadget',
-    'discount',
-    'under',
-    // Bengali triggers
-    'কিনব',
-    'কিনতে',
-    'সাজেস্ট',
-    'পরামর্শ',
-    'সেরা',
-    'দাম',
-    'বাজেট',
-    'ডিল',
-    'অফার',
-    'মোবাইল',
-    'ফোন',
-    'ল্যাপটপ',
-    'হেডফোন',
-    'ইয়ারফোন',
-    'ঘড়ি',
-    'ব্লেন্ডার',
-    'টাকার মধ্যে',
-  ];
-
-  const hasShoppingTrigger = shoppingTriggers.some((kw) => clean.includes(kw));
+  // Route shopping only when the user expresses a commercial or product-recommendation intent.
+  // A product word alone (e.g. "phone addiction") must not hijack general chat.
+  const explicitCommerceIntent = /\b(buy|purchase|shop|shopping|deal|deals|price|cost|cheap|budget|discount|sale|order|where to buy)\b/i.test(clean)
+    || /(কিনব|কিনতে চাই|কেনা|দাম|বাজেট|ডিল|অফার|কোথায় কিনব|টাকার মধ্যে)/.test(clean);
+  const productCategoryMention = /\b(laptop|computer|phone|smartphone|mobile|headphones?|earphones?|earbuds|smartwatch|watch|camera|blender|gadget|shirt|dress|shoes?|book)\b/i.test(clean)
+    || /(মোবাইল|ফোন|ল্যাপটপ|কম্পিউটার|হেডফোন|ইয়ারফোন|ঘড়ি|ব্লেন্ডার|জামা|জুতা|বই)/.test(clean);
+  const explicitProductRecommendation = /\b(recommend|recommendation|suggest|best|top|compare|which|what|find)\b/i.test(clean)
+    || /(সেরা|ভালো|কোনটি|কোনটা|সাজেস্ট|পরামর্শ|তুলনা)/.test(clean);
+  const hasShoppingTrigger = explicitCommerceIntent
+    || (productCategoryMention && explicitProductRecommendation)
+    || (productCategoryMention && /\b(under|below|within|budget)\b/i.test(clean) && /[0-9]{2,}/.test(clean))
+    || (productCategoryMention && /(টাকার মধ্যে|বাজেট|এর নিচে)/.test(clean) && /[০-৯0-9]{2,}/.test(clean));
 
   if (!hasShoppingTrigger) {
     return { isShoppingIntent: false, keywords: [], language: lang };
@@ -356,19 +332,14 @@ CRITICAL INTEGRITY RULES:
 5. Do NOT output raw URLs or markdown links. Deal cards with verified tracked buttons will be rendered automatically below your message.`;
 
   let explanation = '';
-  const apiKey = getConfiguredGeminiKey();
-
-  if (apiKey) {
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `${systemInstruction}\n\nAPPROVED CATALOG:\n${catalogContext}\n\nUser Question: ${userQuery}`,
-      });
-      explanation = response.text?.trim() || '';
-    } catch {
-      // Deterministic fallback if Gemini is offline/rate-limited
-    }
+  try {
+    explanation = await invokeOsaAi({
+      action: 'shopping',
+      language: isBn ? 'bn' : 'en',
+      prompt: `${systemInstruction}\n\nAPPROVED CATALOG:\n${catalogContext}\n\nUser Question: ${userQuery}`,
+    });
+  } catch {
+    // Deterministic fallback if the secure AI backend is offline or rate-limited.
   }
 
   if (!explanation) {
