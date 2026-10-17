@@ -1,24 +1,30 @@
-import { GoogleGenAI } from '@google/genai';
 import { AffiliateProduct } from '../types/osa';
 import { fetchActiveAffiliateProducts } from './osaService';
+import { getSupabaseConfig, supabase } from '../lib/supabase';
 
-function getConfiguredGeminiKey(): string {
-  const raw = import.meta.env.VITE_GOOGLE_AI_API_KEY as string | undefined;
-  if (!raw) return '';
-  const cleaned = raw.trim().replace(/^["']+|["']+$/g, '').trim();
-  if (
-    !cleaned ||
-    cleaned === 'your-google-ai-api-key' ||
-    cleaned === 'MY_GEMINI_API_KEY' ||
-    cleaned.length < 12
-  ) {
-    return '';
+type OsaAiAction = 'chat' | 'draft' | 'shopping';
+
+async function invokeOsaAi(payload: {
+  action: OsaAiAction;
+  messages?: ChatMessageItem[];
+  language?: 'en' | 'bn';
+  prompt?: string;
+}): Promise<string> {
+  const config = getSupabaseConfig();
+  if (!config.isConfigured) {
+    throw new Error('OSA AI backend is not configured: Supabase URL and anon key are missing.');
   }
-  return cleaned;
-}
-
-export function isGoogleAiConfigured(): boolean {
-  return Boolean(getConfiguredGeminiKey());
+  const { data, error } = await supabase.functions.invoke('osa-ai-chat', { body: payload });
+  if (error) {
+    const context = (error as { context?: { json?: () => Promise<{ error?: string }> } }).context;
+    let detail = '';
+    try { detail = (await context?.json?.())?.error || ''; } catch { /* response may not be JSON */ }
+    throw new Error(detail || error.message || 'OSA AI backend request failed.');
+  }
+  if (!data || typeof data.reply !== 'string' || !data.reply.trim()) {
+    throw new Error('OSA AI backend returned an empty response.');
+  }
+  return data.reply.trim();
 }
 
 /**
@@ -28,37 +34,14 @@ export async function generateSmartDraftOrReply(params: {
   draftOrTopic: string;
   recentMessages?: { senderName: string; content: string }[];
 }): Promise<string> {
-  const apiKey = getConfiguredGeminiKey();
-  if (!apiKey) {
-    throw new Error(
-      'Google AI (VITE_GOOGLE_AI_API_KEY) is not configured in this build environment.'
-    );
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
   const contextLines = (params.recentMessages || [])
     .slice(-5)
     .map((m) => `${m.senderName}: ${m.content}`)
-    .join('\n');
-
+    .join('\\n');
   const prompt = params.draftOrTopic.trim()
-    ? `Improve or complete this OSA chat message concisely and naturally (return only the message text, no quotes):\nDraft: ${params.draftOrTopic.trim()}\n${
-        contextLines ? `\nRecent conversation context:\n${contextLines}` : ''
-      }`
-    : `Suggest a concise, natural, friendly reply for this OSA conversation (return only the reply text, no quotes):\n${
-        contextLines || 'Greeting a contact on OSA.'
-      }`;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
-    contents: prompt,
-  });
-
-  const output = response.text?.trim();
-  if (!output) {
-    throw new Error('No response returned from Google Gemini API.');
-  }
-  return output;
+    ? `Improve or complete this OSA chat message concisely and naturally (return only the message text, no quotes):\\nDraft: ${params.draftOrTopic.trim()}\\n${contextLines ? `\\nRecent conversation context:\\n${contextLines}` : ''}`
+    : `Suggest a concise, natural, friendly reply for this OSA conversation (return only the reply text, no quotes):\\n${contextLines || 'Greeting a contact on OSA.'}`;
+  return invokeOsaAi({ action: 'draft', prompt });
 }
 
 export interface ChatMessageItem {
@@ -70,39 +53,7 @@ export async function generateConversationalReply(
   messages: ChatMessageItem[],
   userLanguage: 'en' | 'bn' = 'en'
 ): Promise<string> {
-  const apiKey = getConfiguredGeminiKey();
-  if (!apiKey) {
-    throw new Error(
-      userLanguage === 'bn'
-        ? 'গুগল এআই (Google AI API Key) এই পরিবেশে কনফিগার করা হয়নি।'
-        : 'Google AI (VITE_GOOGLE_AI_API_KEY) is not configured in this build environment.'
-    );
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-  const formattedHistory = messages
-    .map((m) => `${m.role === 'user' ? 'User' : 'OSA AI'}: ${m.content}`)
-    .join('\n');
-
-  const systemPrompt = `You are OSA AI, an advanced, friendly, helpful AI assistant built into the OSA Digital Platform.
-You fluently understand and converse in both Bengali and English.
-Provide clear, accurate, natural, and polite answers. Avoid robotic phrases.
-Maintain the context of the ongoing conversation.`;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
-    contents: `${systemPrompt}\n\nConversation History:\n${formattedHistory}\n\nOSA AI:`,
-  });
-
-  const reply = response.text?.trim();
-  if (!reply) {
-    throw new Error(
-      userLanguage === 'bn'
-        ? 'এআই থেকে কোনো রেসপন্স পাওয়া যায়নি।'
-        : 'No response returned from Google Gemini API.'
-    );
-  }
-  return reply;
+  return invokeOsaAi({ action: 'chat', messages: messages.slice(-20), language: userLanguage });
 }
 
 // ============================================================================
@@ -356,19 +307,14 @@ CRITICAL INTEGRITY RULES:
 5. Do NOT output raw URLs or markdown links. Deal cards with verified tracked buttons will be rendered automatically below your message.`;
 
   let explanation = '';
-  const apiKey = getConfiguredGeminiKey();
-
-  if (apiKey) {
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `${systemInstruction}\n\nAPPROVED CATALOG:\n${catalogContext}\n\nUser Question: ${userQuery}`,
-      });
-      explanation = response.text?.trim() || '';
-    } catch {
-      // Deterministic fallback if Gemini is offline/rate-limited
-    }
+  try {
+    explanation = await invokeOsaAi({
+      action: 'shopping',
+      language: isBn ? 'bn' : 'en',
+      prompt: `${systemInstruction}\\n\\nAPPROVED CATALOG:\\n${catalogContext}\\n\\nUser Question: ${userQuery}`,
+    });
+  } catch {
+    // Deterministic fallback if the secure AI backend is offline or rate-limited.
   }
 
   if (!explanation) {
