@@ -57,3 +57,6 @@ jobs:
 
       - name: Test AI shopping assistant
         run: npm run test:shopping
+
+      - name: Test autonomous agent safety boundaries
+        run: npm run test:agent
