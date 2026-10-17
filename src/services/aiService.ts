@@ -61,6 +61,50 @@ export async function generateSmartDraftOrReply(params: {
   return output;
 }
 
+export interface ChatMessageItem {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export async function generateConversationalReply(
+  messages: ChatMessageItem[],
+  userLanguage: 'en' | 'bn' = 'en'
+): Promise<string> {
+  const apiKey = getConfiguredGeminiKey();
+  if (!apiKey) {
+    throw new Error(
+      userLanguage === 'bn'
+        ? 'গুগল এআই (Google AI API Key) এই পরিবেশে কনফিগার করা হয়নি।'
+        : 'Google AI (VITE_GOOGLE_AI_API_KEY) is not configured in this build environment.'
+    );
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+  const formattedHistory = messages
+    .map((m) => `${m.role === 'user' ? 'User' : 'OSA AI'}: ${m.content}`)
+    .join('\n');
+
+  const systemPrompt = `You are OSA AI, an advanced, friendly, helpful AI assistant built into the OSA Digital Platform.
+You fluently understand and converse in both Bengali and English.
+Provide clear, accurate, natural, and polite answers. Avoid robotic phrases.
+Maintain the context of the ongoing conversation.`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: `${systemPrompt}\n\nConversation History:\n${formattedHistory}\n\nOSA AI:`,
+  });
+
+  const reply = response.text?.trim();
+  if (!reply) {
+    throw new Error(
+      userLanguage === 'bn'
+        ? 'এআই থেকে কোনো রেসপন্স পাওয়া যায়নি।'
+        : 'No response returned from Google Gemini API.'
+    );
+  }
+  return reply;
+}
+
 // ============================================================================
 // CATALOG-GROUNDED SHOPPING & DEALS ASSISTANT ENGINE
 // ============================================================================
