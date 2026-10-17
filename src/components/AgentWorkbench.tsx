@@ -15,7 +15,7 @@ import {
   ShoppingBag,
   RefreshCw,
 } from 'lucide-react';
-import { Profile, AffiliateProduct } from '../types/osa';
+import { MainTab, Profile, AffiliateProduct } from '../types/osa';
 import { TranslationDictionary } from '../lib/i18n';
 import { generateConversationalReply, queryShoppingAssistant } from '../services/aiService';
 import { AffiliateProductCard } from './AffiliateProductCard';
@@ -32,9 +32,31 @@ interface ChatMessage {
 interface AgentWorkbenchProps {
   currentUser: Profile;
   t: TranslationDictionary;
+  onNavigate: (tab: MainTab) => void;
 }
 
-export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }) => {
+/** Safe, in-app navigation actions only. This does not execute account, payment, privacy, or messaging mutations. */
+function resolveSafeAppAction(text: string, isBn: boolean): { tab: MainTab; response: string } | null {
+  const value = text.trim().toLowerCase();
+  const hasNavigationIntent = /\\b(open|go to|show|view|take me|navigate|দেখাও|খোলো|খুলে দাও|যাও|নিয়ে যাও|চালু করো)\\b/.test(value) ||
+    /(দেখাও|খোলো|খুলে দাও|যাও|নিয়ে যাও|চালু করো)/.test(value);
+  if (!hasNavigationIntent) return null;
+
+  const routes: { tab: MainTab; pattern: RegExp; bn: string; en: string }[] = [
+    { tab: 'chats', pattern: /\\b(chats?|messages?|conversations?)\\b|চ্যাট|মেসেজ|বার্তা/, bn: 'চ্যাট খুলে দিলাম।', en: 'Opening your chats.' },
+    { tab: 'status', pattern: /\\b(status|stories|story|updates?)\\b|স্ট্যাটাস|স্টোরি|আপডেট/, bn: 'স্ট্যাটাস খুলে দিলাম।', en: 'Opening status updates.' },
+    { tab: 'groups', pattern: /\\b(groups?|group chats?)\\b|গ্রুপ|দলীয় চ্যাট/, bn: 'গ্রুপ খুলে দিলাম।', en: 'Opening your groups.' },
+    { tab: 'calls', pattern: /\\b(calls?|call history|voice calls?|video calls?)\\b|কল|ভয়েস কল|ভিডিও কল/, bn: 'কলস খুলে দিলাম।', en: 'Opening your calls.' },
+    { tab: 'deals', pattern: /\\b(deals?|shopping|offers?|products?)\\b|ডিল|শপিং|অফার|পণ্য/, bn: 'ডিল ও শপিং পেজ খুলে দিলাম।', en: 'Opening deals and shopping.' },
+    { tab: 'settings', pattern: /\\b(settings?|privacy|security|preferences)\\b|সেটিংস|গোপনীয়তা|নিরাপত্তা/, bn: 'সেটিংস খুলে দিলাম।', en: 'Opening settings.' },
+    { tab: 'agent', pattern: /\\b(osa ai|ai assistant|agent workbench)\\b|ওসা এআই|ওসা এআই সহকারী/, bn: 'OSA AI পেজে আছি।', en: 'You are already in OSA AI.' },
+  ];
+  const route = routes.find((item) => item.pattern.test(value));
+  if (!route) return null;
+  return { tab: route.tab, response: isBn ? route.bn : route.en };
+}
+
+export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, onNavigate }) => {
   const isBn = currentUser.language === 'bn';
   const initialGreeting = isBn
     ? 'হ্যালো! আমি OSA AI। আজ আপনাকে কীভাবে সাহায্য করতে পারি? (যেকোনো প্রশ্ন করুন কিংবা বাংলা বা ইংরেজিতে ডিল ও শপিং পরামর্শ চান!)'
@@ -93,6 +115,19 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t }
 
     try {
       const lang = isBn ? 'bn' : 'en';
+
+      // Execute safe, deterministic in-app navigation requests before sending a prompt to the language model.
+      const appAction = resolveSafeAppAction(text, isBn);
+      if (appAction) {
+        onNavigate(appAction.tab);
+        setMessages((prev) => [...prev, {
+          id: 'action_' + Math.random().toString(36).substring(2, 9),
+          role: 'assistant',
+          content: appAction.response,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }]);
+        return;
+      }
 
       // 1. Check if shopping/deals query
       const shoppingRes = await queryShoppingAssistant(text, lang);
