@@ -46,6 +46,7 @@ Deno.serve(async (req: Request) => {
   const safePath = /^(src\/(components|services|pages|lib|hooks)\/[A-Za-z0-9_./-]+\.(tsx?|css)|scripts\/[A-Za-z0-9_.-]+\.mjs|README\.md)$/.test(path)
     && !path.split('/').some((part) => part === '..' || part.startsWith('.'))
     && !/(secret|credential|\.env|service-account|\.jks|\.keystore|workflow|deploy|package-lock|yarn\.lock|pnpm-lock)/i.test(path);
+    && !/(auth|supabase|permission|admin|privacy|security|nativeMobileBridge|pushNotification|osaService|webrtc|remoteCamera)/i.test(path);
   if (action !== 'inspect_file' && action !== 'create_change') return json({ error: 'Unsupported action.' }, 400, origin);
   if (!safePath) return json({ error: 'This path is outside the approved source-code allowlist.' }, 403, origin);
 
