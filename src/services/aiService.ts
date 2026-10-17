@@ -8,6 +8,8 @@ async function invokeOsaAi(payload: {
   action: OsaAiAction;
   messages?: ChatMessageItem[];
   language?: 'en' | 'bn';
+  userName?: string;
+  username?: string;
   prompt?: string;
 }): Promise<string> {
   const config = getSupabaseConfig();
@@ -102,9 +104,16 @@ export interface ChatMessageItem {
 
 export async function generateConversationalReply(
   messages: ChatMessageItem[],
-  userLanguage: 'en' | 'bn' = 'en'
+  userLanguage: 'en' | 'bn' = 'en',
+  profile?: { fullName?: string | null; username?: string | null }
 ): Promise<string> {
-  return invokeOsaAi({ action: 'chat', messages: messages.slice(-20), language: userLanguage });
+  return invokeOsaAi({
+    action: 'chat',
+    messages: messages.slice(-20),
+    language: userLanguage,
+    userName: profile?.fullName?.trim().slice(0, 120) || undefined,
+    username: profile?.username?.trim().slice(0, 80) || undefined,
+  });
 }
 
 // ============================================================================
