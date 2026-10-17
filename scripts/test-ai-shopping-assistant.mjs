@@ -62,4 +62,4 @@ console.log('✓ Passed: Zero secret leakage or unsafe operations');
 console.log('\\n[6/6] Build/type-check verification...');
 console.log('ℹ️ This script does not execute the build; rely on the dedicated CI workflow for build and type-check results.');
 
-console.log('\nAll 6 AI Shopping Assistant verification tests passed successfully!\n');
+console.log('\nAI Shopping Assistant checks completed. Note: this script does not run TypeScript or production build verification; use GitHub Actions CI for those checks.\n');
