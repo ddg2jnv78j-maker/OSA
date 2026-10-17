@@ -9,6 +9,7 @@ import {
   Settings,
   Shield,
   ShoppingBag,
+  Sparkles,
   Users,
   WifiOff,
 } from 'lucide-react';
@@ -37,6 +38,7 @@ import { NotificationsModal } from './pages/NotificationsModal';
 import { SettingsPage } from './pages/SettingsPage';
 import { StatusPage } from './pages/StatusPage';
 import { DealsPage } from './pages/DealsPage';
+import { AgentWorkbench } from './components/AgentWorkbench';
 import {
   applyThemeToDocument,
   checkIsUserAdmin,
@@ -2465,6 +2467,7 @@ export default function App() {
                 { id: 'groups', icon: Users, label: t.groups, badge: 0 },
                 { id: 'calls', icon: Phone, label: t.calls, badge: 0 },
                 { id: 'deals', icon: ShoppingBag, label: t.deals, badge: 0 },
+                { id: 'agent', icon: Sparkles, label: t.agentTab || 'OSA AI', badge: 0 },
                 { id: 'settings', icon: Settings, label: t.settings, badge: 0 },
               ] as const
             ).map((item) => {
@@ -2845,6 +2848,10 @@ export default function App() {
 
           {activeTab === 'deals' && <DealsPage t={t} />}
 
+          {activeTab === 'agent' && (
+            <AgentWorkbench currentUser={currentUser} t={t} />
+          )}
+
           {activeTab === 'settings' && (
             <SettingsPage
               currentUser={currentUser}
@@ -2872,7 +2879,7 @@ export default function App() {
         </main>
 
         {/* Functional Mobile Bottom Navigation */}
-        <nav className="md:hidden z-20 grid grid-cols-6 items-center min-h-16 pt-1.5 pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 shrink-0">
+        <nav className="md:hidden z-20 grid grid-cols-7 items-center min-h-16 pt-1.5 pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 shrink-0">
           {(
             [
               { id: 'chats', icon: MessageSquare, label: t.chats, badge: totalUnreadChats },
@@ -2880,6 +2887,7 @@ export default function App() {
               { id: 'groups', icon: Users, label: t.groups, badge: 0 },
               { id: 'calls', icon: Phone, label: t.calls, badge: 0 },
               { id: 'deals', icon: ShoppingBag, label: 'Deals', badge: 0 },
+              { id: 'agent', icon: Sparkles, label: t.agentTab || 'OSA AI', badge: 0 },
               { id: 'settings', icon: Settings, label: t.settings, badge: 0 },
             ] as const
           ).map((item) => {
