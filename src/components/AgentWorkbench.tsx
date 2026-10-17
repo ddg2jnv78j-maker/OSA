@@ -32,7 +32,7 @@ interface ChatMessage {
 interface AgentWorkbenchProps {
   currentUser: Profile;
   t: TranslationDictionary;
-  onAppAction?: (action: 'open_settings' | 'open_chats' | 'open_deals' | 'open_calls' | 'theme_dark' | 'theme_light' | 'language_bn' | 'language_en') => string | undefined;
+  onAppAction?: (action: 'open_settings' | 'open_chats' | 'open_groups' | 'open_status' | 'open_notifications' | 'open_deals' | 'open_calls' | 'theme_dark' | 'theme_light' | 'language_bn' | 'language_en') => string | undefined;
 }
 
 export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, onAppAction }) => {
@@ -99,11 +99,14 @@ export const AgentWorkbench: React.FC<AgentWorkbenchProps> = ({ currentUser, t, 
 
       // Explicit local commands are handled by a fixed allowlist, never by model-generated tool names.
       const normalizedCommand = text.toLowerCase().trim();
-      const appCommand = normalizedCommand.match(/^(?:osa:|app:)?\s*(?:open settings|settings খুলুন|সেটিংস খুলুন|চ্যাট খুলুন|open chats|open deals|ডিল খুলুন|open calls|কল খুলুন|dark mode|ডার্ক মোড|light mode|লাইট মোড|বাংলা ভাষা|switch to bengali|english language|switch to english)\s*$/i);
+      const appCommand = normalizedCommand.match(/^(?:osa:|app:)?\s*(?:open settings|settings খুলুন|সেটিংস খুলুন|চ্যাট খুলুন|open chats|open groups|গ্রুপ খুলুন|গ্রুপ দেখাও|open status|স্ট্যাটাস খুলুন|স্ট্যাটাস দেখাও|open notifications|নোটিফিকেশন খুলুন|নোটিফিকেশন দেখাও|open deals|ডিল খুলুন|open calls|কল খুলুন|dark mode|ডার্ক মোড|light mode|লাইট মোড|বাংলা ভাষা|switch to bengali|english language|switch to english)\s*$/i);
       if (appCommand && onAppAction) {
         let result: string | undefined;
         if (/settings খুলুন|সেটিংস খুলুন|open settings/i.test(text)) result = onAppAction('open_settings');
         else if (/চ্যাট খুলুন|open chats/i.test(text)) result = onAppAction('open_chats');
+        else if (/গ্রুপ খুলুন|গ্রুপ দেখাও|open groups/i.test(text)) result = onAppAction('open_groups');
+        else if (/স্ট্যাটাস খুলুন|স্ট্যাটাস দেখাও|open status/i.test(text)) result = onAppAction('open_status');
+        else if (/নোটিফিকেশন খুলুন|নোটিফিকেশন দেখাও|open notifications/i.test(text)) result = onAppAction('open_notifications');
         else if (/ডিল খুলুন|open deals/i.test(text)) result = onAppAction('open_deals');
         else if (/কল খুলুন|open calls/i.test(text)) result = onAppAction('open_calls');
         else if (/dark mode|ডার্ক মোড/i.test(text)) result = onAppAction('theme_dark');
