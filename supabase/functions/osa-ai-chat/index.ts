@@ -1,0 +1,113 @@
+// OSA AI — secure server-side Gemini proxy.
+// Configure GOOGLE_AI_API_KEY as a Supabase Edge Function secret.
+// Optional: GEMINI_MODEL (defaults to gemini-3.8-flash).
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': 'https://osa-chat.com',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Vary': 'Origin',
+};
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
+  });
+}
+
+Deno.serve(async (req: Request) => {
+  const origin = req.headers.get('origin');
+  if (origin && origin !== 'https://osa-chat.com' && origin !== 'https://www.osa-chat.com') {
+    return json({ error: 'Origin not allowed.' }, 403);
+  }
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+  if (req.method !== 'POST') return json({ error: 'Method not allowed.' }, 405);
+
+  const authHeader = req.headers.get('authorization') || '';
+  const accessToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!accessToken) return json({ error: 'Please sign in to use OSA AI.' }, 401);
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') || Deno.env.get('SUPABASE_PUBLISHABLE_KEY') || '';
+  const apiKey = Deno.env.get('GOOGLE_AI_API_KEY') || '';
+  const model = (Deno.env.get('GEMINI_MODEL') || 'gemini-3.8-flash').trim();
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return json({ error: 'OSA AI backend auth is not configured. Set the Supabase URL and anon/publishable key for this function.' }, 503);
+  }
+  if (!apiKey) {
+    return json({ error: 'OSA AI server is missing the GOOGLE_AI_API_KEY secret.' }, 503);
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data: userData, error: authError } = await supabase.auth.getUser(accessToken);
+  if (authError || !userData.user) return json({ error: 'Your session is invalid or expired. Please sign in again.' }, 401);
+
+  let body: { action?: string; language?: string; messages?: Array<{ role?: string; content?: string }>; prompt?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: 'Request body must be valid JSON.' }, 400);
+  }
+
+  const action = body.action;
+  if (!['chat', 'draft', 'shopping'].includes(action || '')) {
+    return json({ error: 'Unsupported OSA AI action.' }, 400);
+  }
+  let userPrompt = '';
+  if (action === 'chat') {
+    if (!Array.isArray(body.messages) || body.messages.length === 0) {
+      return json({ error: 'Add a message before sending.' }, 400);
+    }
+    const history = body.messages.slice(-20).map((m) => {
+      const role = m?.role === 'assistant' ? 'OSA AI' : 'User';
+      const content = typeof m?.content === 'string' ? m.content.slice(0, 8000) : '';
+      return `${role}: ${content}`;
+    }).filter((line) => !line.endsWith(': ')).join('\n');
+    const language = body.language === 'bn' ? 'Bengali' : 'English';
+    userPrompt = `You are OSA AI, a helpful, accurate assistant for OSA. Respond naturally in ${language}; use the language the user writes in when appropriate. Maintain context and do not claim actions you did not perform.\n\nConversation:\n${history}\n\nOSA AI:`;
+  } else {
+    if (typeof body.prompt !== 'string' || !body.prompt.trim()) {
+      return json({ error: 'A prompt is required.' }, 400);
+    }
+    userPrompt = body.prompt.slice(0, 24000);
+    if (action === 'draft') userPrompt = `You are OSA AI. Return only the polished message text, without quotes.\n\n${userPrompt}`;
+    if (action === 'shopping') userPrompt = `You are OSA's grounded shopping assistant. Only discuss the approved catalog included in the prompt. Never invent products, prices, merchants, availability or links.\n\n${userPrompt}`;
+  }
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  let upstream: Response;
+  try {
+    upstream = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
+      }),
+    });
+  } catch {
+    return json({ error: 'Could not connect to the Google Gemini API. Please try again.' }, 502);
+  }
+
+  const result = await upstream.json().catch(() => ({}));
+  if (!upstream.ok) {
+    const message = typeof result?.error?.message === 'string' ? result.error.message : 'Gemini request failed.';
+    const status = upstream.status === 400 || upstream.status === 401 || upstream.status === 403 ||
+      upstream.status === 404 || upstream.status === 429 ? upstream.status : 502;
+    return json({ error: message, upstreamStatus: upstream.status }, status);
+  }
+  const reply = result?.candidates?.[0]?.content?.parts
+    ?.map((part: { text?: string }) => part.text || '')
+    .join('')
+    .trim();
+  if (!reply) return json({ error: 'Gemini returned an empty response.' }, 502);
+  return json({ reply });
+});
