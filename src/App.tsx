@@ -2856,6 +2856,9 @@ export default function App() {
                 switch (action) {
                   case 'open_settings': setActiveTab('settings'); return 'Settings opened.';
                   case 'open_chats': setActiveTab('chats'); return 'Chats opened.';
+                  case 'open_groups': setActiveTab('groups'); return 'Groups opened.';
+                  case 'open_status': setActiveTab('status'); return 'Status opened.';
+                  case 'open_notifications': setShowNotificationsModal(true); return 'Notifications opened.';
                   case 'open_deals': setActiveTab('deals'); return 'Deals opened.';
                   case 'open_calls': setActiveTab('calls'); return 'Calls opened.';
                   case 'theme_dark': handleThemeChange('dark'); return 'Dark mode enabled.';
