@@ -2,7 +2,7 @@ import { AffiliateProduct } from '../types/osa';
 import { fetchActiveAffiliateProducts } from './osaService';
 import { getSupabaseConfig, supabase } from '../lib/supabase';
 
-type OsaAiAction = 'chat' | 'draft' | 'shopping';
+type OsaAiAction = 'chat' | 'draft' | 'shopping' | 'code';
 
 async function invokeOsaAi(payload: {
   action: OsaAiAction;
@@ -42,6 +42,38 @@ export async function generateSmartDraftOrReply(params: {
     ? `Improve or complete this OSA chat message concisely and naturally (return only the message text, no quotes):\nDraft: ${params.draftOrTopic.trim()}\n${contextLines ? `\nRecent conversation context:\n${contextLines}` : ''}`
     : `Suggest a concise, natural, friendly reply for this OSA conversation (return only the reply text, no quotes):\n${contextLines || 'Greeting a contact on OSA.'}`;
   return invokeOsaAi({ action: 'draft', prompt });
+}
+
+
+export interface OsaAiCodeProposal {
+  path: string;
+  message: string;
+  content: string;
+}
+
+export async function generateCodeChangeProposal(task: string): Promise<OsaAiCodeProposal> {
+  const raw = await invokeOsaAi({ action: 'code', prompt: task.slice(0, 12000) });
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+  if (jsonStart < 0 || jsonEnd <= jsonStart) throw new Error('OSA AI did not return a valid code proposal.');
+  const proposal = JSON.parse(raw.slice(jsonStart, jsonEnd + 1)) as Partial<OsaAiCodeProposal>;
+  if (typeof proposal.path !== 'string' || typeof proposal.message !== 'string' || typeof proposal.content !== 'string') {
+    throw new Error('OSA AI code proposal is missing required fields.');
+  }
+  if (!proposal.path || !proposal.content) throw new Error(proposal.message || 'OSA AI needs a clearer request before proposing code.');
+  if (proposal.content.length > 250000) throw new Error('Proposed source file exceeds the 250 KB safety limit.');
+  return { path: proposal.path, message: proposal.message, content: proposal.content };
+}
+
+export async function submitApprovedGitHubChange(proposal: OsaAiCodeProposal): Promise<{ pullRequestUrl: string; branch: string }> {
+  const config = getSupabaseConfig();
+  if (!config.isConfigured) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.functions.invoke('osa-ai-github', {
+    body: { action: 'create_change', path: proposal.path, content: proposal.content, message: proposal.message, confirmed: true },
+  });
+  if (error) throw new Error(error.message || 'GitHub change request failed.');
+  if (!data?.success || typeof data.pullRequestUrl !== 'string') throw new Error(data?.error || 'GitHub change was not created.');
+  return { pullRequestUrl: data.pullRequestUrl, branch: data.branch };
 }
 
 export interface ChatMessageItem {
