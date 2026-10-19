@@ -109,18 +109,6 @@ public class OSAUpdateManager {
     }
 
     private static JSONObject fetchLatestReleaseMetadata() {
-        // Attempt 1: Fetch static metadata JSON from https://osa-chat.com/app-release-metadata.json
-        try {
-            String jsonStr = fetchUrlString(STATIC_METADATA_URL, 6000);
-            if (jsonStr != null && !jsonStr.trim().isEmpty()) {
-                JSONObject obj = new JSONObject(jsonStr);
-                if (obj.has("apkUrl") || obj.has("versionCode")) {
-                    return obj;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-
         // Attempt 2: Fetch from GitHub Releases API
         try {
             String ghJson = fetchUrlString(GITHUB_RELEASES_URL, 8000);
@@ -165,6 +153,21 @@ public class OSAUpdateManager {
                     parsed.put("releaseNotes", body);
                     parsed.put("publishedAt", publishedAt);
                     return parsed;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
+        // Fallback only: use site metadata if GitHub Releases API is unavailable.
+        // GitHub is checked first so stale website metadata cannot mask a newer release.
+        try {
+            String jsonStr = fetchUrlString(STATIC_METADATA_URL, 6000);
+            if (jsonStr != null && !jsonStr.trim().isEmpty()) {
+                JSONObject obj = new JSONObject(jsonStr);
+                String apkUrl = obj.optString("apkUrl", "");
+                String sha256 = obj.optString("sha256", "");
+                if (apkUrl.startsWith("https://") && sha256.matches("(?i)[a-f0-9]{64}")) {
+                    return obj;
                 }
             }
         } catch (Exception ignored) {
