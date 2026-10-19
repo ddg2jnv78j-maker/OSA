@@ -10,8 +10,8 @@ android {
         applicationId "app.osa.messaging"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0.0"
+        versionCode (project.findProperty("osaVersionCode") ?: "1").toInteger()
+        versionName (project.findProperty("osaVersionName") ?: "1.0.0").toString()
     }
 
     signingConfigs {

@@ -4,15 +4,27 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish GitHub Release (set to true only when ready to release)"
+        description: "Publish GitHub Release (only after verifying the build)"
         required: false
         type: boolean
         default: false
+      version_name:
+        description: "Unique Android version name for this release"
+        required: false
+        type: string
+        default: "1.0.1"
+      version_code:
+        description: "Android versionCode; must be greater than the installed version"
+        required: false
+        type: string
+        default: "2"
   push:
     branches: ["main"]
     paths:
       - "android/**"
       - "src/**"
+      - "scripts/**"
+      - "package.json"
       - ".github/workflows/android-apk-build.yml"
 
 permissions:
@@ -73,7 +85,7 @@ jobs:
           fi
           echo "FIREBASE_ANDROID_API_KEY secret verified present (length: ${#FIREBASE_ANDROID_API_KEY})."
           chmod +x ./gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon -PosaVersionName="${{ github.event.inputs.version_name || '1.0.1' }}" -PosaVersionCode="${{ github.event.inputs.version_code || '2' }}"
 
       - name: Inspect Built APK Signing Certificate (SHA-1 & SHA-256)
         run: |
@@ -85,9 +97,23 @@ jobs:
           APK_FILE="android/app/build/outputs/apk/debug/app-debug.apk"
           SHA256_HASH=$(sha256sum "$APK_FILE" | awk '{print $1}')
           APK_SIZE=$(stat -c%s "$APK_FILE")
-          VERSION_NAME="1.0.0"
-          VERSION_CODE=1
+          VERSION_NAME="${{ github.event.inputs.version_name || '1.0.1' }}"
+          VERSION_CODE="${{ github.event.inputs.version_code || '2' }}"
+          if ! [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: version_name must use MAJOR.MINOR.PATCH (for example 1.0.1)."
+            exit 1
+          fi
+          if ! [[ "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
+            echo "ERROR: version_code must be a positive integer."
+            exit 1
+          fi
           TAG_NAME="v${VERSION_NAME}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.publish_release }}" == "true" ]]; then
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+              echo "ERROR: Release tag $TAG_NAME already exists. Choose a new version_name."
+              exit 1
+            fi
+          fi
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/osa-v${VERSION_NAME}-debug.apk"
 
           cat <<EOF > app-release-metadata.json
@@ -105,6 +131,7 @@ jobs:
           echo "Computed SHA-256: ${SHA256_HASH}"
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "sha256=${SHA256_HASH}" >> $GITHUB_OUTPUT
+          echo "apk_file=osa-v${VERSION_NAME}-debug.apk" >> $GITHUB_OUTPUT
           cp "$APK_FILE" "osa-v${VERSION_NAME}-debug.apk"
 
       - name: Upload Rebuilt Android APK Artifact
@@ -113,7 +140,7 @@ jobs:
           name: osa-android-debug-apk
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
-            osa-v1.0.0-debug.apk
+            osa-v*-debug.apk
             app-release-metadata.json
             signing-fingerprint-report.txt
 
@@ -122,13 +149,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_metadata.outputs.tag_name }}
-          name: "OSA v1.0.0 Stable Release"
+          name: "OSA v${{ github.event.inputs.version_name || '1.0.1' }} Stable Release"
           body: |
-            ## OSA Android Release v1.0.0
+            ## OSA Android Stable Release v${{ github.event.inputs.version_name || '1.0.1' }}
             
             ### Release Metadata
-            - **Version Name:** 1.0.0
-            - **Version Code:** 1
+            - **Version Name:** ${{ github.event.inputs.version_name || '1.0.1' }}
+            - **Version Code:** ${{ github.event.inputs.version_code || '2' }}
             - **Package Name:** `app.osa.messaging`
             - **SHA-256 Checksum:** `${{ steps.release_metadata.outputs.sha256 }}`
             
@@ -138,7 +165,7 @@ jobs:
             - Standalone native notification playback and RemoteInput inline replies
             - Automatic in-app update checks and verified package installation
           files: |
-            osa-v1.0.0-debug.apk
+            ${{ steps.release_metadata.outputs.apk_file }}
             app-release-metadata.json
             signing-fingerprint-report.txt
         env:

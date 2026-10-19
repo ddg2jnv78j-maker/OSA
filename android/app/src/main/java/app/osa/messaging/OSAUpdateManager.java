@@ -109,18 +109,6 @@ public class OSAUpdateManager {
     }
 
     private static JSONObject fetchLatestReleaseMetadata() {
-        // Attempt 1: Fetch static metadata JSON from https://osa-chat.com/app-release-metadata.json
-        try {
-            String jsonStr = fetchUrlString(STATIC_METADATA_URL, 6000);
-            if (jsonStr != null && !jsonStr.trim().isEmpty()) {
-                JSONObject obj = new JSONObject(jsonStr);
-                if (obj.has("apkUrl") || obj.has("versionCode")) {
-                    return obj;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-
         // Attempt 2: Fetch from GitHub Releases API
         try {
             String ghJson = fetchUrlString(GITHUB_RELEASES_URL, 8000);
@@ -170,12 +158,27 @@ public class OSAUpdateManager {
         } catch (Exception ignored) {
         }
 
+        // Fallback only: use site metadata if GitHub Releases API is unavailable.
+        // GitHub is checked first so stale website metadata cannot mask a newer release.
+        try {
+            String jsonStr = fetchUrlString(STATIC_METADATA_URL, 6000);
+            if (jsonStr != null && !jsonStr.trim().isEmpty()) {
+                JSONObject obj = new JSONObject(jsonStr);
+                String apkUrl = obj.optString("apkUrl", "");
+                String sha256 = obj.optString("sha256", "");
+                if (apkUrl.startsWith("https://") && sha256.matches("(?i)[a-f0-9]{64}")) {
+                    return obj;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
         return null;
     }
 
     private static int parseVersionCodeFromNotes(String body, String tagName) {
         if (body != null) {
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)versionCode[:\\s=]+([0-9]+)").matcher(body);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)version[\\s_-]*code[:\\s=]+([0-9]+)").matcher(body);
             if (m.find()) {
                 try {
                     return Integer.parseInt(m.group(1));
@@ -227,6 +230,11 @@ public class OSAUpdateManager {
                     return;
                 }
 
+                if (expectedSha256 == null || !expectedSha256.trim().matches("(?i)[a-f0-9]{64}")) {
+                    if (callback != null) callback.onComplete(false, null, "Missing or invalid SHA-256 checksum. Update blocked for safety.");
+                    return;
+                }
+
                 File updateDir = new File(context.getCacheDir(), "updates");
                 if (!updateDir.exists()) {
                     updateDir.mkdirs();
@@ -261,6 +269,12 @@ public class OSAUpdateManager {
                     }
                 }
 
+                int finalResponseCode = conn.getResponseCode();
+                if (finalResponseCode != HttpURLConnection.HTTP_OK || !conn.getURL().getProtocol().equalsIgnoreCase("https")) {
+                    conn.disconnect();
+                    throw new java.io.IOException("Download server returned HTTP " + finalResponseCode + " or an insecure redirect.");
+                }
+
                 long totalBytes = conn.getContentLength();
                 InputStream in = new BufferedInputStream(conn.getInputStream());
                 FileOutputStream out = new FileOutputStream(outFile);
@@ -287,8 +301,8 @@ public class OSAUpdateManager {
                 in.close();
                 conn.disconnect();
 
-                // Verify Checksum if provided
-                if (expectedSha256 != null && !expectedSha256.trim().isEmpty()) {
+                // SHA-256 is mandatory: never install an unverified APK.
+                {
                     String actualSha256 = calculateFileSha256(outFile);
                     if (!expectedSha256.trim().equalsIgnoreCase(actualSha256)) {
                         outFile.delete();
