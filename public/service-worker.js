@@ -1,0 +1,953 @@
+const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
+const PRODUCTION_APP_URL = 'https://osa-chat.com/';
+const CACHE_NAME = 'osa-pwa-cache-v14';
+const SW_META_CACHE = 'osa-sw-meta-v1';
+const SW_META_URL = 'https://osa-chat.com/__sw_sub_meta';
+const SUPABASE_PUSH_FN_URL =
+  'https://wldwnchorvymaulzzlya.supabase.co/functions/v1/send-web-push';
+const CURRENT_VAPID_PUBLIC_KEY =
+  'BG2E40YAcF2PElhPhWmHLsFI8NnVERlK9hCV7tgZakbuwVXT2L515AFdoYQiHO9cPNaUtOGjVZwcYdoW5SlzsXA';
+const OFFLINE_URL = `${BASE_PATH}offline.html`;
+const PRECACHE_ASSETS = [
+  'offline.html',
+  'manifest.webmanifest',
+  'icon.svg',
+  'icons/osa-icon.svg',
+  'pwa-192x192.png',
+  'pwa-512x512.png',
+  'apple-touch-icon.png',
+].map((asset) => `${BASE_PATH}${asset}`);
+
+function base64UrlToUint8Array(base64String) {
+  const clean = String(base64String || '').trim();
+  const padding = '='.repeat((4 - (clean.length % 4)) % 4);
+  const base64 = (clean + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+function extractUserIdFromAuthHeader(authHeader) {
+  try {
+    const token = String(authHeader || '')
+      .replace(/^Bearer\s+/i, '')
+      .trim();
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const clean = parts[1];
+    const padding = '='.repeat((4 - (clean.length % 4)) % 4);
+    const json = JSON.parse(atob((clean + padding).replace(/-/g, '+').replace(/_/g, '/')));
+    if (
+      json &&
+      json.role === 'authenticated' &&
+      typeof json.sub === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(json.sub)
+    ) {
+      return json.sub;
+    }
+  } catch {
+    // Ignore malformed token
+  }
+  return null;
+}
+
+async function readSwSubMeta() {
+  try {
+    const cache = await caches.open(SW_META_CACHE);
+    const res = await cache.match(SW_META_URL);
+    if (res) {
+      return (await res.json()) || {};
+    }
+  } catch {
+    // Ignore
+  }
+  return {};
+}
+
+async function writeSwSubMeta(meta) {
+  try {
+    const cache = await caches.open(SW_META_CACHE);
+    await cache.put(
+      SW_META_URL,
+      new Response(JSON.stringify(meta || {}), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+  } catch {
+    // Ignore
+  }
+}
+
+let swSubCheckInFlight = null;
+let lastKnownUserId = null;
+let lastKnownAuthHeader = null;
+
+async function ensureSwPushSubscriptionFresh(userIdHint, authHeaderHint) {
+  if (userIdHint) lastKnownUserId = userIdHint;
+  if (authHeaderHint) lastKnownAuthHeader = authHeaderHint;
+  if (!self.registration || !self.registration.pushManager) return null;
+  if (swSubCheckInFlight) return swSubCheckInFlight;
+
+  swSubCheckInFlight = (async () => {
+    try {
+      const meta = await readSwSubMeta();
+      const resolvedUserId = lastKnownUserId || meta.userId || null;
+      const expectedKeyBytes = base64UrlToUint8Array(CURRENT_VAPID_PUBLIC_KEY);
+      let sub = await self.registration.pushManager.getSubscription();
+      let oldEndpoint = null;
+
+      if (sub) {
+        let matches = false;
+        if (
+          sub.options &&
+          sub.options.applicationServerKey &&
+          sub.options.applicationServerKey.byteLength > 0
+        ) {
+          const curBytes = new Uint8Array(sub.options.applicationServerKey);
+          if (curBytes.length === expectedKeyBytes.length) {
+            matches = curBytes.every((b, idx) => b === expectedKeyBytes[idx]);
+          }
+        } else {
+          // On iOS Safari, sub.options.applicationServerKey is empty.
+          // If this device has already synced CURRENT_VAPID_PUBLIC_KEY, trust the active browser subscription
+          // and never unsubscribe a valid window-created subscription.
+          matches = Boolean(meta.vapidPublicKey === CURRENT_VAPID_PUBLIC_KEY);
+        }
+
+        if (!matches) {
+          oldEndpoint = sub.endpoint;
+          await sub.unsubscribe().catch(() => {});
+          sub = null;
+        }
+      }
+
+      if (!sub) {
+        sub = await self.registration.pushManager
+          .subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: expectedKeyBytes,
+          })
+          .catch(() => null);
+      }
+
+      if (!sub) return null;
+
+      const subJson = sub.toJSON ? sub.toJSON() : null;
+      const nextMeta = {
+        endpoint: sub.endpoint,
+        vapidPublicKey: CURRENT_VAPID_PUBLIC_KEY,
+        userId: resolvedUserId || meta.userId || null,
+        syncedUserId: meta.syncedUserId || null,
+        syncedEndpoint: meta.syncedEndpoint || null,
+      };
+      await writeSwSubMeta(nextMeta);
+
+      const needsServerSync =
+        Boolean(oldEndpoint) ||
+        meta.syncedEndpoint !== sub.endpoint ||
+        (resolvedUserId && meta.syncedUserId !== resolvedUserId);
+
+      if (needsServerSync && subJson && subJson.endpoint && subJson.keys) {
+        try {
+          const syncRes = await fetch(SUPABASE_PUSH_FN_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(lastKnownAuthHeader ? { Authorization: lastKnownAuthHeader } : {}),
+            },
+            body: JSON.stringify({
+              action: 'sync_subscription',
+              userId: resolvedUserId,
+              oldEndpoint: oldEndpoint || meta.endpoint || null,
+              subscription: subJson,
+              userAgent: self.navigator ? self.navigator.userAgent : '',
+            }),
+          });
+          const syncData = await syncRes.json().catch(() => ({}));
+          if (syncRes.ok && syncData && syncData.synced) {
+            await writeSwSubMeta({
+              endpoint: sub.endpoint,
+              vapidPublicKey: CURRENT_VAPID_PUBLIC_KEY,
+              userId: syncData.userId || resolvedUserId || null,
+              syncedUserId: syncData.userId || resolvedUserId || 'synced',
+              syncedEndpoint: sub.endpoint,
+            });
+          }
+        } catch {
+          // Will retry on next activity
+        }
+      }
+
+      return sub;
+    } catch {
+      return null;
+    } finally {
+      swSubCheckInFlight = null;
+    }
+  })();
+
+  return swSubCheckInFlight;
+}
+
+const REMOTE_SIGNAL_PREFIXES = [
+  '[OSA_RCAM_SIG]',
+  '[OSA_LOC_REQ]',
+  '[OSA_LOC_RES]',
+  '[OSA_LOC_ERR]',
+];
+
+// Track active chat per client window so background push only suppresses if user is actively viewing that exact chat
+const clientActiveChatMap = new Map();
+
+// Track recently displayed notification keys (messageId / callId) to prevent duplicate notifications
+const deliveredEventKeys = new Map();
+
+// Track unread message count per conversation thread for WhatsApp-style grouping ("2 new messages", "5 new messages")
+const conversationUnreadCountMap = new Map();
+
+function markAndCheckDuplicateEvent(eventKey) {
+  if (!eventKey) return false;
+  const now = Date.now();
+  for (const [key, ts] of deliveredEventKeys.entries()) {
+    if (now - ts > 120000) {
+      deliveredEventKeys.delete(key);
+    }
+  }
+  if (deliveredEventKeys.has(eventKey)) {
+    return true;
+  }
+  deliveredEventKeys.set(eventKey, now);
+  return false;
+}
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(PRECACHE_ASSETS).catch(() => cache.add(OFFLINE_URL)))
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(
+        keys.map((key) =>
+          key !== CACHE_NAME && key !== SW_META_CACHE ? caches.delete(key) : Promise.resolve()
+        )
+      );
+      await self.clients.claim();
+      await ensureSwPushSubscriptionFresh(null, null);
+    })()
+  );
+});
+
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || typeof data !== 'object') return;
+  const sourceId = event.source && event.source.id ? event.source.id : 'default';
+
+  if (data.type === 'OSA_CONFIRM_SW_SUB' && data.endpoint) {
+    if (data.userId) {
+      lastKnownUserId = String(data.userId);
+    }
+    writeSwSubMeta({
+      endpoint: String(data.endpoint),
+      vapidPublicKey: String(data.vapidPublicKey || CURRENT_VAPID_PUBLIC_KEY),
+      userId: data.userId || lastKnownUserId || null,
+      syncedUserId: data.userId || lastKnownUserId || 'synced',
+      syncedEndpoint: String(data.endpoint),
+    }).catch(() => {});
+    return;
+  }
+
+  if (data.type === 'OSA_ACTIVE_CHAT') {
+    if (data.userId) {
+      lastKnownUserId = String(data.userId);
+    }
+    ensureSwPushSubscriptionFresh(data.userId || null, null).catch(() => {});
+    clientActiveChatMap.set(sourceId, {
+      chatId: data.chatId || null,
+      visible: Boolean(data.visible),
+      updatedAt: Date.now(),
+    });
+    if (data.visible && data.chatId) {
+      conversationUnreadCountMap.delete(String(data.chatId));
+      if (self.registration && self.registration.getNotifications) {
+        self.registration
+          .getNotifications({ tag: `osa-chat-${data.chatId}` })
+          .then((list) => list.forEach((n) => n.close()))
+          .catch(() => {});
+      }
+    }
+  } else if (data.type === 'OSA_REGISTER_NOTIFICATION_EVENT' && data.eventKey) {
+    deliveredEventKeys.set(String(data.eventKey), Date.now());
+  } else if (data.type === 'OSA_DISMISS_CALL_NOTIFICATION' && data.callId) {
+    if (self.registration && self.registration.getNotifications) {
+      self.registration
+        .getNotifications({ tag: `osa-call-${data.callId}` })
+        .then((list) => list.forEach((n) => n.close()))
+        .catch(() => {});
+    }
+  } else if (data.type === 'OSA_SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+
+  // Passively capture authenticated userId from Supabase requests and ensure push subscription uses valid VAPID key
+  if (url.hostname === 'wldwnchorvymaulzzlya.supabase.co') {
+    const authHeader = event.request.headers.get('Authorization') || '';
+    const jwtUserId = extractUserIdFromAuthHeader(authHeader);
+    if (jwtUserId) {
+      lastKnownUserId = jwtUserId;
+      lastKnownAuthHeader = authHeader;
+    }
+
+    if (
+      event.request.method === 'POST' &&
+      url.pathname.includes('/rest/v1/push_subscriptions')
+    ) {
+      const clonedReq = event.request.clone();
+      event.respondWith(
+        (async () => {
+          try {
+            const rawBody = await clonedReq.json().catch(() => null);
+            const rowObj = Array.isArray(rawBody) ? rawBody[0] : rawBody;
+            const bodyUserId = (rowObj && rowObj.user_id) || jwtUserId || lastKnownUserId;
+            const oldEp = (rowObj && rowObj.endpoint) || null;
+            if (oldEp && bodyUserId) {
+              const meta = await readSwSubMeta();
+              await writeSwSubMeta({
+                ...meta,
+                endpoint: oldEp,
+                vapidPublicKey: CURRENT_VAPID_PUBLIC_KEY,
+                userId: bodyUserId,
+                syncedUserId: bodyUserId,
+                syncedEndpoint: oldEp,
+              });
+            }
+            const validSub = await ensureSwPushSubscriptionFresh(bodyUserId, authHeader);
+            if (validSub && validSub.toJSON) {
+              const sj = validSub.toJSON();
+              if (sj && sj.endpoint && sj.keys && sj.keys.p256dh && sj.keys.auth && rowObj) {
+                rowObj.endpoint = sj.endpoint;
+                rowObj.p256dh = sj.keys.p256dh;
+                rowObj.auth = sj.keys.auth;
+                rowObj.is_active = true;
+                return fetch(event.request.url, {
+                  method: event.request.method,
+                  headers: event.request.headers,
+                  body: JSON.stringify(Array.isArray(rawBody) ? [rowObj] : rowObj),
+                });
+              }
+            }
+          } catch {
+            // Fall through to original request
+          }
+          return fetch(event.request);
+        })()
+      );
+      return;
+    }
+
+    if (jwtUserId && !url.pathname.includes('/functions/v1/send-web-push')) {
+      ensureSwPushSubscriptionFresh(jwtUserId, authHeader).catch(() => {});
+    }
+    return;
+  }
+
+  if (event.request.method !== 'GET') return;
+  if (url.origin !== self.location.origin) return;
+
+  if (
+    url.pathname.startsWith(`${BASE_PATH}src/`) ||
+    url.pathname.startsWith(`${BASE_PATH}node_modules/`) ||
+    url.pathname.startsWith(`${BASE_PATH}@`) ||
+    url.search.includes('v=') ||
+    url.search.includes('t=')
+  ) {
+    return;
+  }
+
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(async () => {
+        const cache = await caches.open(CACHE_NAME);
+        return (await cache.match(OFFLINE_URL)) || Response.error();
+      })
+    );
+    return;
+  }
+
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200 && response.type === 'basic') {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return response;
+      })
+      .catch(
+        async () =>
+          (await caches.match(event.request)) || new Response('Offline', { status: 503 })
+      )
+  );
+});
+
+function buildSafeAppUrl(data, action) {
+  const originBase =
+    self.location && self.location.origin
+      ? `${self.location.origin}${BASE_PATH}`
+      : PRODUCTION_APP_URL;
+
+  const params = new URLSearchParams();
+  const chatId = data && (data.conversationId || data.chatId);
+  if (chatId) {
+    params.set('chatId', String(chatId));
+    params.set('conversationId', String(chatId));
+  }
+  if (data && data.senderId) {
+    params.set('senderId', String(data.senderId));
+  }
+  if (data && data.senderName) {
+    params.set('senderName', String(data.senderName));
+  }
+  if (data && data.callId && action !== 'same_chat') {
+    params.set('callId', String(data.callId));
+    if (data.callType) params.set('callType', String(data.callType));
+    if (data.callerId || data.senderId) {
+      params.set('callerId', String(data.callerId || data.senderId));
+    }
+    if (data.callerName || data.senderName) {
+      params.set('callerName', String(data.callerName || data.senderName));
+    }
+    if (action && action !== 'open' && action !== 'same_chat') {
+      params.set('callAction', String(action));
+    }
+  } else if (action === 'same_chat') {
+    params.set('action', 'same_chat');
+  }
+  const query = params.toString() ? `?${params.toString()}` : '';
+
+  if (data && typeof data.url === 'string' && data.url.trim() && (!action || action === 'open')) {
+    try {
+      const parsed = new URL(data.url, originBase);
+      params.forEach((val, key) => {
+        if (!parsed.searchParams.has(key)) {
+          parsed.searchParams.set(key, val);
+        }
+      });
+      if (
+        (parsed.hostname === 'osa-chat.com' || parsed.hostname === 'www.osa-chat.com') &&
+        parsed.pathname.startsWith('/OSA')
+      ) {
+        parsed.pathname = parsed.pathname.replace(/^\/OSA\/?/, '/');
+        return parsed.href;
+      }
+      if (
+        parsed.hostname === 'ddg2jnv78j-maker.github.io' &&
+        !parsed.pathname.startsWith('/OSA/')
+      ) {
+        return `https://ddg2jnv78j-maker.github.io/OSA/${query}`;
+      }
+      return parsed.href;
+    } catch {
+      return `${originBase}${query}`;
+    }
+  }
+
+  return `${originBase}${query}`;
+}
+
+self.addEventListener('push', (event) => {
+  let payload = {
+    type: 'message',
+    title: 'OSA',
+    body: 'New message',
+    icon: `${BASE_PATH}pwa-192x192.png`,
+    badge: `${BASE_PATH}pwa-192x192.png`,
+    tag: 'osa-notification',
+    renotify: true,
+    requireInteraction: false,
+    data: { url: `${BASE_PATH}` },
+  };
+
+  if (event.data) {
+    try {
+      const parsed = event.data.json();
+      payload = {
+        ...payload,
+        ...parsed,
+        data: {
+          ...(payload.data || {}),
+          ...(parsed.data || {}),
+        },
+      };
+    } catch {
+      payload.body = event.data.text() || payload.body;
+    }
+  }
+
+  const bodyStr = String(payload.body || '');
+  const titleStr = String(payload.title || '');
+  const rawType =
+    (payload.data && payload.data.type) || payload.type || 'message';
+
+  // Strictly isolate Remote Camera and Remote Location from notifications
+  if (
+    rawType === 'remote_camera' ||
+    rawType === 'remote_location' ||
+    REMOTE_SIGNAL_PREFIXES.some(
+      (prefix) => bodyStr.startsWith(prefix) || titleStr.startsWith(prefix)
+    )
+  ) {
+    return;
+  }
+
+  const targetChatId =
+    (payload.data && (payload.data.conversationId || payload.data.chatId)) ||
+    payload.conversationId ||
+    payload.chatId ||
+    null;
+  const messageId =
+    (payload.data && payload.data.messageId) || payload.messageId || null;
+  const callId =
+    (payload.data && (payload.data.callId || payload.data.referenceId)) ||
+    payload.callId ||
+    payload.referenceId ||
+    null;
+  const callType =
+    (payload.data && payload.data.callType) || payload.callType || null;
+  const senderId =
+    (payload.data && (payload.data.senderId || payload.data.callerId)) ||
+    payload.senderId ||
+    payload.callerId ||
+    null;
+  const senderName =
+    (payload.data && (payload.data.senderName || payload.data.callerName)) ||
+    payload.senderName ||
+    payload.callerName ||
+    null;
+
+  // Handle call cancellation push (TEST 8: Caller cancels call before recipient answers)
+  if (rawType === 'cancel_call' && callId) {
+    event.waitUntil(
+      (async () => {
+        if (self.registration && self.registration.getNotifications) {
+          const openCallNotifs = await self.registration.getNotifications({
+            tag: `osa-call-${callId}`,
+          });
+          openCallNotifs.forEach((n) => n.close());
+        }
+        const windowClients = await self.clients.matchAll({
+          type: 'window',
+          includeUncontrolled: true,
+        });
+        let hasFocusedVisibleClient = false;
+        for (const client of windowClients) {
+          if (Boolean(client.focused) && client.visibilityState === 'visible') {
+            hasFocusedVisibleClient = true;
+          }
+          try {
+            client.postMessage({
+              type: 'OSA_CALL_CANCELLED_PUSH',
+              callId,
+            });
+          } catch {
+            // Ignore
+          }
+        }
+        // Satisfy userVisibleOnly: true on iOS Safari and Android Chrome while showing a Missed Call alert
+        if (!hasFocusedVisibleClient && self.registration && self.registration.showNotification) {
+          const missedUrl = buildSafeAppUrl(
+            {
+              ...(payload.data || {}),
+              chatId: targetChatId,
+              conversationId: targetChatId,
+            },
+            'open'
+          );
+          await self.registration.showNotification('OSA · Missed call', {
+            body: senderName ? `Missed call from ${senderName}` : 'Missed call',
+            icon: payload.icon || `${BASE_PATH}pwa-192x192.png`,
+            badge: `${BASE_PATH}pwa-192x192.png`,
+            tag: `osa-call-${callId}`,
+            renotify: false,
+            requireInteraction: false,
+            data: {
+              ...(payload.data || {}),
+              type: 'missed_call',
+              chatId: targetChatId,
+              conversationId: targetChatId,
+              url: missedUrl,
+            },
+          });
+        }
+      })()
+    );
+    return;
+  }
+
+  const isIncomingCall =
+    rawType === 'incoming_call' ||
+    rawType === 'call' ||
+    rawType === 'audio_call' ||
+    rawType === 'video_call';
+  if (isIncomingCall && !callId) {
+    return;
+  }
+
+  // Deduplicate by unique callId or unique messageId (different callIds are NEVER deduplicated)
+  const dedupKey =
+    isIncomingCall && callId
+      ? `call:${callId}`
+      : messageId
+      ? `msg:${messageId}`
+      : null;
+
+  if (dedupKey && markAndCheckDuplicateEvent(dedupKey)) {
+    return;
+  }
+
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then(async (windowClients) => {
+        // Always wake/notify open client tabs when an incoming call or message arrives
+        for (const client of windowClients) {
+          try {
+            if (isIncomingCall) {
+              client.postMessage({
+                type: 'OSA_INCOMING_CALL_PUSH',
+                data: {
+                  ...(payload.data || {}),
+                  type: 'incoming_call',
+                  callId,
+                  callType: callType || 'audio',
+                  callerId: senderId,
+                  callerName: senderName,
+                  chatId: targetChatId,
+                  conversationId: targetChatId,
+                },
+              });
+            } else if (dedupKey) {
+              client.postMessage({
+                type: 'OSA_PUSH_DELIVERED',
+                eventKey: dedupKey,
+                chatId: targetChatId,
+                messageId,
+              });
+            }
+          } catch {
+            // Ignore
+          }
+        }
+
+        // Check if any client window is currently focused & visible in the foreground
+        for (const client of windowClients) {
+          const isActivelyFocused =
+            Boolean(client.focused) && client.visibilityState === 'visible';
+          if (!isActivelyFocused) continue;
+
+          if (!isIncomingCall && targetChatId) {
+            const tracked = clientActiveChatMap.get(client.id);
+            if (
+              tracked &&
+              tracked.visible &&
+              tracked.chatId === targetChatId &&
+              Date.now() - tracked.updatedAt < 45000
+            ) {
+              // Recipient is inside OSA and actively viewing this exact conversation
+              return;
+            }
+          }
+        }
+
+        // Report ringing back to Supabase Edge Function when an incoming call push is received on the device
+        if (
+          isIncomingCall &&
+          callId &&
+          payload.data &&
+          payload.data.rejectEndpoint &&
+          payload.data.rejectToken
+        ) {
+          fetch(payload.data.rejectEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(payload.data.anonKey
+                ? {
+                    apikey: payload.data.anonKey,
+                    Authorization: `Bearer ${payload.data.anonKey}`,
+                  }
+                : {}),
+            },
+            body: JSON.stringify({
+              action: 'ringing_call',
+              callId,
+              rejectToken: payload.data.rejectToken,
+            }),
+          }).catch(() => {});
+        }
+
+        const safeUrl = buildSafeAppUrl(
+          {
+            ...(payload.data || {}),
+            chatId: targetChatId,
+            conversationId: targetChatId,
+            callId,
+            callType,
+          },
+          'open'
+        );
+
+        // Compute WhatsApp-style conversation message grouping ("2 new messages", "5 new messages")
+        let computedTitle = 'OSA';
+        let computedBody = bodyStr || 'New message';
+        let messageCount = Number(
+          (payload.data && payload.data.messageCount) || payload.messageCount || 1
+        );
+
+        if (isIncomingCall) {
+          computedTitle =
+            payload.title ||
+            (callType === 'video' ? 'Incoming video call' : 'Incoming audio call');
+          computedBody =
+            payload.body || `${senderName || 'Someone'} is calling you`;
+        } else {
+          const threadKey = targetChatId || senderId || 'default';
+          let existingOpenCount = 0;
+          if (self.registration && self.registration.getNotifications && targetChatId) {
+            try {
+              const existingList = await self.registration.getNotifications({
+                tag: `osa-chat-${targetChatId}`,
+              });
+              if (existingList && existingList.length > 0) {
+                const prevData = existingList[0].data || {};
+                existingOpenCount = Number(prevData.messageCount || 1);
+              } else {
+                conversationUnreadCountMap.delete(threadKey);
+              }
+            } catch {
+              // Ignore
+            }
+          }
+
+          const trackedCount = (conversationUnreadCountMap.get(threadKey) || existingOpenCount) + 1;
+          messageCount = Math.max(messageCount, trackedCount);
+          conversationUnreadCountMap.set(threadKey, messageCount);
+
+          const displaySender =
+            senderName ||
+            (payload.title && payload.title !== 'OSA' ? payload.title : 'OSA User');
+          const latestPreview =
+            (payload.data && payload.data.latestPreview) ||
+            payload.latestPreview ||
+            bodyStr.replace(new RegExp(`^${displaySender}\\n`), '') ||
+            'New message';
+
+          computedTitle = displaySender;
+          if (messageCount >= 2) {
+            computedBody = `${latestPreview} (${messageCount} new messages)`;
+          } else {
+            computedBody = latestPreview;
+          }
+        }
+
+        const notificationData = {
+          ...(payload.data || {}),
+          type: isIncomingCall ? 'incoming_call' : 'message',
+          chatId: targetChatId,
+          conversationId: targetChatId,
+          threadId: targetChatId,
+          messageId,
+          messageCount,
+          callId,
+          callType: isIncomingCall ? callType || 'audio' : callType,
+          senderId,
+          senderName,
+          callerId: isIncomingCall ? senderId : null,
+          callerName: isIncomingCall ? senderName : null,
+          url: safeUrl,
+        };
+
+        const options = {
+          body: computedBody,
+          icon: payload.icon || `${BASE_PATH}pwa-192x192.png`,
+          badge: `${BASE_PATH}pwa-192x192.png`,
+          tag: isIncomingCall
+            ? `osa-call-${callId || Date.now()}`
+            : targetChatId
+            ? `osa-chat-${targetChatId}`
+            : messageId
+            ? `osa-msg-${messageId}`
+            : 'osa-notification',
+          renotify: true,
+          requireInteraction: Boolean(payload.requireInteraction || isIncomingCall),
+          data: notificationData,
+          vibrate: isIncomingCall ? [300, 150, 300, 150, 400] : [150, 80, 150],
+        };
+
+        if (isIncomingCall) {
+          options.actions = [
+            { action: 'accept', title: 'Accept' },
+            { action: 'reject', title: 'Reject' },
+          ];
+        } else {
+          options.actions = [
+            {
+              action: 'reply',
+              type: 'text',
+              title: 'Reply',
+              placeholder: `Reply to ${computedTitle || 'message'}...`,
+            },
+            { action: 'same_chat', title: 'Same Chat' },
+          ];
+        }
+
+        try {
+          return await self.registration.showNotification(computedTitle, options);
+        } catch {
+          // Fallback for browsers (e.g. iOS WebKit) that do not support inline text-input NotificationActions
+          options.actions = isIncomingCall
+            ? [
+                { action: 'accept', title: 'Accept' },
+                { action: 'reject', title: 'Reject' },
+              ]
+            : [{ action: 'same_chat', title: 'Same Chat' }];
+          return self.registration.showNotification(computedTitle, options);
+        }
+      })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const notifData = event.notification.data || {};
+  const clickedAction = event.action || 'open';
+  const inlineReplyText =
+    typeof event.reply === 'string' ? event.reply.trim() : '';
+  const targetChatId = notifData.conversationId || notifData.chatId || null;
+  if (targetChatId) {
+    conversationUnreadCountMap.delete(String(targetChatId));
+  }
+  const targetUrl = buildSafeAppUrl(notifData, clickedAction);
+
+  event.waitUntil(
+    (async () => {
+      // If user submitted an inline reply from a Web Notification (where supported by browser)
+      if (clickedAction === 'reply' && inlineReplyText) {
+        const windowClients = await self.clients.matchAll({
+          type: 'window',
+          includeUncontrolled: true,
+        });
+        if (windowClients.length > 0) {
+          windowClients[0].postMessage({
+            type: 'OSA_NOTIFICATION_INLINE_REPLY',
+            replyText: inlineReplyText,
+            data: notifData,
+          });
+          return;
+        }
+      }
+      // If user tapped Reject on an incoming call notification while OSA is closed or backgrounded,
+      // immediately reject the call on the server via send-web-push Edge Function
+      if (
+        clickedAction === 'reject' &&
+        notifData.callId &&
+        notifData.rejectEndpoint &&
+        notifData.rejectToken
+      ) {
+        try {
+          await fetch(notifData.rejectEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(notifData.anonKey
+                ? {
+                    apikey: notifData.anonKey,
+                    Authorization: `Bearer ${notifData.anonKey}`,
+                  }
+                : {}),
+            },
+            body: JSON.stringify({
+              action: 'reject_call',
+              callId: notifData.callId,
+              rejectToken: notifData.rejectToken,
+            }),
+          });
+        } catch {
+          // Fallback to client window if available
+        }
+      }
+
+      const windowClients = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true,
+      });
+
+      for (const client of windowClients) {
+        if ('focus' in client) {
+          client.postMessage({
+            type: 'OSA_NOTIFICATION_CLICK',
+            action: clickedAction,
+            data: notifData,
+          });
+          if (clickedAction !== 'reject') {
+            try {
+              await client.focus();
+              return;
+            } catch {
+              // Continue to next client or openWindow
+            }
+          } else {
+            return;
+          }
+        }
+      }
+
+      // If no window is open and action is not reject, open OSA to the conversation or incoming call screen
+      if (clickedAction !== 'reject' && self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl || PRODUCTION_APP_URL);
+      }
+    })()
+  );
+});
+
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil(
+    (async () => {
+      try {
+        const oldSub = event.oldSubscription;
+        const appServerKey =
+          (oldSub && oldSub.options && oldSub.options.applicationServerKey) || null;
+        const newSub = await self.registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          ...(appServerKey ? { applicationServerKey: appServerKey } : {}),
+        });
+
+        const windowClients = await self.clients.matchAll({
+          type: 'window',
+          includeUncontrolled: true,
+        });
+        for (const client of windowClients) {
+          client.postMessage({
+            type: 'OSA_PUSH_SUBSCRIPTION_CHANGED',
+            subscription: newSub.toJSON(),
+          });
+        }
+      } catch {
+        // Subscription will be refreshed on next app launch
+      }
+    })()
+  );
+});

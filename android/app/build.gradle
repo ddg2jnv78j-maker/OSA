@@ -1,0 +1,70 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'app.osa.messaging'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "app.osa.messaging"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    signingConfigs {
+        debug {
+            storeFile file('osa-debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core:1.12.0'
+    implementation 'com.google.firebase:firebase-messaging:23.4.1'
+}
+
+if (file('google-services.json').exists()) {
+    apply plugin: 'com.google.gms.google-services'
+} else {
+    def localProps = new Properties()
+    def localPropsFile = rootProject.file('local.properties')
+    if (localPropsFile.exists()) {
+        localPropsFile.withInputStream { localProps.load(it) }
+    }
+    def firebaseApiKey = System.getenv("FIREBASE_ANDROID_API_KEY")
+        ?: System.getenv("GOOGLE_API_KEY")
+        ?: localProps.getProperty("FIREBASE_ANDROID_API_KEY")
+        ?: (project.hasProperty("FIREBASE_ANDROID_API_KEY") ? project.property("FIREBASE_ANDROID_API_KEY") : "")
+
+    android.defaultConfig {
+        resValue "string", "gcm_defaultSenderId", System.getenv("FIREBASE_GCM_SENDER_ID") ?: localProps.getProperty("FIREBASE_GCM_SENDER_ID") ?: "935163585205"
+        resValue "string", "google_api_key", firebaseApiKey
+        resValue "string", "google_app_id", System.getenv("FIREBASE_GOOGLE_APP_ID") ?: localProps.getProperty("FIREBASE_GOOGLE_APP_ID") ?: "1:935163585205:android:a020745ef68deff41854fc"
+        resValue "string", "google_crash_reporting_api_key", firebaseApiKey
+        resValue "string", "google_storage_bucket", System.getenv("FIREBASE_STORAGE_BUCKET") ?: localProps.getProperty("FIREBASE_STORAGE_BUCKET") ?: "osa-app-88c1e.firebasestorage.app"
+        resValue "string", "project_id", System.getenv("FIREBASE_PROJECT_ID") ?: localProps.getProperty("FIREBASE_PROJECT_ID") ?: "osa-app-88c1e"
+    }
+}
