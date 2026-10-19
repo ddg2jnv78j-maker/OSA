@@ -341,7 +341,7 @@ public class OSAUpdateManager {
             // Check unknown app sources permission on Android 8.0+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (!context.getPackageManager().canRequestPackageInstalls()) {
-                    Intent settingsIntent = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES_SPECIFIC_APPS_OPS);
+                    Intent settingsIntent = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
                     settingsIntent.setData(Uri.parse("package:" + context.getPackageName()));
                     settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     context.startActivity(settingsIntent);
