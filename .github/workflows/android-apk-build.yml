@@ -108,9 +108,11 @@ jobs:
             exit 1
           fi
           TAG_NAME="v${VERSION_NAME}"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
-            echo "ERROR: Release tag $TAG_NAME already exists. Choose a new version_name."
-            exit 1
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.publish_release }}" == "true" ]]; then
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+              echo "ERROR: Release tag $TAG_NAME already exists. Choose a new version_name."
+              exit 1
+            fi
           fi
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/osa-v${VERSION_NAME}-debug.apk"
 
@@ -129,6 +131,7 @@ jobs:
           echo "Computed SHA-256: ${SHA256_HASH}"
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "sha256=${SHA256_HASH}" >> $GITHUB_OUTPUT
+          echo "apk_file=osa-v${VERSION_NAME}-debug.apk" >> $GITHUB_OUTPUT
           cp "$APK_FILE" "osa-v${VERSION_NAME}-debug.apk"
 
       - name: Upload Rebuilt Android APK Artifact
@@ -137,7 +140,7 @@ jobs:
           name: osa-android-debug-apk
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
-            osa-v${VERSION_NAME}-debug.apk
+            osa-v*-debug.apk
             app-release-metadata.json
             signing-fingerprint-report.txt
 
@@ -162,7 +165,7 @@ jobs:
             - Standalone native notification playback and RemoteInput inline replies
             - Automatic in-app update checks and verified package installation
           files: |
-            osa-v${VERSION_NAME}-debug.apk
+            ${{ steps.release_metadata.outputs.apk_file }}
             app-release-metadata.json
             signing-fingerprint-report.txt
         env:
