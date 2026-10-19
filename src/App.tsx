@@ -1697,10 +1697,10 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return;
 
-    // Check once shortly after launch (after 10s cold-start grace period)
+    // Check shortly after launch (1.5s cold-start grace period)
     const initialCheckTimer = window.setTimeout(() => {
       checkNativeAppUpdate();
-    }, 10000);
+    }, 1500);
 
     // Periodic check every 6 hours while app remains active
     const updateInterval = window.setInterval(() => {
@@ -3176,6 +3176,7 @@ export default function App() {
         isOpen={showAppUpdateModal}
         onClose={() => setShowAppUpdateModal(false)}
         t={t}
+        autoCheckOnMount={true}
       />
     </div>
   );
