@@ -178,7 +178,7 @@ public class OSAUpdateManager {
 
     private static int parseVersionCodeFromNotes(String body, String tagName) {
         if (body != null) {
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)versionCode[:\\s=]+([0-9]+)").matcher(body);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)version[\\s_-]*code[:\\s=]+([0-9]+)").matcher(body);
             if (m.find()) {
                 try {
                     return Integer.parseInt(m.group(1));
