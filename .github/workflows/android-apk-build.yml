@@ -85,7 +85,7 @@ jobs:
           fi
           echo "FIREBASE_ANDROID_API_KEY secret verified present (length: ${#FIREBASE_ANDROID_API_KEY})."
           chmod +x ./gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon -PosaVersionName="${{ github.event.inputs.version_name || '1.0.1' }}" -PosaVersionCode="${{ github.event.inputs.version_code || '2' }}"
 
       - name: Inspect Built APK Signing Certificate (SHA-1 & SHA-256)
         run: |
