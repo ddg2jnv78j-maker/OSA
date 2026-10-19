@@ -122,3 +122,46 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 184, 0.55);
 }
+
+/* Neumorphism (Soft UI) Theme Integration per User Request */
+.neumorphic-box {
+  background: #f1f5f9;
+  box-shadow: 8px 8px 16px rgba(166, 180, 200, 0.4), -8px -8px 16px rgba(255, 255, 255, 0.9);
+  border-radius: 1.25rem;
+}
+.dark .neumorphic-box {
+  background: #0f172a;
+  box-shadow: 6px 6px 14px rgba(2, 6, 23, 0.8), -6px -6px 14px rgba(30, 41, 59, 0.5);
+}
+
+.neumorphic-btn {
+  background: #f1f5f9;
+  box-shadow: 5px 5px 10px rgba(166, 180, 200, 0.35), -5px -5px 10px rgba(255, 255, 255, 0.9);
+  transition: all 0.2s ease;
+}
+.neumorphic-btn:hover {
+  box-shadow: 3px 3px 6px rgba(166, 180, 200, 0.4), -3px -3px 6px rgba(255, 255, 255, 0.95);
+}
+.neumorphic-btn:active {
+  box-shadow: inset 3px 3px 6px rgba(166, 180, 200, 0.5), inset -3px -3px 6px rgba(255, 255, 255, 0.8);
+}
+.dark .neumorphic-btn {
+  background: #1e293b;
+  box-shadow: 4px 4px 10px rgba(2, 6, 23, 0.7), -4px -4px 10px rgba(51, 65, 85, 0.4);
+}
+.dark .neumorphic-btn:active {
+  box-shadow: inset 3px 3px 6px rgba(2, 6, 23, 0.9), inset -3px -3px 6px rgba(51, 65, 85, 0.5);
+}
+
+.neumorphic-input {
+  background: #f1f5f9;
+  box-shadow: inset 3px 3px 6px rgba(166, 180, 200, 0.4), inset -3px -3px 6px rgba(255, 255, 255, 0.9);
+  border-radius: 1rem;
+  border: none;
+}
+.dark .neumorphic-input {
+  background: #0f172a;
+  box-shadow: inset 3px 3px 6px rgba(2, 6, 23, 0.9), inset -3px -3px 6px rgba(30, 41, 59, 0.6);
+  border: none;
+}
+
