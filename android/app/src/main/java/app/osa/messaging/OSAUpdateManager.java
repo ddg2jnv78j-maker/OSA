@@ -227,6 +227,11 @@ public class OSAUpdateManager {
                     return;
                 }
 
+                if (expectedSha256 == null || !expectedSha256.trim().matches("(?i)[a-f0-9]{64}")) {
+                    if (callback != null) callback.onComplete(false, null, "Missing or invalid SHA-256 checksum. Update blocked for safety.");
+                    return;
+                }
+
                 File updateDir = new File(context.getCacheDir(), "updates");
                 if (!updateDir.exists()) {
                     updateDir.mkdirs();
@@ -261,6 +266,12 @@ public class OSAUpdateManager {
                     }
                 }
 
+                int finalResponseCode = conn.getResponseCode();
+                if (finalResponseCode != HttpURLConnection.HTTP_OK || !conn.getURL().getProtocol().equalsIgnoreCase("https")) {
+                    conn.disconnect();
+                    throw new java.io.IOException("Download server returned HTTP " + finalResponseCode + " or an insecure redirect.");
+                }
+
                 long totalBytes = conn.getContentLength();
                 InputStream in = new BufferedInputStream(conn.getInputStream());
                 FileOutputStream out = new FileOutputStream(outFile);
@@ -287,8 +298,8 @@ public class OSAUpdateManager {
                 in.close();
                 conn.disconnect();
 
-                // Verify Checksum if provided
-                if (expectedSha256 != null && !expectedSha256.trim().isEmpty()) {
+                // SHA-256 is mandatory: never install an unverified APK.
+                {
                     String actualSha256 = calculateFileSha256(outFile);
                     if (!expectedSha256.trim().equalsIgnoreCase(actualSha256)) {
                         outFile.delete();
