@@ -98,7 +98,9 @@ export async function canContactViewPrivacyField(ownerUserId: string, granteeUse
     .eq('grantee_user_id', granteeUserId)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return data?.[field] === true;
+  // No per-contact row means keep the existing global Privacy Settings behavior for legacy chats.
+  if (!data) return true;
+  return data[field] === true;
 }
 
 /** Enforces a grant on the protected user's device before opening a camera stream. */
