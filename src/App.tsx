@@ -360,7 +360,7 @@ function inspectInitialDeepAction(): InitialDeepAction {
 const INITIAL_DEEP_ACTION = inspectInitialDeepAction();
 
 export default function App() {
-  const [bootstrapping, setBootstrapping] = useState(true);
+  const [bootstrapping, setBootstrapping] = useState(false);
   const [authMode, setAuthMode] = useState<AuthScreenMode>(
     INITIAL_RECOVERY_STATE.isRecoveryMode
       ? 'reset'

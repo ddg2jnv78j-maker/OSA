@@ -340,6 +340,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       setError(err instanceof Error ? err.message : 'Failed to load conversation.');
     } finally {
       setLoading(false);
+      requestAnimationFrame(() => scrollToBottom(false));
     }
   };
 
@@ -352,7 +353,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   }, [chat.id]);
 
   useEffect(() => {
-    scrollToBottom();
+    requestAnimationFrame(() => scrollToBottom(false));
   }, [messages.length, chatCalls.length, peerIsTyping]);
 
   // Listen for changes to the user's preferred Chat Translation Language
