@@ -49,3 +49,37 @@ export async function saveUserSettingGrant(
   if (error) throw new Error(error.message);
   return data as UserSettingGrant;
 }
+
+/** Returns true only when the protected user explicitly allowed this contact. */
+export async function canContactRequestRemoteCamera(ownerUserId: string, granteeUserId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('user_setting_grants')
+    .select('remote_camera')
+    .eq('owner_user_id', ownerUserId)
+    .eq('grantee_user_id', granteeUserId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data?.remote_camera === true;
+}
+
+export async function canContactRequestLocation(ownerUserId: string, granteeUserId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('user_setting_grants')
+    .select('location')
+    .eq('owner_user_id', ownerUserId)
+    .eq('grantee_user_id', granteeUserId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data?.location === true;
+}
+
+export async function canContactSeePrivacyDetails(ownerUserId: string, granteeUserId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('user_setting_grants')
+    .select('privacy_details')
+    .eq('owner_user_id', ownerUserId)
+    .eq('grantee_user_id', granteeUserId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data?.privacy_details === true;
+}
