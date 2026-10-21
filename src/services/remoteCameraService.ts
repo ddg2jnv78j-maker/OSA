@@ -2,7 +2,7 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import { getIceServers, supabase } from '../lib/supabase';
 import { createNotification } from './osaService';
 import { checkNativePermissions, saveStoredPermissionStatus, requestDisplayOffKeepAlive } from './permissionService';
-import { canContactRequestRemoteCamera } from './userSettingService';
+import { requireContactRemoteCameraGrant } from './userSettingService';
 
 export const RCAM_SIG_PREFIX = '[OSA_RCAM_SIG]';
 
@@ -162,9 +162,10 @@ export class RemoteCameraSessionManager {
       // 1. Check per-contact permission first. A global device setting cannot override a denied contact grant.
       let contactAllowed = false;
       try {
-        contactAllowed = await canContactRequestRemoteCamera(this.currentUserId, this.peerUserId);
+        await requireContactRemoteCameraGrant(this.currentUserId, this.peerUserId);
+        contactAllowed = true;
       } catch {
-        // Fail closed if the grant table is unavailable or its policy denies the read.
+        // Fail closed if the grant is absent or the grant table/policy is unavailable.
       }
       if (!contactAllowed) {
         await this.sendSignal({
