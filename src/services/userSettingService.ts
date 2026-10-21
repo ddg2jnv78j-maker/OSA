@@ -56,7 +56,7 @@ export async function saveUserSettingGrant(
       privacy_online_status: updates.privacy_online_status,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'owner_user_id,grantee_user_id' })
-    .select('id, owner_user_id, grantee_user_id, remote_camera, location, privacy_details, created_at, updated_at')
+    .select('id, owner_user_id, grantee_user_id, remote_camera, location, privacy_last_seen, privacy_profile_photo, privacy_about, privacy_status, privacy_read_receipts, privacy_typing_indicator, privacy_online_status, created_at, updated_at')
     .single();
   if (error) throw new Error(error.message);
   return data as UserSettingGrant;
