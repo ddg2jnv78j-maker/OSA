@@ -322,10 +322,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         .then(([chats, grants]) => {
           const people = new Map<string, Profile>();
           chats.forEach((chat) => {
-            if (chat.peer && chat.peer.id !== currentUser.id) people.set(chat.peer.id, chat.peer);
-            (chat.members || []).forEach((member) => {
-              if (member.profile && member.user_id !== currentUser.id) people.set(member.user_id, member.profile);
-            });
+            if (chat.type === 'direct' && chat.peer && chat.peer.id !== currentUser.id) people.set(chat.peer.id, chat.peer);
+            if (chat.type === 'group') {
+              (chat.members || []).forEach((member) => {
+                if (member.profile && member.user_id !== currentUser.id) people.set(member.user_id, member.profile);
+              });
+            }
           });
           setSettingContacts(Array.from(people.values()).sort((a, b) => a.full_name.localeCompare(b.full_name)));
           setUserSettingGrants(Object.fromEntries(grants.map((grant) => [grant.grantee_user_id, grant])));
