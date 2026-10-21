@@ -348,10 +348,13 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           ? callsList.filter((c) => new Date(c.created_at).getTime() > clearedTime)
           : callsList
       );
+      const perContactReadReceipts = !isGroup && peer
+        ? await canContactViewPrivacyField(currentUser.id, peer.id, 'privacy_read_receipts').catch(() => false)
+        : true;
       await markChatAsRead(
         chat.id,
         currentUser.id,
-        myPrivacy ? myPrivacy.read_receipts : true
+        (myPrivacy ? myPrivacy.read_receipts : true) && perContactReadReceipts
       );
       if (!isGroup && peer) {
         const blk = await getDetailedBlockStatus(currentUser.id, peer.id);
