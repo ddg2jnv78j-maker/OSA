@@ -36,7 +36,7 @@ const STATUS_BG_COLORS = [
 
 export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
   const [statuses, setStatuses] = useState<StatusItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   // Create Status Modals
@@ -288,11 +288,7 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
           {t.recentUpdates}
         </h4>
 
-        {loading ? (
-          <div className="py-12 text-center text-xs text-slate-400">
-            Loading OSA status updates...
-          </div>
-        ) : groupedByUser.length === 0 ? (
+        {groupedByUser.length === 0 ? (
           <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-8 text-center">
             <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">
               {t.noStatusUpdates}

@@ -138,7 +138,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatCalls, setChatCalls] = useState<CallRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -1186,11 +1186,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         className="osa-chat-messages-zone px-3 sm:px-5 py-4 pb-6 space-y-3"
         onClick={() => setActiveMenuMsgId(null)}
       >
-        {loading ? (
-          <div className="py-16 text-center text-xs text-slate-400">
-            Loading OSA messages...
-          </div>
-        ) : visibleMessages.length === 0 && chatCalls.length === 0 ? (
+        {visibleMessages.length === 0 && chatCalls.length === 0 ? (
           <div className="py-16 text-center">
             <p className="text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">
               {chatSearchQuery ? 'No messages match your search' : 'No messages yet'}

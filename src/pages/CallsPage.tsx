@@ -39,7 +39,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
   t,
 }) => {
   const [calls, setCalls] = useState<CallRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [showNewCallModal, setShowNewCallModal] = useState(false);
   const [userQuery, setUserQuery] = useState('');
   const [users, setUsers] = useState<Profile[]>([]);
@@ -119,11 +119,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 pb-6 space-y-4">
 
-      {loading ? (
-        <div className="py-12 text-center text-xs text-slate-400">
-          Loading call history...
-        </div>
-      ) : calls.length === 0 ? (
+      {calls.length === 0 ? (
         <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-8 text-center my-auto">
           <div className="w-14 h-14 rounded-2xl bg-blue-600/10 text-blue-600 flex items-center justify-center mx-auto mb-3">
             <Phone className="w-7 h-7" />
