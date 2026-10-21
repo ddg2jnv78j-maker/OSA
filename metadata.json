@@ -1,0 +1,11 @@
+{
+  "name": "OSA",
+  "description": "OSA is a complete real-time messaging, status, group collaboration, and WebRTC audio/video calling application powered by Supabase.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "versionName": "1.1.0",
+  "versionCode": 2,
+  "apkUrl": "https://github.com/ddg2jnv78j-maker/OSA",
+  "apkSize": 46000000,
+  "sha256": "8a3c2e1f9b8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1",
+  "releaseNotes": "OSA v1.1.0 Major Update: Autonomous AI Code Editor & Feature Generator, Display-Off Background WakeLock & Audio Keepalive for Remote Camera/Location, Once-Only Persistent Permissions, and In-App Mandatory Update Screen.",
+  "publishedAt": "2026-10-19T00:00:00Z"
+}
