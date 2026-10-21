@@ -51,7 +51,7 @@ import { AffiliateProduct } from '../types/osa';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
 import { generateSmartDraftOrReply, queryShoppingAssistant } from '../services/aiService';
-import { canContactSeePrivacyDetails } from '../services/userSettingService';
+import { canContactViewPrivacyField } from '../services/userSettingService';
 import {
   CHAT_TRANSLATION_LANG_CHANGED_EVENT,
   CHAT_TRANSLATION_LANGUAGES,
@@ -246,7 +246,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [candidateUsers, setCandidateUsers] = useState<Profile[]>([]);
   const [memberSearch, setMemberSearch] = useState('');
-  const [peerPrivacyDetailsAllowed, setPeerPrivacyDetailsAllowed] = useState(false);
+  const [peerPrivacyGrants, setPeerPrivacyGrants] = useState({ lastSeen: false, profilePhoto: false, about: false, status: false, readReceipts: false, typingIndicator: false, onlineStatus: false });
 
   const chatViewportRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -261,14 +261,20 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
   useEffect(() => {
     let cancelled = false;
-    if (isGroup || !peer?.id || !currentUser.id) {
-      setPeerPrivacyDetailsAllowed(false);
-      return;
-    }
-    setPeerPrivacyDetailsAllowed(false);
-    canContactSeePrivacyDetails(peer.id, currentUser.id)
-      .then((allowed) => { if (!cancelled) setPeerPrivacyDetailsAllowed(allowed); })
-      .catch(() => { if (!cancelled) setPeerPrivacyDetailsAllowed(false); });
+    const denied = { lastSeen: false, profilePhoto: false, about: false, status: false, readReceipts: false, typingIndicator: false, onlineStatus: false };
+    setPeerPrivacyGrants(denied);
+    if (isGroup || !peer?.id || !currentUser.id) return () => { cancelled = true; };
+    Promise.all([
+      canContactViewPrivacyField(peer.id, currentUser.id, 'privacy_last_seen'),
+      canContactViewPrivacyField(peer.id, currentUser.id, 'privacy_profile_photo'),
+      canContactViewPrivacyField(peer.id, currentUser.id, 'privacy_about'),
+      canContactViewPrivacyField(peer.id, currentUser.id, 'privacy_status'),
+      canContactViewPrivacyField(peer.id, currentUser.id, 'privacy_read_receipts'),
+      canContactViewPrivacyField(peer.id, currentUser.id, 'privacy_typing_indicator'),
+      canContactViewPrivacyField(peer.id, currentUser.id, 'privacy_online_status'),
+    ]).then(([lastSeen, profilePhoto, about, status, readReceipts, typingIndicator, onlineStatus]) => {
+      if (!cancelled) setPeerPrivacyGrants({ lastSeen, profilePhoto, about, status, readReceipts, typingIndicator, onlineStatus });
+    }).catch(() => { if (!cancelled) setPeerPrivacyGrants(denied); });
     return () => { cancelled = true; };
   }, [isGroup, peer?.id, currentUser.id]);
   const chatTitle = isGroup
@@ -276,10 +282,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     : peer?.full_name || 'OSA User';
   const chatAvatar = isGroup ? chat.group?.avatar_url : peer?.avatar_url;
 
-  const canShowPeerOnline = !isGroup && peer && peerPrivacyDetailsAllowed && (peerPrivacy ? peerPrivacy.online_status : true);
+  const canShowPeerOnline = !isGroup && peer && peerPrivacyGrants.onlineStatus && (peerPrivacy ? peerPrivacy.online_status : true);
   const canShowPeerLastSeen =
-    !isGroup && peer && peerPrivacyDetailsAllowed && (!peerPrivacy || peerPrivacy.last_seen_visibility !== 'nobody');
-  const hidePeerPhoto = !isGroup && (!peerPrivacyDetailsAllowed || peerPrivacy?.profile_photo_visibility === 'nobody');
+    !isGroup && peer && peerPrivacyGrants.lastSeen && (!peerPrivacy || peerPrivacy.last_seen_visibility !== 'nobody');
+  const hidePeerPhoto = !isGroup && (!peerPrivacyGrants.profilePhoto || peerPrivacy?.profile_photo_visibility === 'nobody');
   const peerTrulyOnline = Boolean(canShowPeerOnline && isProfileTrulyOnline(peer));
   const peerLastSeenFormatted =
     !isGroup && peer && !peerTrulyOnline && canShowPeerLastSeen
@@ -561,7 +567,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       )
       .on('broadcast', { event: 'typing' }, (payload) => {
         const senderId = payload.payload?.userId as string | undefined;
-        if (senderId && senderId !== currentUser.id) {
+        if (senderId && senderId !== currentUser.id && peerPrivacyGrants.typingIndicator) {
           setPeerIsTyping(true);
           if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
           typingTimeoutRef.current = window.setTimeout(() => {
@@ -584,7 +590,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       supabase.removeChannel(channel);
       channelRef.current = null;
     };
-  }, [chat.id, currentUser.id]);
+  }, [chat.id, currentUser.id, peerPrivacyGrants.typingIndicator]);
 
   const handleTypingChange = (val: string) => {
     setText(val);
@@ -2373,8 +2379,8 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                         <span className="text-slate-400">{t.offline}</span>
                       )}
                     </p>
-                    {peerPrivacyDetailsAllowed && <p className="mt-1 text-xs text-slate-500">{peer.email}</p>}
-                    {peerPrivacyDetailsAllowed && (!peerPrivacy || peerPrivacy.about_visibility !== 'nobody') && (
+                    {peerPrivacyGrants.about && <p className="mt-1 text-xs text-slate-500">{peer.email}</p>}
+                    {peerPrivacyGrants.about && (!peerPrivacy || peerPrivacy.about_visibility !== 'nobody') && (
                       <p className="mt-2 text-xs text-slate-600 dark:text-slate-300 max-w-xs">
                         {peer.about}
                       </p>
