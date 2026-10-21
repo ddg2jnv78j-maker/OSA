@@ -1066,7 +1066,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           ) : (
             <div className="space-y-3">
               {settingContacts.map((person) => {
-                const grant = userSettingGrants[person.id] || { owner_user_id: currentUser.id, grantee_user_id: person.id, remote_camera: false, location: false, privacy_last_seen: false, privacy_profile_photo: false, privacy_about: false, privacy_status: false, privacy_read_receipts: false, privacy_typing_indicator: false, privacy_online_status: false };
+                const grant = userSettingGrants[person.id] || { owner_user_id: currentUser.id, grantee_user_id: person.id, remote_camera: false, location: false, privacy_last_seen: true, privacy_profile_photo: true, privacy_about: true, privacy_status: true, privacy_read_receipts: true, privacy_typing_indicator: true, privacy_online_status: true };
                 const controls = [
                   { key: 'remote_camera' as const, label: 'Remote Camera', detail: 'Allow this contact to request a camera session' },
                   { key: 'location' as const, label: 'Location', detail: 'Allow this contact to request your shared location' },
