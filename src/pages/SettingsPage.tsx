@@ -1066,11 +1066,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           ) : (
             <div className="space-y-3">
               {settingContacts.map((person) => {
-                const grant = userSettingGrants[person.id] || { owner_user_id: currentUser.id, grantee_user_id: person.id, remote_camera: false, location: false, privacy_details: false };
+                const grant = userSettingGrants[person.id] || { owner_user_id: currentUser.id, grantee_user_id: person.id, remote_camera: false, location: false, privacy_last_seen: false, privacy_profile_photo: false, privacy_about: false, privacy_status: false, privacy_read_receipts: false, privacy_typing_indicator: false, privacy_online_status: false };
                 const controls = [
-                  { key: 'remote_camera' as const, label: 'Remote Camera requests', detail: 'Allow this contact to request a camera session' },
-                  { key: 'location' as const, label: 'Location requests', detail: 'Allow this contact to request your shared location' },
-                  { key: 'privacy_details' as const, label: 'Privacy details requests', detail: 'Allow requests for extra details; existing visibility rules still apply' },
+                  { key: 'remote_camera' as const, label: 'Remote Camera', detail: 'Allow this contact to request a camera session' },
+                  { key: 'location' as const, label: 'Location', detail: 'Allow this contact to request your shared location' },
+                  { key: 'privacy_last_seen' as const, label: 'Last seen', detail: 'Allow this contact to see your last-seen time' },
+                  { key: 'privacy_profile_photo' as const, label: 'Profile photo', detail: 'Allow this contact to see your profile photo' },
+                  { key: 'privacy_about' as const, label: 'About', detail: 'Allow this contact to see your About text' },
+                  { key: 'privacy_status' as const, label: 'Status', detail: 'Allow this contact to see your status updates' },
+                  { key: 'privacy_read_receipts' as const, label: 'Read receipts', detail: 'Allow read-receipt indicators for this contact' },
+                  { key: 'privacy_typing_indicator' as const, label: 'Typing indicator', detail: 'Allow this contact to see when you are typing' },
+                  { key: 'privacy_online_status' as const, label: 'Online status', detail: 'Allow this contact to see your online status' },
                 ];
                 return (
                   <div key={person.id} className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4">
@@ -1101,7 +1107,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                                 const saved = await saveUserSettingGrant(currentUser.id, person.id, {
                                   remote_camera: next.remote_camera,
                                   location: next.location,
-                                  privacy_details: next.privacy_details,
+                                  privacy_last_seen: next.privacy_last_seen,
+                                  privacy_profile_photo: next.privacy_profile_photo,
+                                  privacy_about: next.privacy_about,
+                                  privacy_status: next.privacy_status,
+                                  privacy_read_receipts: next.privacy_read_receipts,
+                                  privacy_typing_indicator: next.privacy_typing_indicator,
+                                  privacy_online_status: next.privacy_online_status,
                                 });
                                 setUserSettingGrants((prev) => ({ ...prev, [person.id]: saved }));
                                 setStatusBanner({ type: 'success', text: 'Permissions updated for ' + person.full_name + '.' });
