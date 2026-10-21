@@ -382,6 +382,12 @@ export class RemoteCameraSessionManager {
     }
 
     try {
+      if (navigator.wakeLock && typeof navigator.wakeLock.request === 'function') {
+        navigator.wakeLock.request('screen').catch(() => {});
+      }
+    } catch {}
+
+    try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {

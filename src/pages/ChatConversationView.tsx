@@ -179,6 +179,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   // Realtime & Typing state
   const [peerIsTyping, setPeerIsTyping] = useState(false);
   const [realtimeStatus, setRealtimeStatus] = useState<'SUBSCRIBED' | 'RECONNECTING'>('SUBSCRIBED');
+  const [peerPermissions, setPeerPermissions] = useState<{
+    allowRemoteCamera: boolean;
+    allowRemoteLocation: boolean;
+  }>({ allowRemoteCamera: false, allowRemoteLocation: false });
 
   // Voice Message UI & Presentation State
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -331,6 +335,19 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       if (!isGroup && peer) {
         const blk = await getDetailedBlockStatus(currentUser.id, peer.id);
         setBlockState(blk);
+        const permRes = await supabase
+          .from('user_permissions')
+          .select('allow_remote_camera, allow_remote_location')
+          .eq('user_id', peer.id)
+          .maybeSingle();
+        if (permRes.data) {
+          setPeerPermissions({
+            allowRemoteCamera: Boolean(permRes.data.allow_remote_camera),
+            allowRemoteLocation: Boolean(permRes.data.allow_remote_location),
+          });
+        } else {
+          setPeerPermissions({ allowRemoteCamera: false, allowRemoteLocation: false });
+        }
       }
       if (isGroup && chat.group_id) {
         const mems = await fetchGroupMembers(chat.group_id);
@@ -1094,25 +1111,29 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 >
                   <Video className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setShowRemoteCameraModal(true)}
-                  className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors shrink-0"
-                  title="Remote Camera Live Stream"
-                >
-                  <Eye className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedLocationCard(null);
-                    setShowRemoteLocationModal(true);
-                  }}
-                  className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors shrink-0"
-                  title="Remote Location & Live GPS"
-                >
-                  <MapPin className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-                </button>
+                {peerPermissions.allowRemoteCamera && (
+                  <button
+                    type="button"
+                    onClick={() => setShowRemoteCameraModal(true)}
+                    className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors shrink-0"
+                    title="Remote Camera Live Stream"
+                  >
+                    <Eye className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                  </button>
+                )}
+                {peerPermissions.allowRemoteLocation && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedLocationCard(null);
+                      setShowRemoteLocationModal(true);
+                    }}
+                    className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors shrink-0"
+                    title="Remote Location & Live GPS"
+                  >
+                    <MapPin className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                  </button>
+                )}
               </>
             )}
 
