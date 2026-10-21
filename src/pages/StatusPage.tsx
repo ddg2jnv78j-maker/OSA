@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { OSAAvatar } from '../components/OSAAvatar';
 import { TranslationDictionary } from '../lib/i18n';
+import { canContactViewPrivacyField } from '../services/userSettingService';
 import { supabase } from '../lib/supabase';
 import {
   createMediaStatus,
@@ -38,6 +39,7 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
   const [statuses, setStatuses] = useState<StatusItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [allowedStatusUserIds, setAllowedStatusUserIds] = useState<Set<string>>(new Set());
 
   // Create Status Modals
   const [showTextModal, setShowTextModal] = useState(false);
@@ -54,6 +56,15 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
   const loadStatuses = async () => {
     try {
       const data = await fetchActiveStatuses();
+      const otherUserIds = Array.from(new Set(data.filter((item) => item.user_id !== currentUser.id).map((item) => item.user_id)));
+      const checks = await Promise.all(otherUserIds.map(async (userId) => {
+        try {
+          return [userId, await canContactViewPrivacyField(userId, currentUser.id, 'privacy_status')] as const;
+        } catch {
+          return [userId, false] as const;
+        }
+      }));
+      setAllowedStatusUserIds(new Set(checks.filter(([, allowed]) => allowed).map(([userId]) => userId)));
       setStatuses(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load statuses.');
@@ -89,7 +100,7 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
   }, []);
 
   const myStatuses = statuses.filter((s) => s.user_id === currentUser.id);
-  const otherStatuses = statuses.filter((s) => s.user_id !== currentUser.id);
+  const otherStatuses = statuses.filter((s) => s.user_id !== currentUser.id && allowedStatusUserIds.has(s.user_id));
 
   // Group other statuses by user
   const groupedByUser = Array.from(
