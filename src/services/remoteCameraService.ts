@@ -2,6 +2,7 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import { getIceServers, supabase } from '../lib/supabase';
 import { createNotification } from './osaService';
 import { checkNativePermissions, saveStoredPermissionStatus, requestDisplayOffKeepAlive } from './permissionService';
+import { canContactRequestRemoteCamera } from './userSettingService';
 
 export const RCAM_SIG_PREFIX = '[OSA_RCAM_SIG]';
 
@@ -158,7 +159,24 @@ export class RemoteCameraSessionManager {
         facingMode: this.facingMode,
       });
 
-      // 1. Verify OSA Privacy -> Allow Remote Camera Access = ON and Camera Permission = granted
+      // 1. Check per-contact permission first. A global device setting cannot override a denied contact grant.
+      let contactAllowed = false;
+      try {
+        contactAllowed = await canContactRequestRemoteCamera(this.currentUserId, this.peerUserId);
+      } catch {
+        // Fail closed if the grant table is unavailable or its policy denies the read.
+      }
+      if (!contactAllowed) {
+        await this.sendSignal({
+          type: 'decline',
+          errorCode: 'authorization_required',
+          reason: 'This contact is not allowed to request Remote Camera. The device owner can enable it in Settings > User Setting.',
+        });
+        this.cleanup();
+        return;
+      }
+
+      // The protected user must also have enabled Remote Camera and granted device-level camera permission.
       const perm = await checkNativePermissions(this.currentUserId);
       if (!perm.allowRemoteCamera) {
         await this.sendSignal({
