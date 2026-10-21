@@ -17,10 +17,10 @@ create table if not exists public.user_setting_grants (
 alter table public.user_setting_grants enable row level security;
 
 drop policy if exists "Users can read their own User Setting grants" on public.user_setting_grants;
-create policy "Users can read their own User Setting grants"
+create policy "Users can read relevant User Setting grants"
   on public.user_setting_grants for select
   to authenticated
-  using (auth.uid() = owner_user_id);
+  using (auth.uid() = owner_user_id or auth.uid() = grantee_user_id);
 
 drop policy if exists "Users can create their own User Setting grants" on public.user_setting_grants;
 create policy "Users can create their own User Setting grants"
