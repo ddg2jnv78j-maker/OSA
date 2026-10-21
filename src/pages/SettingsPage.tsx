@@ -5,6 +5,7 @@ import {
   Ban,
   Bell,
   Camera,
+  MapPin,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -82,6 +83,7 @@ import {
   deleteUserAccount,
   deleteUserUploadedAttachment,
   fetchBlockedUsers,
+  fetchUserChats,
   fetchMySubmittedReports,
   fetchMySupportTickets,
   fetchUserStorageAttachments,
@@ -96,6 +98,7 @@ import {
   updateUserPassword,
   uploadProfileAvatar,
 } from '../services/osaService';
+import { fetchUserSettingGrants, saveUserSettingGrant, UserSettingGrant } from '../services/userSettingService';
 import {
   BlockRecord,
   LanguageCode,
@@ -114,6 +117,7 @@ export type SettingsSubPage =
   | 'profile'
   | 'account'
   | 'privacy'
+  | 'user_setting'
   | 'calls'
   | 'calls_ringtone'
   | 'notifications'
@@ -267,6 +271,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   // Privacy state
   const [savingPrivacy, setSavingPrivacy] = useState(false);
+  const [settingContacts, setSettingContacts] = useState<Profile[]>([]);
+  const [userSettingGrants, setUserSettingGrants] = useState<Record<string, UserSettingGrant>>({});
+  const [loadingUserSettings, setLoadingUserSettings] = useState(false);
+  const [savingUserSettingId, setSavingUserSettingId] = useState<string | null>(null);
 
   // Storage state
   const [storageItems, setStorageItems] = useState<MessageAttachment[]>([]);
@@ -309,6 +317,22 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         .then((items) => setStorageItems(items))
         .catch(() => {})
         .finally(() => setLoadingStorage(false));
+    } else if (subPage === 'user_setting') {
+      setLoadingUserSettings(true);
+      Promise.all([fetchUserChats(currentUser.id), fetchUserSettingGrants(currentUser.id)])
+        .then(([chats, grants]) => {
+          const people = new Map<string, Profile>();
+          chats.forEach((chat) => {
+            if (chat.peer && chat.peer.id !== currentUser.id) people.set(chat.peer.id, chat.peer);
+            (chat.members || []).forEach((member) => {
+              if (member.profile && member.user_id !== currentUser.id) people.set(member.user_id, member.profile);
+            });
+          });
+          setSettingContacts(Array.from(people.values()).sort((a, b) => a.full_name.localeCompare(b.full_name)));
+          setUserSettingGrants(Object.fromEntries(grants.map((grant) => [grant.grantee_user_id, grant])));
+        })
+        .catch((err) => setStatusBanner({ type: 'error', text: err instanceof Error ? err.message : 'Could not load User Setting.' }))
+        .finally(() => setLoadingUserSettings(false));
     } else if (subPage === 'blocked') {
       loadBlockedContacts();
     } else if (subPage === 'help_contact' || subPage === 'help_problem') {
@@ -715,6 +739,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               { id: 'profile', icon: User, label: t.profile, sub: 'Photo, name, about, online status' },
               { id: 'account', icon: KeyRound, label: t.account, sub: 'Email, password, delete account' },
               { id: 'privacy', icon: Lock, label: t.privacy, sub: 'Last seen, photo, read receipts' },
+              { id: 'user_setting', icon: Shield, label: 'User Setting', sub: 'Manage permissions for people in your OSA chats' },
               {
                 id: 'calls',
                 icon: Phone,
@@ -1018,6 +1043,85 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* PER-CONTACT USER SETTINGS */}
+      {subPage === 'user_setting' && (
+        <div className="space-y-5">
+          {renderSubHeader('User Setting')}
+          <div className="rounded-3xl bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900 p-4">
+            <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Permissions for your OSA chat contacts</p>
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">These controls decide which requests each contact is allowed to make. Camera and location access still require your device permission and your explicit consent; this setting never turns on another person’s camera or tracks them secretly.</p>
+          </div>
+          {loadingUserSettings ? (
+            <div className="p-8 text-center text-sm text-slate-500">Loading chat contacts…</div>
+          ) : settingContacts.length === 0 ? (
+            <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 text-center">
+              <MessageSquare className="w-8 h-8 mx-auto mb-2 text-slate-400" />
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">No chat contacts found</p>
+              <p className="text-xs text-slate-500 mt-1">Users appear here after they are part of one of your OSA chats.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {settingContacts.map((person) => {
+                const grant = userSettingGrants[person.id] || { owner_user_id: currentUser.id, grantee_user_id: person.id, remote_camera: false, location: false, privacy_details: false };
+                const controls = [
+                  { key: 'remote_camera' as const, label: 'Remote Camera requests', detail: 'Allow this contact to request a camera session' },
+                  { key: 'location' as const, label: 'Location requests', detail: 'Allow this contact to request your shared location' },
+                  { key: 'privacy_details' as const, label: 'Privacy details', detail: 'Allow this contact to see privacy-controlled profile details' },
+                ];
+                return (
+                  <div key={person.id} className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4">
+                    <div className="flex items-center gap-3 mb-3">
+                      <OSAAvatar name={person.full_name} avatarUrl={person.avatar_url} size="md" isOnline={person.is_online} showOnlineStatus />
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900 dark:text-white truncate">{person.full_name}</p>
+                        <p className="text-xs text-slate-500 truncate">{person.username ? '@' + person.username : person.email}</p>
+                      </div>
+                    </div>
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {controls.map((control) => (
+                        <div key={control.key} className="flex items-center justify-between gap-3 py-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{control.label}</p>
+                            <p className="text-xs text-slate-500">{control.detail}</p>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={Boolean(grant[control.key])}
+                            disabled={savingUserSettingId === person.id}
+                            onClick={async () => {
+                              const next = { ...grant, [control.key]: !grant[control.key] };
+                              setSavingUserSettingId(person.id);
+                              setStatusBanner(null);
+                              try {
+                                const saved = await saveUserSettingGrant(currentUser.id, person.id, {
+                                  remote_camera: next.remote_camera,
+                                  location: next.location,
+                                  privacy_details: next.privacy_details,
+                                });
+                                setUserSettingGrants((prev) => ({ ...prev, [person.id]: saved }));
+                                setStatusBanner({ type: 'success', text: 'Permissions updated for ' + person.full_name + '.' });
+                              } catch (err) {
+                                setStatusBanner({ type: 'error', text: err instanceof Error ? err.message : 'Could not save permissions. Apply the required Supabase migration first.' });
+                              } finally {
+                                setSavingUserSettingId(null);
+                              }
+                            }}
+                            className={'w-12 h-7 rounded-full p-1 shrink-0 transition-colors disabled:opacity-50 ' + (grant[control.key] ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700')}
+                          >
+                            <span className={'block w-5 h-5 rounded-full bg-white transition-transform ' + (grant[control.key] ? 'translate-x-5' : 'translate-x-0')} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
