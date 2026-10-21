@@ -83,3 +83,11 @@ export async function canContactSeePrivacyDetails(ownerUserId: string, granteeUs
   if (error) throw new Error(error.message);
   return data?.privacy_details === true;
 }
+
+/** Enforces a grant on the protected user's device before opening a camera stream. */
+export async function requireContactRemoteCameraGrant(ownerUserId: string, granteeUserId: string): Promise<void> {
+  if (!(await canContactRequestRemoteCamera(ownerUserId, granteeUserId))) {
+    throw new Error('This contact is not allowed to request Remote Camera. Manage access in Settings > User Setting.');
+  }
+}
+
