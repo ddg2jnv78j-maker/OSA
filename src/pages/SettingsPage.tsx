@@ -5,7 +5,6 @@ import {
   Ban,
   Bell,
   Camera,
-  MapPin,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -1069,7 +1068,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 const controls = [
                   { key: 'remote_camera' as const, label: 'Remote Camera requests', detail: 'Allow this contact to request a camera session' },
                   { key: 'location' as const, label: 'Location requests', detail: 'Allow this contact to request your shared location' },
-                  { key: 'privacy_details' as const, label: 'Privacy details', detail: 'Allow this contact to see privacy-controlled profile details' },
+                  { key: 'privacy_details' as const, label: 'Privacy details requests', detail: 'Allow requests for extra details; existing visibility rules still apply' },
                 ];
                 return (
                   <div key={person.id} className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4">
