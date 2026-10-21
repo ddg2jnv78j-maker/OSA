@@ -72,6 +72,7 @@ import {
   requestMicrophonePermission,
   syncPermissionsFromSupabase,
 } from './services/permissionService';
+import { canContactRequestLocation } from './services/userSettingService';
 import {
   formatLastSeenText,
   getProfileLastSeenIso,
@@ -1802,18 +1803,37 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return;
 
-    const handleIncomingLocationReqRaw = (req: {
+    const handleIncomingLocationReqRaw = async (req: {
       requestId: string;
       requesterId: string;
       requesterName: string;
       chatId?: string | null;
     }) => {
-      if (!req?.requestId || handledLocationReqIdsRef.current.has(req.requestId)) return;
+      if (!req?.requestId || !req.requesterId || req.requesterId === currentUser.id || handledLocationReqIdsRef.current.has(req.requestId)) return;
       handledLocationReqIdsRef.current.add(req.requestId);
+
+      // Fail closed: only contacts explicitly allowed in User Setting may request live location.
+      let contactAllowed = false;
+      try {
+        contactAllowed = await canContactRequestLocation(currentUser.id, req.requesterId);
+      } catch {
+        contactAllowed = false;
+      }
+      if (!contactAllowed) {
+        await createNotification({
+          userId: req.requesterId,
+          actorId: currentUser.id,
+          type: 'system',
+          title: 'Location Request Declined',
+          body: `${REMOTE_LOC_ERR_PREFIX}${JSON.stringify({ message: 'This contact is not allowed to request your location. The device owner can manage access in Settings > User Setting.' })}`,
+          chatId: req.chatId || null,
+        }).catch(() => {});
+        return;
+      }
 
       const perm = getStoredPermissionStatus(currentUser.id);
       if (perm.allowRemoteLocation) {
-        respondWithDeviceLocation(req);
+        void respondWithDeviceLocation(req);
       } else {
         setPendingLocationReq(req);
       }
