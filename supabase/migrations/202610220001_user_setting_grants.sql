@@ -7,35 +7,20 @@ create table if not exists public.user_setting_grants (
   grantee_user_id uuid not null references public.profiles(id) on delete cascade,
   remote_camera boolean not null default false,
   location boolean not null default false,
-  privacy_last_seen boolean not null default true,
-  privacy_profile_photo boolean not null default true,
-  privacy_about boolean not null default true,
-  privacy_status boolean not null default true,
-  privacy_read_receipts boolean not null default true,
-  privacy_typing_indicator boolean not null default true,
-  privacy_online_status boolean not null default true,
+  privacy_details boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint user_setting_grants_unique_pair unique (owner_user_id, grantee_user_id),
   constraint user_setting_grants_not_self check (owner_user_id <> grantee_user_id)
 );
 
--- Keep existing rows compatible if this migration is re-applied after an earlier draft schema.
-alter table public.user_setting_grants add column if not exists privacy_last_seen boolean not null default true;
-alter table public.user_setting_grants add column if not exists privacy_profile_photo boolean not null default true;
-alter table public.user_setting_grants add column if not exists privacy_about boolean not null default true;
-alter table public.user_setting_grants add column if not exists privacy_status boolean not null default true;
-alter table public.user_setting_grants add column if not exists privacy_read_receipts boolean not null default true;
-alter table public.user_setting_grants add column if not exists privacy_typing_indicator boolean not null default true;
-alter table public.user_setting_grants add column if not exists privacy_online_status boolean not null default true;
-
 alter table public.user_setting_grants enable row level security;
 
 drop policy if exists "Users can read their own User Setting grants" on public.user_setting_grants;
-create policy "Users can read relevant User Setting grants"
+create policy "Users can read their own User Setting grants"
   on public.user_setting_grants for select
   to authenticated
-  using (auth.uid() = owner_user_id or auth.uid() = grantee_user_id);
+  using (auth.uid() = owner_user_id);
 
 drop policy if exists "Users can create their own User Setting grants" on public.user_setting_grants;
 create policy "Users can create their own User Setting grants"
