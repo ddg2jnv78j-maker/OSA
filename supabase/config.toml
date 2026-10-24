@@ -1,0 +1,52 @@
+# OSA Chat — Supabase Auth & Email Branding Configuration
+# Project Reference: wldwnchorvymaulzzlya
+# Production Site URL: https://osa-chat.com/
+
+project_id = "wldwnchorvymaulzzlya"
+
+[auth]
+enabled = true
+site_url = "https://osa-chat.com/"
+additional_redirect_urls = [
+  "https://osa-chat.com/",
+  "https://osa-chat.com/?type=signup",
+  "https://osa-chat.com/?type=recovery",
+  "https://osa-chat.com/verify-email",
+  "https://osa-chat.com/reset-password",
+  "https://osa-chat.com/login"
+]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = true
+secure_password_change = false
+max_frequency = "1m0s"
+otp_length = 6
+otp_expiry = 3600
+
+# Custom SMTP Configuration (Required by Supabase Auth to apply custom Sender Display Name "OSA Chat")
+# Supabase's built-in email service (noreply@mail.app.supabase.io) ignores custom sender names.
+# To push this config via CLI once SMTP credentials and SUPABASE_ACCESS_TOKEN are set:
+#   npx supabase config push --project-ref wldwnchorvymaulzzlya
+[auth.email.smtp]
+enabled = true
+host = "env(SUPABASE_AUTH_SMTP_HOST)"
+port = 465
+user = "env(SUPABASE_AUTH_SMTP_USER)"
+pass = "env(SUPABASE_AUTH_SMTP_PASS)"
+admin_email = "noreply@osa-chat.com"
+sender_name = "OSA Chat"
+
+[auth.email.template.confirmation]
+subject = "OSA Chat — Verify Your Email"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "OSA Chat — Password Recovery"
+content_path = "./supabase/templates/recovery.html"

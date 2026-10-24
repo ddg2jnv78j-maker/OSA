@@ -1,0 +1,6 @@
+platform :ios, '15.0'
+use_frameworks!
+
+target 'App' do
+  # Native iOS frameworks used: CallKit, PushKit, UserNotifications, AVFoundation, WebKit
+end
