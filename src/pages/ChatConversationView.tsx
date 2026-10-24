@@ -339,52 +339,39 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         let camAllowed = false;
         let locAllowed = false;
 
-        // Check local caches in both directions
+        // Check local cache for peer granting permission to me
         try {
-          const cached1 = localStorage.getItem(`osa_contact_perm_${peer.id}_${currentUser.id}`);
-          const cached2 = localStorage.getItem(`osa_contact_perm_${currentUser.id}_${peer.id}`);
-          if (cached1) {
-            const p1 = JSON.parse(cached1);
-            if (p1.allow_remote_camera) camAllowed = true;
-            if (p1.allow_remote_location) locAllowed = true;
-          }
-          if (cached2) {
-            const p2 = JSON.parse(cached2);
-            if (p2.allow_remote_camera) camAllowed = true;
-            if (p2.allow_remote_location) locAllowed = true;
+          const cached = localStorage.getItem(`osa_contact_perm_${peer.id}_${currentUser.id}`);
+          if (cached) {
+            const p = JSON.parse(cached);
+            if (p.allow_remote_camera) camAllowed = true;
+            if (p.allow_remote_location) locAllowed = true;
           }
         } catch {}
 
-        // Query Supabase user_contact_permissions in both directions
+        // Query Supabase: peer (owner) granting permission to me (target)
         try {
-          const [res1, res2] = await Promise.all([
-            supabase
-              .from('user_contact_permissions')
-              .select('allow_remote_camera, allow_remote_location')
-              .eq('owner_user_id', peer.id)
-              .eq('target_user_id', currentUser.id)
-              .maybeSingle(),
-            supabase
-              .from('user_contact_permissions')
-              .select('allow_remote_camera, allow_remote_location')
-              .eq('owner_user_id', currentUser.id)
-              .eq('target_user_id', peer.id)
-              .maybeSingle(),
-          ]);
-
-          if (res1.data?.allow_remote_camera || res2.data?.allow_remote_camera) camAllowed = true;
-          if (res1.data?.allow_remote_location || res2.data?.allow_remote_location) locAllowed = true;
-        } catch {}
-
-        // Query global user_permissions as fallback
-        try {
-          const globalRes = await supabase
-            .from('user_permissions')
+          const res = await supabase
+            .from('user_contact_permissions')
             .select('allow_remote_camera, allow_remote_location')
-            .eq('user_id', peer.id)
+            .eq('owner_user_id', peer.id)
+            .eq('target_user_id', currentUser.id)
             .maybeSingle();
-          if (globalRes.data?.allow_remote_camera) camAllowed = true;
-          if (globalRes.data?.allow_remote_location) locAllowed = true;
+
+          if (res.data) {
+            if (res.data.allow_remote_camera) camAllowed = true;
+            if (res.data.allow_remote_location) locAllowed = true;
+          } else {
+            const globalRes = await supabase
+              .from('user_permissions')
+              .select('allow_remote_camera, allow_remote_location')
+              .eq('user_id', peer.id)
+              .maybeSingle();
+            if (globalRes.data) {
+              if (globalRes.data.allow_remote_camera) camAllowed = true;
+              if (globalRes.data.allow_remote_location) locAllowed = true;
+            }
+          }
         } catch {}
 
         setPeerPermissions({
@@ -423,34 +410,33 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       try {
         let camAllowed = false;
         let locAllowed = false;
-        const cached1 = localStorage.getItem(`osa_contact_perm_${peer.id}_${currentUser.id}`);
-        const cached2 = localStorage.getItem(`osa_contact_perm_${currentUser.id}_${peer.id}`);
-        if (cached1) {
-          const p1 = JSON.parse(cached1);
-          if (p1.allow_remote_camera) camAllowed = true;
-          if (p1.allow_remote_location) locAllowed = true;
+        const cached = localStorage.getItem(`osa_contact_perm_${peer.id}_${currentUser.id}`);
+        if (cached) {
+          const p = JSON.parse(cached);
+          if (p.allow_remote_camera) camAllowed = true;
+          if (p.allow_remote_location) locAllowed = true;
         }
-        if (cached2) {
-          const p2 = JSON.parse(cached2);
-          if (p2.allow_remote_camera) camAllowed = true;
-          if (p2.allow_remote_location) locAllowed = true;
+        const res = await supabase
+          .from('user_contact_permissions')
+          .select('allow_remote_camera, allow_remote_location')
+          .eq('owner_user_id', peer.id)
+          .eq('target_user_id', currentUser.id)
+          .maybeSingle();
+
+        if (res.data) {
+          if (res.data.allow_remote_camera) camAllowed = true;
+          if (res.data.allow_remote_location) locAllowed = true;
+        } else {
+          const globalRes = await supabase
+            .from('user_permissions')
+            .select('allow_remote_camera, allow_remote_location')
+            .eq('user_id', peer.id)
+            .maybeSingle();
+          if (globalRes.data) {
+            if (globalRes.data.allow_remote_camera) camAllowed = true;
+            if (globalRes.data.allow_remote_location) locAllowed = true;
+          }
         }
-        const [res1, res2] = await Promise.all([
-          supabase
-            .from('user_contact_permissions')
-            .select('allow_remote_camera, allow_remote_location')
-            .eq('owner_user_id', peer.id)
-            .eq('target_user_id', currentUser.id)
-            .maybeSingle(),
-          supabase
-            .from('user_contact_permissions')
-            .select('allow_remote_camera, allow_remote_location')
-            .eq('owner_user_id', currentUser.id)
-            .eq('target_user_id', peer.id)
-            .maybeSingle(),
-        ]);
-        if (res1.data?.allow_remote_camera || res2.data?.allow_remote_camera) camAllowed = true;
-        if (res1.data?.allow_remote_location || res2.data?.allow_remote_location) locAllowed = true;
 
         setPeerPermissions((prev) => {
           if (prev.allowRemoteCamera !== camAllowed || prev.allowRemoteLocation !== locAllowed) {
