@@ -401,7 +401,10 @@ export class RemoteCameraSessionManager {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
         video: {
           facingMode: { ideal: facing },
           width: { ideal: 1280 },
@@ -423,7 +426,7 @@ export class RemoteCameraSessionManager {
       }
       try {
         const fallbackStream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
+          audio: true,
           video: true,
         });
         saveStoredPermissionStatus({ camera: 'granted' }, this.currentUserId);

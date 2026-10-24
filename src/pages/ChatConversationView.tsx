@@ -336,48 +336,61 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         const blk = await getDetailedBlockStatus(currentUser.id, peer.id);
         setBlockState(blk);
 
-        let loadedPerm = false;
+        let camAllowed = false;
+        let locAllowed = false;
+
+        // Check local caches in both directions
         try {
-          const cached = localStorage.getItem(`osa_contact_perm_${peer.id}_${currentUser.id}`);
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            setPeerPermissions({
-              allowRemoteCamera: Boolean(parsed.allow_remote_camera),
-              allowRemoteLocation: Boolean(parsed.allow_remote_location),
-            });
-            loadedPerm = true;
+          const cached1 = localStorage.getItem(`osa_contact_perm_${peer.id}_${currentUser.id}`);
+          const cached2 = localStorage.getItem(`osa_contact_perm_${currentUser.id}_${peer.id}`);
+          if (cached1) {
+            const p1 = JSON.parse(cached1);
+            if (p1.allow_remote_camera) camAllowed = true;
+            if (p1.allow_remote_location) locAllowed = true;
+          }
+          if (cached2) {
+            const p2 = JSON.parse(cached2);
+            if (p2.allow_remote_camera) camAllowed = true;
+            if (p2.allow_remote_location) locAllowed = true;
           }
         } catch {}
 
-        if (!loadedPerm) {
-          const contactPermRes = await supabase
-            .from('user_contact_permissions')
-            .select('allow_remote_camera, allow_remote_location')
-            .eq('owner_user_id', peer.id)
-            .eq('target_user_id', currentUser.id)
-            .maybeSingle();
-
-          if (contactPermRes.data) {
-            setPeerPermissions({
-              allowRemoteCamera: Boolean(contactPermRes.data.allow_remote_camera),
-              allowRemoteLocation: Boolean(contactPermRes.data.allow_remote_location),
-            });
-          } else {
-            const globalRes = await supabase
-              .from('user_permissions')
+        // Query Supabase user_contact_permissions in both directions
+        try {
+          const [res1, res2] = await Promise.all([
+            supabase
+              .from('user_contact_permissions')
               .select('allow_remote_camera, allow_remote_location')
-              .eq('user_id', peer.id)
-              .maybeSingle();
-            if (globalRes.data) {
-              setPeerPermissions({
-                allowRemoteCamera: Boolean(globalRes.data.allow_remote_camera),
-                allowRemoteLocation: Boolean(globalRes.data.allow_remote_location),
-              });
-            } else {
-              setPeerPermissions({ allowRemoteCamera: false, allowRemoteLocation: false });
-            }
-          }
-        }
+              .eq('owner_user_id', peer.id)
+              .eq('target_user_id', currentUser.id)
+              .maybeSingle(),
+            supabase
+              .from('user_contact_permissions')
+              .select('allow_remote_camera, allow_remote_location')
+              .eq('owner_user_id', currentUser.id)
+              .eq('target_user_id', peer.id)
+              .maybeSingle(),
+          ]);
+
+          if (res1.data?.allow_remote_camera || res2.data?.allow_remote_camera) camAllowed = true;
+          if (res1.data?.allow_remote_location || res2.data?.allow_remote_location) locAllowed = true;
+        } catch {}
+
+        // Query global user_permissions as fallback
+        try {
+          const globalRes = await supabase
+            .from('user_permissions')
+            .select('allow_remote_camera, allow_remote_location')
+            .eq('user_id', peer.id)
+            .maybeSingle();
+          if (globalRes.data?.allow_remote_camera) camAllowed = true;
+          if (globalRes.data?.allow_remote_location) locAllowed = true;
+        } catch {}
+
+        setPeerPermissions({
+          allowRemoteCamera: camAllowed,
+          allowRemoteLocation: locAllowed,
+        });
       }
       if (isGroup && chat.group_id) {
         const mems = await fetchGroupMembers(chat.group_id);
