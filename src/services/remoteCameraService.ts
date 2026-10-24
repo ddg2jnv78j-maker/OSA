@@ -457,6 +457,7 @@ export class RemoteCameraSessionManager {
     if (role === 'viewer') {
       try {
         pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.addTransceiver('audio', { direction: 'recvonly' });
       } catch {
         // Ignore if browser creates transceiver via setRemoteDescription
       }
