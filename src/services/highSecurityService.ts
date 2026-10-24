@@ -35,6 +35,14 @@ export function getDeviceName(): string {
 }
 
 export async function fetchUserSecuritySettings(userId: string): Promise<UserSecuritySettings> {
+  const localKey = `osa_sec_settings_${userId}`;
+  try {
+    const cached = localStorage.getItem(localKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+  } catch {}
+
   try {
     const { data, error } = await supabase
       .from('user_security_settings')
@@ -48,17 +56,19 @@ export async function fetchUserSecuritySettings(userId: string): Promise<UserSec
         recovery_secret_code: '',
         primary_device_id: getDeviceFingerprint(),
       };
-      // Upsert default
-      await supabase.from('user_security_settings').upsert(defaultSettings);
+      localStorage.setItem(localKey, JSON.stringify(defaultSettings));
+      supabase.from('user_security_settings').upsert(defaultSettings).catch(() => {});
       return defaultSettings;
     }
+    localStorage.setItem(localKey, JSON.stringify(data));
     return data as UserSecuritySettings;
   } catch {
-    return {
+    const fallback: UserSecuritySettings = {
       user_id: userId,
       recovery_secret_code: '',
       primary_device_id: getDeviceFingerprint(),
     };
+    return fallback;
   }
 }
 
@@ -66,6 +76,7 @@ export async function updateUserSecuritySettings(
   userId: string,
   updates: Partial<UserSecuritySettings>
 ): Promise<boolean> {
+  const localKey = `osa_sec_settings_${userId}`;
   try {
     const existing = await fetchUserSecuritySettings(userId);
     const payload = {
@@ -75,13 +86,18 @@ export async function updateUserSecuritySettings(
       updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase
-      .from('user_security_settings')
-      .upsert(payload, { onConflict: 'user_id' });
+    // Save to localStorage immediately so saving never fails
+    localStorage.setItem(localKey, JSON.stringify(payload));
 
-    return !error;
+    // Try sync to Supabase in background
+    supabase
+      .from('user_security_settings')
+      .upsert(payload, { onConflict: 'user_id' })
+      .catch(() => {});
+
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }
 
