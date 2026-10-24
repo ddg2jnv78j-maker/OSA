@@ -44,10 +44,8 @@ export const UserPermissionDetailModal: React.FC<UserPermissionDetailModalProps>
     setSaving(true);
 
     try {
-      const payload1 = { owner_user_id: currentUser.id, target_user_id: targetUser.id, ...next };
-      const payload2 = { owner_user_id: targetUser.id, target_user_id: currentUser.id, ...next };
-      localStorage.setItem(`osa_contact_perm_${currentUser.id}_${targetUser.id}`, JSON.stringify(payload1));
-      localStorage.setItem(`osa_contact_perm_${targetUser.id}_${currentUser.id}`, JSON.stringify(payload2));
+      const payload = { owner_user_id: currentUser.id, target_user_id: targetUser.id, ...next };
+      localStorage.setItem(`osa_contact_perm_${currentUser.id}_${targetUser.id}`, JSON.stringify(payload));
     } catch {}
 
     await updateContactPermission(currentUser.id, targetUser.id, { [key]: val });
