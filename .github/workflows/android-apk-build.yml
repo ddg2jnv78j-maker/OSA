@@ -1,0 +1,145 @@
+name: Build Android APK (Restricted Firebase Key)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish GitHub Release (set to true only when ready to release)"
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: ["main"]
+    paths:
+      - "android/**"
+      - "src/**"
+      - ".github/workflows/android-apk-build.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build-android-apk:
+    name: Build Signed Debug APK & Verify SHA-1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Ensure Android Debug Keystore exists
+        run: |
+          mkdir -p ~/.android
+          cp -f android/app/osa-debug.keystore ~/.android/debug.keystore
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web assets
+        run: npx vite build
+        env:
+          VITE_BASE_PATH: /
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_WEBRTC_STUN_URLS: ${{ secrets.VITE_WEBRTC_STUN_URLS }}
+          VITE_WEBRTC_TURN_URL: ${{ secrets.VITE_WEBRTC_TURN_URL }}
+          VITE_WEBRTC_TURN_USERNAME: ${{ secrets.VITE_WEBRTC_TURN_USERNAME }}
+          VITE_WEBRTC_TURN_CREDENTIAL: ${{ secrets.VITE_WEBRTC_TURN_CREDENTIAL }}
+          VITE_VAPID_PUBLIC_KEY: BG2E40YAcF2PElhPhWmHLsFI8NnVERlK9hCV7tgZakbuwVXT2L515AFdoYQiHO9cPNaUtOGjVZwcYdoW5SlzsXA
+          VITE_GOOGLE_AI_API_KEY: ${{ secrets.VITE_GOOGLE_AI_API_KEY }}
+
+      - name: Sync Capacitor Android assets
+        run: npx cap copy android
+
+      - name: Verify FIREBASE_ANDROID_API_KEY secret is present and build APK
+        working-directory: ./android
+        env:
+          FIREBASE_ANDROID_API_KEY: ${{ secrets.FIREBASE_ANDROID_API_KEY }}
+        run: |
+          if [ -z "$FIREBASE_ANDROID_API_KEY" ]; then
+            echo "ERROR: FIREBASE_ANDROID_API_KEY secret is not configured."
+            exit 1
+          fi
+          echo "FIREBASE_ANDROID_API_KEY secret verified present (length: ${#FIREBASE_ANDROID_API_KEY})."
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Inspect Built APK Signing Certificate (SHA-1 & SHA-256)
+        run: |
+          node scripts/verify-android-sha1.mjs | tee signing-fingerprint-report.txt
+
+      - name: Compute APK Checksum & Generate Release Metadata
+        id: release_metadata
+        run: |
+          APK_FILE="android/app/build/outputs/apk/debug/app-debug.apk"
+          SHA256_HASH=$(sha256sum "$APK_FILE" | awk '{print $1}')
+          APK_SIZE=$(stat -c%s "$APK_FILE")
+          VERSION_NAME="1.0.0"
+          VERSION_CODE=1
+          TAG_NAME="v${VERSION_NAME}"
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/osa-v${VERSION_NAME}-debug.apk"
+
+          cat <<EOF > app-release-metadata.json
+          {
+            "versionName": "${VERSION_NAME}",
+            "versionCode": ${VERSION_CODE},
+            "apkUrl": "${DOWNLOAD_URL}",
+            "apkSize": ${APK_SIZE},
+            "sha256": "${SHA256_HASH}",
+            "releaseNotes": "OSA stable release v${VERSION_NAME} with WebRTC Calling, Realtime Chat, Standalone Native Notifications, and In-App Auto-Updates.",
+            "publishedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+          echo "Computed SHA-256: ${SHA256_HASH}"
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "sha256=${SHA256_HASH}" >> $GITHUB_OUTPUT
+          cp "$APK_FILE" "osa-v${VERSION_NAME}-debug.apk"
+
+      - name: Upload Rebuilt Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: osa-android-debug-apk
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            osa-v1.0.0-debug.apk
+            app-release-metadata.json
+            signing-fingerprint-report.txt
+
+      - name: Publish Stable GitHub Release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_metadata.outputs.tag_name }}
+          name: "OSA v1.0.0 Stable Release"
+          body: |
+            ## OSA Android Release v1.0.0
+            
+            ### Release Metadata
+            - **Version Name:** 1.0.0
+            - **Version Code:** 1
+            - **Package Name:** `app.osa.messaging`
+            - **SHA-256 Checksum:** `${{ steps.release_metadata.outputs.sha256 }}`
+            
+            ### Features
+            - End-to-end real-time chat, status, and group messaging
+            - WebRTC Audio and Video calling with hardware controls (speaker, mute)
+            - Standalone native notification playback and RemoteInput inline replies
+            - Automatic in-app update checks and verified package installation
+          files: |
+            osa-v1.0.0-debug.apk
+            app-release-metadata.json
+            signing-fingerprint-report.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

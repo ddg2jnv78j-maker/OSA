@@ -1,0 +1,4 @@
+@import "tailwindcss";
+@import "./styles/osa.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
