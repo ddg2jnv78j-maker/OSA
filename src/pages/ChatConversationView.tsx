@@ -5,11 +5,13 @@ import {
   Ban,
   BarChart2,
   BarChart3,
+  Battery,
   Bell,
   BellOff,
   Bookmark,
   Check,
   CheckCheck,
+  CheckCircle2,
   Clock,
   Copy,
   CornerUpLeft,
@@ -18,7 +20,10 @@ import {
   ExternalLink,
   Eye,
   FileText,
+  Flame,
+  Ghost,
   Globe,
+  Heart,
   Image as ImageIcon,
   Info,
   Link,
@@ -40,18 +45,24 @@ import {
   PinOff,
   Play,
   Plus,
+  Receipt,
+  RefreshCw,
   Search,
   Send,
   Share2,
+  ShieldAlert,
+  Smartphone,
   Smile,
   Sparkles,
   Square,
+  ThumbsUp,
   Timer,
   Trash2,
   Unlock,
   UserMinus,
   UserPlus,
   Video,
+  Volume2,
   X,
 } from 'lucide-react';
 import { OSAAvatar } from '../components/OSAAvatar';
@@ -63,7 +74,11 @@ import { AffiliateProductCard } from '../components/AffiliateProductCard';
 import { AffiliateProduct } from '../types/osa';
 import { TranslationDictionary } from '../lib/i18n';
 import { supabase } from '../lib/supabase';
-import { generateSmartDraftOrReply, queryShoppingAssistant } from '../services/aiService';
+import {
+  generateSmartDraftOrReply,
+  queryShoppingAssistant,
+  transcribeVoiceMessage,
+} from '../services/aiService';
 import {
   CHAT_TRANSLATION_LANG_CHANGED_EVENT,
   CHAT_TRANSLATION_LANGUAGES,
@@ -350,6 +365,72 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     return chat.group_id ? fetchGroupJoinRequests(chat.group_id) : [];
   });
 
+  // ==========================================
+  // 6 FLAGSHIP FEATURES STATE & REFS
+  // ==========================================
+
+  // Feature 1: Message Emoji Reactions
+  const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🙏', '🔥'];
+  const [messageReactions, setMessageReactions] = useState<
+    Record<string, Record<string, string[]>>
+  >(() => {
+    try {
+      const raw = localStorage.getItem(`osa_reactions_${chat.id}`);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [activeReactionMsgId, setActiveReactionMsgId] = useState<string | null>(null);
+
+  // Feature 2: Round Instant Video Notes
+  const [showVideoNoteModal, setShowVideoNoteModal] = useState(false);
+  const [isVideoNoteRecording, setIsVideoNoteRecording] = useState(false);
+  const [videoNoteDuration, setVideoNoteDuration] = useState(0);
+  const [videoNoteFacingMode, setVideoNoteFacingMode] = useState<'user' | 'environment'>('user');
+  const [videoNoteRecordedBlob, setVideoNoteRecordedBlob] = useState<Blob | null>(null);
+  const [videoNotePreviewUrl, setVideoNotePreviewUrl] = useState<string | null>(null);
+  const [videoNoteSending, setVideoNoteSending] = useState(false);
+  const videoNoteStreamRef = useRef<MediaStream | null>(null);
+  const videoNoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const videoNoteRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoNoteChunksRef = useRef<Blob[]>([]);
+  const videoNoteTimerRef = useRef<number | null>(null);
+
+  // Feature 3: Voice Message Transcription
+  const [transcriptions, setTranscriptions] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem(`osa_transcripts_${chat.id}`);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [transcribingMsgIds, setTranscribingMsgIds] = useState<Record<string, boolean>>({});
+  const [showTranscriptMap, setShowTranscriptMap] = useState<Record<string, boolean>>({});
+
+  // Feature 4: Emergency SOS Alert Beacon
+  const [showSosModal, setShowSosModal] = useState(false);
+  const [sosCountdown, setSosCountdown] = useState(3);
+  const [isSendingSos, setIsSendingSos] = useState(false);
+  const sosTimerRef = useRef<number | null>(null);
+
+  // Feature 5: Ghost Mode / Incognito Presence
+  const [ghostModeActive, setGhostModeActive] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('osa_ghost_mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  // Feature 6: Group Split Bill / Expense Tracker
+  const [showSplitBillModal, setShowSplitBillModal] = useState(false);
+  const [splitBillTitle, setSplitBillTitle] = useState('');
+  const [splitBillTotal, setSplitBillTotal] = useState('');
+  const [splitBillNote, setSplitBillNote] = useState('');
+  const [splitBillSubmitting, setSplitBillSubmitting] = useState(false);
+
   const chatViewportRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -432,11 +513,13 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           ? callsList.filter((c) => new Date(c.created_at).getTime() > clearedTime)
           : callsList
       );
-      await markChatAsRead(
-        chat.id,
-        currentUser.id,
-        myPrivacy ? myPrivacy.read_receipts : true
-      );
+      if (!ghostModeActive) {
+        await markChatAsRead(
+          chat.id,
+          currentUser.id,
+          myPrivacy ? myPrivacy.read_receipts : true
+        );
+      }
       if (!isGroup && peer) {
         const blk = await getDetailedBlockStatus(currentUser.id, peer.id);
         setBlockState(blk);
@@ -705,11 +788,13 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             chat.my_membership?.cleared_at
           );
           setMessages(fresh);
-          await markChatAsRead(
-            chat.id,
-            currentUser.id,
-            myPrivacy ? myPrivacy.read_receipts : true
-          );
+          if (!ghostModeActive) {
+            await markChatAsRead(
+              chat.id,
+              currentUser.id,
+              myPrivacy ? myPrivacy.read_receipts : true
+            );
+          }
           onChatUpdated();
         }
       )
@@ -813,6 +898,39 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           );
         }
       })
+      .on('broadcast', { event: 'message_reaction' }, (payload) => {
+        const { messageId, emoji, userId } = payload.payload || {};
+        if (messageId && emoji && userId) {
+          setMessageReactions((prev) => {
+            const currentMsg = { ...(prev[messageId] || {}) };
+            const list = currentMsg[emoji] || [];
+            let updatedList: string[];
+            if (list.includes(userId)) {
+              updatedList = list.filter((id) => id !== userId);
+            } else {
+              updatedList = [...list, userId];
+            }
+            if (updatedList.length === 0) {
+              delete currentMsg[emoji];
+            } else {
+              currentMsg[emoji] = updatedList;
+            }
+            const next = { ...prev, [messageId]: currentMsg };
+            try {
+              localStorage.setItem(`osa_reactions_${chat.id}`, JSON.stringify(next));
+            } catch {}
+            return next;
+          });
+        }
+      })
+      .on('broadcast', { event: 'split_bill_update' }, (payload) => {
+        const { messageId, updatedContent } = payload.payload || {};
+        if (messageId && updatedContent) {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
+          );
+        }
+      })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           setRealtimeStatus('SUBSCRIBED');
@@ -834,7 +952,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
   const handleTypingChange = (val: string) => {
     setText(val);
-    if (!channelRef.current || (myPrivacy && !myPrivacy.typing_indicator)) return;
+    if (!channelRef.current || (myPrivacy && !myPrivacy.typing_indicator) || ghostModeActive) return;
 
     if (!val.trim()) {
       channelRef.current.send({
@@ -1646,6 +1764,450 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     } catch {}
   };
 
+  // -------------------------------------------------------------
+  // Feature 1: Message Emoji Reactions Handler
+  // -------------------------------------------------------------
+  const handleToggleReaction = (messageId: string, emoji: string) => {
+    setMessageReactions((prev) => {
+      const currentMsg = { ...(prev[messageId] || {}) };
+      const list = currentMsg[emoji] || [];
+      let updatedList: string[];
+      if (list.includes(currentUser.id)) {
+        updatedList = list.filter((id) => id !== currentUser.id);
+      } else {
+        updatedList = [...list, currentUser.id];
+      }
+      if (updatedList.length === 0) {
+        delete currentMsg[emoji];
+      } else {
+        currentMsg[emoji] = updatedList;
+      }
+      const next = { ...prev, [messageId]: currentMsg };
+      try {
+        localStorage.setItem(`osa_reactions_${chat.id}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
+    if (channelRef.current) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'message_reaction',
+        payload: { messageId, emoji, userId: currentUser.id },
+      });
+    }
+    setActiveReactionMsgId(null);
+  };
+
+  // -------------------------------------------------------------
+  // Feature 2: Round Instant Video Notes Handlers
+  // -------------------------------------------------------------
+  const handleOpenVideoNoteModal = async () => {
+    setShowAttachmentMenu(false);
+    setShowVideoNoteModal(true);
+    setIsVideoNoteRecording(false);
+    setVideoNoteDuration(0);
+    setVideoNoteRecordedBlob(null);
+    setVideoNotePreviewUrl(null);
+    videoNoteChunksRef.current = [];
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: videoNoteFacingMode,
+          width: { ideal: 480 },
+          height: { ideal: 480 },
+        },
+        audio: true,
+      });
+      videoNoteStreamRef.current = stream;
+      if (videoNoteVideoRef.current) {
+        videoNoteVideoRef.current.srcObject = stream;
+        videoNoteVideoRef.current.play().catch(() => {});
+      }
+    } catch {
+      setError('Unable to access camera or microphone for video note.');
+      setShowVideoNoteModal(false);
+    }
+  };
+
+  const handleFlipVideoNoteCamera = async () => {
+    if (isVideoNoteRecording) return;
+    const newFacing = videoNoteFacingMode === 'user' ? 'environment' : 'user';
+    setVideoNoteFacingMode(newFacing);
+    if (videoNoteStreamRef.current) {
+      videoNoteStreamRef.current.getTracks().forEach((t) => t.stop());
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: newFacing,
+          width: { ideal: 480 },
+          height: { ideal: 480 },
+        },
+        audio: true,
+      });
+      videoNoteStreamRef.current = stream;
+      if (videoNoteVideoRef.current) {
+        videoNoteVideoRef.current.srcObject = stream;
+        videoNoteVideoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      console.warn('Could not flip camera', err);
+    }
+  };
+
+  const handleStartVideoNoteRecording = () => {
+    if (!videoNoteStreamRef.current) return;
+    videoNoteChunksRef.current = [];
+    setIsVideoNoteRecording(true);
+    setVideoNoteDuration(0);
+
+    let mimeType = 'video/webm;codecs=vp8,opus';
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/mp4';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = '';
+      }
+    }
+
+    try {
+      const recorder = mimeType
+        ? new MediaRecorder(videoNoteStreamRef.current, { mimeType })
+        : new MediaRecorder(videoNoteStreamRef.current);
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          videoNoteChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(videoNoteChunksRef.current, {
+          type: recorder.mimeType || 'video/webm',
+        });
+        setVideoNoteRecordedBlob(blob);
+        const url = URL.createObjectURL(blob);
+        setVideoNotePreviewUrl(url);
+      };
+
+      videoNoteRecorderRef.current = recorder;
+      recorder.start(250);
+
+      videoNoteTimerRef.current = window.setInterval(() => {
+        setVideoNoteDuration((prev) => {
+          if (prev >= 59) {
+            handleStopVideoNoteRecording();
+            return 60;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+    } catch (e) {
+      console.error('Failed to start video recording', e);
+      setIsVideoNoteRecording(false);
+    }
+  };
+
+  const handleStopVideoNoteRecording = () => {
+    if (videoNoteTimerRef.current) {
+      clearInterval(videoNoteTimerRef.current);
+      videoNoteTimerRef.current = null;
+    }
+    setIsVideoNoteRecording(false);
+    if (
+      videoNoteRecorderRef.current &&
+      videoNoteRecorderRef.current.state === 'recording'
+    ) {
+      videoNoteRecorderRef.current.stop();
+    }
+  };
+
+  const handleSendVideoNote = async () => {
+    if (!videoNoteRecordedBlob) return;
+    setVideoNoteSending(true);
+    try {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        try {
+          const base64Data = reader.result as string;
+          const payload = {
+            videoUrl: base64Data,
+            duration: videoNoteDuration || 1,
+            timestamp: new Date().toISOString(),
+          };
+          const content = `[VIDEO_NOTE]${JSON.stringify(payload)}`;
+          const sent = await sendTextMessage({
+            chatId: chat.id,
+            senderId: currentUser.id,
+            content,
+          });
+          setMessages((prev) =>
+            prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+          );
+          handleCloseVideoNoteModal();
+          onChatUpdated();
+        } catch (err) {
+          setError(
+            err instanceof Error ? err.message : 'Failed to send video note.'
+          );
+        } finally {
+          setVideoNoteSending(false);
+        }
+      };
+      reader.readAsDataURL(videoNoteRecordedBlob);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to process video note.'
+      );
+      setVideoNoteSending(false);
+    }
+  };
+
+  const handleCloseVideoNoteModal = () => {
+    if (videoNoteTimerRef.current) {
+      clearInterval(videoNoteTimerRef.current);
+      videoNoteTimerRef.current = null;
+    }
+    if (
+      videoNoteRecorderRef.current &&
+      videoNoteRecorderRef.current.state === 'recording'
+    ) {
+      try {
+        videoNoteRecorderRef.current.stop();
+      } catch {}
+    }
+    if (videoNoteStreamRef.current) {
+      videoNoteStreamRef.current.getTracks().forEach((t) => t.stop());
+      videoNoteStreamRef.current = null;
+    }
+    setShowVideoNoteModal(false);
+    setIsVideoNoteRecording(false);
+    setVideoNoteRecordedBlob(null);
+    setVideoNotePreviewUrl(null);
+    setVideoNoteDuration(0);
+    setVideoNoteSending(false);
+  };
+
+  // -------------------------------------------------------------
+  // Feature 3: Voice Message Transcription Handler
+  // -------------------------------------------------------------
+  const handleTranscribeVoiceMessage = async (msg: Message) => {
+    if (transcriptions[msg.id]) {
+      setShowTranscriptMap((prev) => ({
+        ...prev,
+        [msg.id]: !prev[msg.id],
+      }));
+      return;
+    }
+
+    setTranscribingMsgIds((prev) => ({ ...prev, [msg.id]: true }));
+    try {
+      const match = msg.content.match(/\((.*?)\)/);
+      const dur = match ? match[1] : '0:05';
+      const audioAtt = (msg.attachments || []).find((a) => a.file_type === 'audio');
+      const textResult = await transcribeVoiceMessage({
+        audioUrl: audioAtt?.file_url,
+        durationText: dur,
+        preferredLanguage: currentUser.language === 'bn' ? 'bn' : 'en',
+      });
+      setTranscriptions((prev) => {
+        const next = { ...prev, [msg.id]: textResult };
+        try {
+          localStorage.setItem(`osa_transcripts_${chat.id}`, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      setShowTranscriptMap((prev) => ({ ...prev, [msg.id]: true }));
+    } catch (err) {
+      console.error('Transcription error', err);
+    } finally {
+      setTranscribingMsgIds((prev) => ({ ...prev, [msg.id]: false }));
+    }
+  };
+
+  // -------------------------------------------------------------
+  // Feature 4: Emergency SOS Beacon Handlers
+  // -------------------------------------------------------------
+  const handleOpenSosModal = () => {
+    setShowAttachmentMenu(false);
+    setShowSosModal(true);
+    setSosCountdown(3);
+    if (sosTimerRef.current) clearInterval(sosTimerRef.current);
+
+    sosTimerRef.current = window.setInterval(() => {
+      setSosCountdown((prev) => {
+        if (prev <= 1) {
+          if (sosTimerRef.current) clearInterval(sosTimerRef.current);
+          handleExecuteSos();
+          return 0;
+        }
+        try {
+          navigator.vibrate?.(200);
+        } catch {}
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const handleAbortSos = () => {
+    if (sosTimerRef.current) {
+      clearInterval(sosTimerRef.current);
+      sosTimerRef.current = null;
+    }
+    setShowSosModal(false);
+    setSosCountdown(3);
+  };
+
+  const handleExecuteSos = async () => {
+    if (sosTimerRef.current) {
+      clearInterval(sosTimerRef.current);
+      sosTimerRef.current = null;
+    }
+    setIsSendingSos(true);
+    try {
+      let battery = 100;
+      if (typeof navigator !== 'undefined' && 'getBattery' in navigator) {
+        try {
+          const bat = await (navigator as any).getBattery();
+          battery = Math.round(bat.level * 100);
+        } catch {}
+      }
+
+      let coords = null;
+      try {
+        const pos = await getCurrentDeviceLocation(currentUser.id);
+        coords = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: Math.round(pos.coords.accuracy || 10),
+        };
+      } catch {}
+
+      const sosPayload = {
+        senderName: currentUser.full_name,
+        senderPhone: currentUser.phone || '',
+        battery,
+        coords,
+        timestamp: new Date().toISOString(),
+        emergencyMessage:
+          currentUser.language === 'bn'
+            ? 'জরুরি এসওএস অ্যালার্ট: আমার তাৎক্ষণিক সহায়তা প্রয়োজন! নিচে আমার লাইভ জিপিএস লোকেশন ও ব্যাটারি স্ট্যাটাস দেওয়া হলো।'
+            : 'EMERGENCY SOS ALERT: Immediate assistance needed! Here is my live beacon GPS location & battery status.',
+      };
+
+      const content = `[SOS_ALERT]${JSON.stringify(sosPayload)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) =>
+        prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+      );
+      setShowSosModal(false);
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to broadcast SOS alert.');
+    } finally {
+      setIsSendingSos(false);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // Feature 5: Ghost Mode / Incognito Presence Handlers
+  // -------------------------------------------------------------
+  const handleToggleGhostMode = () => {
+    const nextVal = !ghostModeActive;
+    setGhostModeActive(nextVal);
+    try {
+      localStorage.setItem('osa_ghost_mode', String(nextVal));
+    } catch {}
+  };
+
+  // -------------------------------------------------------------
+  // Feature 6: Group Split Bill / Expense Tracker Handlers
+  // -------------------------------------------------------------
+  const handleCreateSplitBill = async () => {
+    const title = splitBillTitle.trim();
+    const total = parseFloat(splitBillTotal);
+    if (!title || isNaN(total) || total <= 0) {
+      setError('Please provide a valid bill title and total amount.');
+      return;
+    }
+
+    setSplitBillSubmitting(true);
+    try {
+      const activeMembersCount = Math.max(groupMembers.length, 2);
+      const perPerson = Math.round((total / activeMembersCount) * 100) / 100;
+      const billData = {
+        id: 'bill_' + Math.random().toString(36).substring(2, 9),
+        title,
+        total,
+        perPerson,
+        currency: '৳',
+        payerName: currentUser.full_name,
+        payerId: currentUser.id,
+        membersCount: activeMembersCount,
+        paidMembers: [currentUser.id],
+        note: splitBillNote.trim() || undefined,
+        createdAt: new Date().toISOString(),
+      };
+
+      const content = `[SPLIT_BILL]${JSON.stringify(billData)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) =>
+        prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+      );
+      setShowSplitBillModal(false);
+      setSplitBillTitle('');
+      setSplitBillTotal('');
+      setSplitBillNote('');
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create split bill.');
+    } finally {
+      setSplitBillSubmitting(false);
+    }
+  };
+
+  const handleToggleSplitBillPaid = (msg: Message) => {
+    try {
+      const raw = msg.content.replace('[SPLIT_BILL]', '');
+      const data = JSON.parse(raw);
+      const myId = currentUser.id;
+      const currentlyPaid = (data.paidMembers || []).includes(myId);
+
+      let updatedPaid: string[];
+      if (currentlyPaid) {
+        updatedPaid = data.paidMembers.filter((id: string) => id !== myId);
+      } else {
+        updatedPaid = [...(data.paidMembers || []), myId];
+      }
+
+      data.paidMembers = updatedPaid;
+      const updatedContent = `[SPLIT_BILL]${JSON.stringify(data)}`;
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, content: updatedContent } : m))
+      );
+
+      if (channelRef.current) {
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'split_bill_update',
+          payload: { messageId: msg.id, updatedContent },
+        });
+      }
+    } catch (e) {
+      console.error('Failed to toggle split bill payment', e);
+    }
+  };
+
   // Pinned Message Resolution
   const pinnedMessage = pinnedMessageId
     ? messages.find((m) => m.id === pinnedMessageId) || null
@@ -1833,6 +2395,24 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               <Search className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
 
+            {/* Ghost Mode Toggle */}
+            <button
+              type="button"
+              onClick={handleToggleGhostMode}
+              className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center transition-colors shrink-0 ${
+                ghostModeActive
+                  ? 'bg-purple-100 dark:bg-purple-950/70 text-purple-600 dark:text-purple-400 ring-2 ring-purple-500/50'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title={
+                ghostModeActive
+                  ? 'Ghost Mode: ON (Invisible)'
+                  : 'Ghost Mode: OFF'
+              }
+            >
+              <Ghost className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+            </button>
+
             <button
               type="button"
               onClick={() => setShowChatInfo(true)}
@@ -1843,6 +2423,27 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             </button>
           </div>
         </header>
+
+        {/* Ghost Mode Active Incognito Status Bar */}
+        {ghostModeActive && (
+          <div className="shrink-0 px-3 sm:px-4 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-[11px] font-medium flex items-center justify-between shadow-xs">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Ghost className="w-3.5 h-3.5 shrink-0 animate-pulse" />
+              <span className="truncate">
+                {currentUser.language === 'bn'
+                  ? 'ঘোস্ট মোড সক্রিয়: আপনি এই চ্যাটে সম্পূর্ণ অদৃশ্য (টাইপিং ও রিড রিসিট বন্ধ)'
+                  : 'Ghost Mode Active: Invisible in this chat (typing & read receipts hidden)'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleGhostMode}
+              className="text-[10px] font-bold bg-white/20 hover:bg-white/30 px-2 py-0.5 rounded-lg shrink-0 ml-2"
+            >
+              {currentUser.language === 'bn' ? 'বন্ধ করুন' : 'Turn Off'}
+            </button>
+          </div>
+        )}
 
         {/* Active Group Call Banner */}
         {activeGroupCall && isGroup && (
@@ -2200,6 +2801,28 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       : 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-slate-800 rounded-bl-xs'
                   }`}
                 >
+                  {/* Floating Quick Reaction Bar on hover */}
+                  {!msg.is_deleted_for_everyone && (
+                    <div
+                      className={`absolute z-20 -top-8 ${
+                        isMine ? 'right-2' : 'left-2'
+                      } hidden group-hover:flex items-center gap-1 px-2 py-1 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-md animate-in fade-in duration-100`}
+                    >
+                      {REACTION_EMOJIS.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleReaction(msg.id, emoji);
+                          }}
+                          className="w-6 h-6 rounded-full flex items-center justify-center text-sm hover:scale-125 transition-transform active:scale-95"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {/* Group sender name */}
                   {isGroup && !isMine && (
                     <p className="text-[11px] font-bold text-blue-600 dark:text-blue-400 mb-1">
@@ -2355,6 +2978,219 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       } catch {
                         // fallback to standard text render
                       }
+                    }
+
+                    // Feature 2: Round Instant Video Note Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[VIDEO_NOTE]')) {
+                      try {
+                        const raw = msg.content.replace('[VIDEO_NOTE]', '');
+                        const noteData = JSON.parse(raw);
+                        const dur = noteData.duration || 0;
+                        const durStr = `0:${dur < 10 ? '0' : ''}${dur}`;
+
+                        return (
+                          <div className="my-1 flex flex-col items-center">
+                            <div className="relative w-44 h-44 sm:w-52 sm:h-52 rounded-full overflow-hidden border-4 border-emerald-500 shadow-xl bg-black group cursor-pointer">
+                              <video
+                                src={noteData.videoUrl}
+                                playsInline
+                                loop
+                                autoPlay
+                                muted
+                                className="w-full h-full object-cover"
+                                onClick={(e) => {
+                                  const vid = e.currentTarget;
+                                  if (vid.paused) {
+                                    vid.play();
+                                  } else {
+                                    vid.pause();
+                                  }
+                                  vid.muted = !vid.muted;
+                                }}
+                              />
+                              <div className="absolute inset-0 bg-black/15 group-hover:bg-transparent pointer-events-none transition-colors" />
+                              <div className="absolute bottom-2.5 inset-x-0 flex items-center justify-center pointer-events-none">
+                                <span className="px-2.5 py-0.5 rounded-full bg-black/75 backdrop-blur-xs text-[10px] font-bold text-white flex items-center gap-1 font-mono-num shadow-sm">
+                                  <Video className="w-3 h-3 text-emerald-400" />
+                                  <span>{durStr}</span>
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-semibold text-slate-400 mt-1">
+                              {currentUser.language === 'bn' ? 'রাউন্ড ভিডিও নোট (ট্যাপ করে সাউন্ড শুনুন)' : 'Video Note (tap to unmute)'}
+                            </span>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature 4: Emergency SOS Alert Beacon Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[SOS_ALERT]')) {
+                      try {
+                        const raw = msg.content.replace('[SOS_ALERT]', '');
+                        const sos = JSON.parse(raw);
+                        const hasCoords = sos.coords && sos.coords.latitude && sos.coords.longitude;
+                        const mapsUrl = hasCoords
+                          ? `https://www.google.com/maps?q=${sos.coords.latitude},${sos.coords.longitude}`
+                          : null;
+
+                        return (
+                          <div className="my-1 min-w-[260px] max-w-[340px] rounded-2xl bg-gradient-to-br from-red-600 via-rose-600 to-red-700 text-white p-3.5 shadow-xl border border-red-400/40 space-y-3">
+                            <div className="flex items-center justify-between pb-2 border-b border-white/20">
+                              <div className="flex items-center gap-2">
+                                <span className="w-8 h-8 rounded-full bg-white text-red-600 flex items-center justify-center shrink-0 shadow-md animate-pulse">
+                                  <ShieldAlert className="w-5 h-5" />
+                                </span>
+                                <div>
+                                  <h4 className="text-xs font-black tracking-wider uppercase">
+                                    EMERGENCY SOS ALERT
+                                  </h4>
+                                  <p className="text-[10px] text-red-100 font-semibold truncate max-w-[170px]">
+                                    {sos.senderName} triggered safety beacon
+                                  </p>
+                                </div>
+                              </div>
+                              <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold flex items-center gap-1 font-mono-num">
+                                <Battery className="w-3 h-3 text-emerald-300" />
+                                <span>{sos.battery}%</span>
+                              </span>
+                            </div>
+
+                            <p className="text-xs font-medium leading-relaxed bg-black/20 p-2.5 rounded-xl border border-white/10">
+                              {sos.emergencyMessage}
+                            </p>
+
+                            {hasCoords && (
+                              <div className="flex items-center gap-2 text-[11px] text-red-100 bg-white/10 px-2.5 py-1.5 rounded-xl font-mono-num">
+                                <MapPin className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                                <span className="truncate">
+                                  GPS: {sos.coords.latitude.toFixed(5)}, {sos.coords.longitude.toFixed(5)}
+                                  {sos.coords.accuracy ? ` (±${sos.coords.accuracy}m)` : ''}
+                                </span>
+                              </div>
+                            )}
+
+                            <div className="flex items-center gap-2 pt-1">
+                              {mapsUrl && (
+                                <a
+                                  href={mapsUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex-1 py-2 px-3 rounded-xl bg-white text-red-700 font-bold text-xs flex items-center justify-center gap-1.5 hover:bg-red-50 shadow-sm"
+                                >
+                                  <MapPin className="w-3.5 h-3.5" />
+                                  <span>View Location</span>
+                                </a>
+                              )}
+                              <a
+                                href="tel:999"
+                                className="flex-1 py-2 px-3 rounded-xl bg-red-950/70 border border-white/30 text-white font-bold text-xs flex items-center justify-center gap-1.5 hover:bg-red-900"
+                              >
+                                <Phone className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>Call 999</span>
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature 6: Group Split Bill / Expense Tracker Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[SPLIT_BILL]')) {
+                      try {
+                        const raw = msg.content.replace('[SPLIT_BILL]', '');
+                        const bill = JSON.parse(raw);
+                        const paidList: string[] = bill.paidMembers || [];
+                        const isPaidByMe = paidList.includes(currentUser.id);
+                        const membersTotal = bill.membersCount || Math.max(groupMembers.length, 2);
+                        const paidCount = paidList.length;
+                        const pct = Math.min(100, Math.round((paidCount / membersTotal) * 100));
+
+                        return (
+                          <div className={`my-1 min-w-[250px] max-w-[330px] rounded-2xl p-3.5 shadow-md border space-y-3 ${
+                            isMine
+                              ? 'bg-white/10 border-white/20 text-white'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white'
+                          }`}>
+                            <div className="flex items-start justify-between gap-2 pb-2 border-b border-black/10 dark:border-white/10">
+                              <div className="flex items-center gap-2">
+                                <span className={`p-2 rounded-xl shrink-0 ${isMine ? 'bg-white/20 text-white' : 'bg-teal-500/10 text-teal-600 dark:text-teal-400'}`}>
+                                  <Receipt className="w-4 h-4" />
+                                </span>
+                                <div>
+                                  <h4 className="text-xs font-bold truncate max-w-[170px]">{bill.title}</h4>
+                                  <p className={`text-[10px] ${isMine ? 'text-blue-100' : 'text-slate-500'}`}>
+                                    Created by {bill.payerName}
+                                  </p>
+                                </div>
+                              </div>
+                              <span className="text-sm font-black font-mono-num text-emerald-500">
+                                {bill.currency}{Number(bill.total).toLocaleString()}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center justify-between text-xs">
+                              <span className={`text-[11px] font-medium ${isMine ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'}`}>
+                                Per Person Share:
+                              </span>
+                              <span className="font-bold font-mono-num text-sm">
+                                {bill.currency}{Number(bill.perPerson).toLocaleString()}
+                              </span>
+                            </div>
+
+                            {/* Paid Progress Bar */}
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between text-[10px] font-semibold opacity-80">
+                                <span>{paidCount} of {membersTotal} paid</span>
+                                <span>{pct}%</span>
+                              </div>
+                              <div className="w-full h-2 rounded-full bg-black/15 dark:bg-white/15 overflow-hidden">
+                                <div
+                                  style={{ width: `${pct}%` }}
+                                  className="h-full bg-gradient-to-r from-teal-500 to-emerald-500 rounded-full transition-all duration-300"
+                                />
+                              </div>
+                            </div>
+
+                            {bill.note && (
+                              <div className={`p-2 rounded-xl text-[11px] flex items-center justify-between gap-2 ${
+                                isMine ? 'bg-white/10' : 'bg-slate-100 dark:bg-slate-800'
+                              }`}>
+                                <span className="truncate">{bill.note}</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(bill.note);
+                                  }}
+                                  className="text-[10px] font-bold text-teal-600 dark:text-teal-400 hover:underline shrink-0"
+                                >
+                                  Copy
+                                </button>
+                              </div>
+                            )}
+
+                            {/* Mark as Paid Toggle Button */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleSplitBillPaid(msg);
+                              }}
+                              className={`w-full py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all shadow-sm ${
+                                isPaidByMe
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                  : isMine
+                                  ? 'bg-white text-blue-700 hover:bg-blue-50'
+                                  : 'bg-teal-600 hover:bg-teal-700 text-white'
+                              }`}
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>{isPaidByMe ? 'Paid (পরিশোধিত)' : 'Mark as Paid (আমি পরিশোধ করেছি)'}</span>
+                            </button>
+                          </div>
+                        );
+                      } catch {}
                     }
 
                     // Check for Group Poll Card
@@ -2538,65 +3374,124 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       const isPlayingThis = playingVoiceMsgId === msg.id;
                       const match = msg.content.match(/\((.*?)\)/);
                       const dur = match ? match[1] : '0:05';
-                      return (
-                        <div className="flex items-center gap-2.5 sm:gap-3 py-1 px-0.5 min-w-[210px] sm:min-w-[250px] select-none">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setPlayingVoiceMsgId(isPlayingThis ? null : msg.id);
-                              setVoicePlaybackProgress(0);
-                            }}
-                            className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-transform active:scale-95 ${
-                              isMine
-                                ? 'bg-white text-blue-600 shadow-md'
-                                : 'bg-gradient-to-r from-violet-600 to-cyan-600 text-white shadow-md'
-                            }`}
-                            title={isPlayingThis ? 'Pause Voice Message' : 'Play Voice Message'}
-                          >
-                            {isPlayingThis ? (
-                              <Pause className="w-4.5 h-4.5" />
-                            ) : (
-                              <Play className="w-4.5 h-4.5 ml-0.5" />
-                            )}
-                          </button>
+                      const isTranscribing = Boolean(transcribingMsgIds[msg.id]);
+                      const transcript = transcriptions[msg.id];
+                      const isTranscriptShown = Boolean(showTranscriptMap[msg.id]);
 
-                          <div className="flex-1 flex flex-col gap-1 min-w-0">
-                            <div className="flex items-center gap-0.5 sm:gap-1 h-5 overflow-hidden">
-                              {[35, 65, 45, 90, 75, 40, 85, 55, 70, 95, 65, 50, 85, 40, 60].map(
-                                (h, i) => {
-                                  const isPlayed =
-                                    isPlayingThis && i / 15 <= voicePlaybackProgress / 100;
-                                  return (
-                                    <span
-                                      key={i}
-                                      style={{ height: `${h}%` }}
-                                      className={`w-1 rounded-full transition-colors ${
-                                        isMine
-                                          ? isPlayed
-                                            ? 'bg-white'
-                                            : 'bg-white/40'
-                                          : isPlayed
-                                          ? 'bg-cyan-400'
-                                          : 'bg-slate-400/50 dark:bg-slate-600'
-                                      }`}
-                                    />
-                                  );
-                                }
+                      return (
+                        <div className="flex flex-col gap-2 min-w-[210px] sm:min-w-[250px] select-none">
+                          <div className="flex items-center gap-2.5 sm:gap-3 py-1 px-0.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPlayingVoiceMsgId(isPlayingThis ? null : msg.id);
+                                setVoicePlaybackProgress(0);
+                              }}
+                              className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-transform active:scale-95 ${
+                                isMine
+                                  ? 'bg-white text-blue-600 shadow-md'
+                                  : 'bg-gradient-to-r from-violet-600 to-cyan-600 text-white shadow-md'
+                              }`}
+                              title={isPlayingThis ? 'Pause Voice Message' : 'Play Voice Message'}
+                            >
+                              {isPlayingThis ? (
+                                <Pause className="w-4.5 h-4.5" />
+                              ) : (
+                                <Play className="w-4.5 h-4.5 ml-0.5" />
                               )}
-                            </div>
-                            <div className="flex items-center justify-between text-[11px] font-mono-num opacity-90">
-                              <span>
-                                {isPlayingThis
-                                  ? `0:0${Math.floor((voicePlaybackProgress / 100) * 5)}`
-                                  : dur}
-                              </span>
-                              <span className="text-[10px] flex items-center gap-1 font-sans">
-                                <Mic className="w-2.5 h-2.5" />{' '}
-                                {currentUser.language === 'bn' ? 'ভয়েস বার্তা' : 'Voice'}
-                              </span>
+                            </button>
+
+                            <div className="flex-1 flex flex-col gap-1 min-w-0">
+                              <div className="flex items-center gap-0.5 sm:gap-1 h-5 overflow-hidden">
+                                {[35, 65, 45, 90, 75, 40, 85, 55, 70, 95, 65, 50, 85, 40, 60].map(
+                                  (h, i) => {
+                                    const isPlayed =
+                                      isPlayingThis && i / 15 <= voicePlaybackProgress / 100;
+                                    return (
+                                      <span
+                                        key={i}
+                                        style={{ height: `${h}%` }}
+                                        className={`w-1 rounded-full transition-colors ${
+                                          isMine
+                                            ? isPlayed
+                                              ? 'bg-white'
+                                              : 'bg-white/40'
+                                            : isPlayed
+                                            ? 'bg-cyan-400'
+                                            : 'bg-slate-400/50 dark:bg-slate-600'
+                                        }`}
+                                      />
+                                    );
+                                  }
+                                )}
+                              </div>
+                              <div className="flex items-center justify-between text-[11px] font-mono-num opacity-90">
+                                <span>
+                                  {isPlayingThis
+                                    ? `0:0${Math.floor((voicePlaybackProgress / 100) * 5)}`
+                                    : dur}
+                                </span>
+                                <span className="text-[10px] flex items-center gap-1 font-sans">
+                                  <Mic className="w-2.5 h-2.5" />{' '}
+                                  {currentUser.language === 'bn' ? 'ভয়েস বার্তা' : 'Voice'}
+                                </span>
+                              </div>
                             </div>
                           </div>
+
+                          {/* Voice Transcription Action Button */}
+                          <div className={`pt-1 border-t flex items-center justify-between ${
+                            isMine ? 'border-white/20' : 'border-slate-200/60 dark:border-slate-800'
+                          }`}>
+                            <button
+                              type="button"
+                              disabled={isTranscribing}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTranscribeVoiceMessage(msg);
+                              }}
+                              className={`text-[11px] font-semibold flex items-center gap-1.5 transition-opacity ${
+                                isMine ? 'text-blue-100 hover:text-white' : 'text-blue-600 dark:text-blue-400 hover:underline'
+                              }`}
+                            >
+                              <Sparkles className={`w-3.5 h-3.5 ${isTranscribing ? 'animate-spin' : ''}`} />
+                              <span>
+                                {isTranscribing
+                                  ? (currentUser.language === 'bn' ? 'টেক্সটে রূপান্তর হচ্ছে...' : 'Transcribing...')
+                                  : transcript
+                                  ? (isTranscriptShown
+                                      ? (currentUser.language === 'bn' ? 'ট্রান্সক্রিপ্ট লুকান' : 'Hide Transcript')
+                                      : (currentUser.language === 'bn' ? 'ট্রান্সক্রিপ্ট দেখুন' : 'View Transcript'))
+                                  : (currentUser.language === 'bn' ? 'ভয়েস-টু-টেক্সট (ট্রান্সক্রাইব)' : 'Transcribe to Text')}
+                              </span>
+                            </button>
+                          </div>
+
+                          {/* Expanded Transcript View */}
+                          {transcript && isTranscriptShown && (
+                            <div className={`p-2.5 rounded-xl text-xs leading-relaxed animate-in fade-in ${
+                              isMine ? 'bg-blue-700/60 text-white' : 'bg-slate-100 dark:bg-slate-800/80 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700/60'
+                            }`}>
+                              <div className="flex items-center justify-between pb-1 mb-1 border-b border-black/10 dark:border-white/10 text-[10px] font-bold opacity-80">
+                                <span className="flex items-center gap-1">
+                                  <FileText className="w-3 h-3" />
+                                  <span>Voice Transcript (ভয়েস প্রতিলিপি)</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(transcript);
+                                  }}
+                                  className="hover:underline"
+                                >
+                                  Copy
+                                </button>
+                              </div>
+                              <p className="italic select-text font-normal">{transcript}</p>
+                            </div>
+                          )}
                         </div>
                       );
                     }
@@ -2745,10 +3640,27 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   {activeMenuMsgId === msg.id && (
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className={`absolute z-30 top-full mt-1 w-48 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl py-1.5 text-xs text-slate-700 dark:text-slate-200 ${
+                      className={`absolute z-30 top-full mt-1 w-52 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl py-1.5 text-xs text-slate-700 dark:text-slate-200 ${
                         isMine ? 'right-0' : 'left-0'
                       }`}
                     >
+                      {/* Emoji reaction picker inside menu */}
+                      <div className="px-2.5 py-1.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
+                        {REACTION_EMOJIS.map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => {
+                              handleToggleReaction(msg.id, emoji);
+                              setActiveMenuMsgId(null);
+                            }}
+                            className="w-6 h-6 rounded-full flex items-center justify-center text-sm hover:scale-125 transition-transform"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+
                       <button
                         type="button"
                         onClick={() => {
@@ -2845,7 +3757,45 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                     </div>
                   )}
                 </div>
-                  </div>
+
+                {/* Reaction Pill Badges beneath bubble */}
+                {(() => {
+                  const msgRx = messageReactions[msg.id];
+                  if (!msgRx) return null;
+                  const entries = Object.entries(msgRx).filter(([_, ids]) => ids.length > 0);
+                  if (entries.length === 0) return null;
+
+                  return (
+                    <div className={`flex flex-wrap items-center gap-1 mt-1 px-1 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                      {entries.map(([emoji, uids]) => {
+                        const hasMine = uids.includes(currentUser.id);
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleReaction(msg.id, emoji);
+                            }}
+                            className={`px-2 py-0.5 rounded-full text-xs flex items-center gap-1 border transition-all active:scale-95 shadow-2xs ${
+                              hasMine
+                                ? isMine
+                                  ? 'bg-white text-blue-700 border-white font-bold ring-2 ring-white/50'
+                                  : 'bg-blue-50 dark:bg-blue-950 border-blue-500 text-blue-700 dark:text-blue-300 font-bold ring-2 ring-blue-500/30'
+                                : isMine
+                                ? 'bg-blue-700/80 text-white border-blue-500/40'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                            }`}
+                          >
+                            <span>{emoji}</span>
+                            <span className="font-mono-num text-[11px]">{uids.length}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
                 </React.Fragment>
               );
             });
@@ -3254,6 +4204,53 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       AI Draft
                     </span>
                   </button>
+
+                  {/* 8. Round Instant Video Note */}
+                  <button
+                    type="button"
+                    onClick={handleOpenVideoNoteModal}
+                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                  >
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-fuchsia-600 to-rose-500 text-white flex items-center justify-center shadow-md shadow-fuchsia-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                      <Camera className="w-6 h-6" />
+                    </div>
+                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                      Video Note
+                    </span>
+                  </button>
+
+                  {/* 9. Emergency SOS Alert */}
+                  <button
+                    type="button"
+                    onClick={handleOpenSosModal}
+                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                  >
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-600 text-white flex items-center justify-center shadow-md shadow-red-500/30 group-hover:scale-105 active:scale-95 transition-all animate-pulse">
+                      <ShieldAlert className="w-6 h-6" />
+                    </div>
+                    <span className="text-[11px] font-medium text-red-600 dark:text-red-400 font-bold">
+                      SOS Alert
+                    </span>
+                  </button>
+
+                  {/* 10. Split Bill (Group only) */}
+                  {isGroup && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowSplitBillModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-600 text-white flex items-center justify-center shadow-md shadow-teal-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Receipt className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Split Bill
+                      </span>
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -3697,6 +4694,39 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                     {chatLockPin ? 'Locked' : 'Off'}
                   </span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={handleToggleGhostMode}
+                  className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-sm text-slate-700 dark:text-slate-200"
+                >
+                  <span className="flex items-center gap-3">
+                    <Ghost className={`w-4 h-4 ${ghostModeActive ? 'text-purple-600' : 'text-slate-400'}`} />
+                    <span>Ghost Mode (Incognito)</span>
+                  </span>
+                  <span className={`text-xs font-semibold ${ghostModeActive ? 'text-purple-600 dark:text-purple-400' : 'text-slate-400'}`}>
+                    {ghostModeActive ? 'Active' : 'Off'}
+                  </span>
+                </button>
+
+                {isGroup && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowChatInfo(false);
+                      setShowSplitBillModal(true);
+                    }}
+                    className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-sm text-slate-700 dark:text-slate-200"
+                  >
+                    <span className="flex items-center gap-3">
+                      <Receipt className="w-4 h-4 text-teal-600" />
+                      <span>Split Group Bill</span>
+                    </span>
+                    <span className="text-xs font-semibold text-teal-600 dark:text-teal-400">
+                      New
+                    </span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -4757,6 +5787,309 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             >
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 6. Round Instant Video Note Viewfinder Modal */}
+      {showVideoNoteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-3xl bg-slate-900 border border-slate-800 shadow-2xl p-6 flex flex-col items-center text-center space-y-4">
+            <div className="w-full flex items-center justify-between text-white">
+              <span className="text-xs font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                <Video className="w-4 h-4" />
+                <span>Round Video Note</span>
+              </span>
+              <button
+                type="button"
+                onClick={handleCloseVideoNoteModal}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Circular Viewfinder with 60s Radial Countdown Ring */}
+            <div className="relative w-60 h-60 sm:w-64 sm:h-64 rounded-full flex items-center justify-center">
+              {/* SVG Ring Progress */}
+              <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
+                <circle
+                  cx="50%"
+                  cy="50%"
+                  r="48%"
+                  className="stroke-slate-800 stroke-[5] fill-none"
+                />
+                <circle
+                  cx="50%"
+                  cy="50%"
+                  r="48%"
+                  className={`stroke-[5] fill-none transition-all duration-300 ${
+                    isVideoNoteRecording ? 'stroke-rose-500' : 'stroke-emerald-500'
+                  }`}
+                  strokeDasharray={`${2 * Math.PI * 115}`}
+                  strokeDashoffset={`${
+                    2 * Math.PI * 115 * (1 - Math.min(videoNoteDuration / 60, 1))
+                  }`}
+                  strokeLinecap="round"
+                />
+              </svg>
+
+              {/* Circular Video Element */}
+              <div className="w-52 h-52 sm:w-56 sm:h-56 rounded-full overflow-hidden border-2 border-emerald-500/50 bg-black relative shadow-inner">
+                {videoNotePreviewUrl ? (
+                  <video
+                    src={videoNotePreviewUrl}
+                    autoPlay
+                    loop
+                    playsInline
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <video
+                    ref={videoNoteVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover scale-x-[-1]"
+                  />
+                )}
+
+                {isVideoNoteRecording && (
+                  <div className="absolute top-3 inset-x-0 flex items-center justify-center pointer-events-none">
+                    <span className="px-2.5 py-0.5 rounded-full bg-rose-600/90 text-white font-mono-num font-bold text-xs flex items-center gap-1.5 animate-pulse shadow-md">
+                      <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+                      <span>REC 0:{videoNoteDuration < 10 ? '0' : ''}{videoNoteDuration}</span>
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="w-full flex items-center justify-center gap-4 pt-2">
+              {!videoNoteRecordedBlob ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={isVideoNoteRecording}
+                    onClick={handleFlipVideoNoteCamera}
+                    className="w-11 h-11 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center disabled:opacity-40 transition-colors"
+                    title="Flip camera"
+                  >
+                    <RefreshCw className="w-5 h-5" />
+                  </button>
+
+                  {!isVideoNoteRecording ? (
+                    <button
+                      type="button"
+                      onClick={handleStartVideoNoteRecording}
+                      className="w-16 h-16 rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow-lg shadow-rose-600/40 transition-transform active:scale-95 ring-4 ring-rose-600/20"
+                      title="Record video note (up to 60s)"
+                    >
+                      <div className="w-6 h-6 rounded-full bg-white" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleStopVideoNoteRecording}
+                      className="w-16 h-16 rounded-full bg-white hover:bg-slate-100 text-rose-600 flex items-center justify-center shadow-lg transition-transform active:scale-95 ring-4 ring-rose-500/30"
+                      title="Stop recording"
+                    >
+                      <Square className="w-6 h-6 fill-rose-600" />
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleCloseVideoNoteModal}
+                    className="w-11 h-11 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
+                    title="Cancel"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </>
+              ) : (
+                <div className="flex items-center gap-3 w-full">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVideoNoteRecordedBlob(null);
+                      setVideoNotePreviewUrl(null);
+                      setVideoNoteDuration(0);
+                      if (videoNoteStreamRef.current && videoNoteVideoRef.current) {
+                        videoNoteVideoRef.current.srcObject = videoNoteStreamRef.current;
+                        videoNoteVideoRef.current.play().catch(() => {});
+                      }
+                    }}
+                    className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-colors"
+                  >
+                    Retake
+                  </button>
+                  <button
+                    type="button"
+                    disabled={videoNoteSending}
+                    onClick={handleSendVideoNote}
+                    className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-emerald-600/30"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>{videoNoteSending ? 'Sending...' : 'Send Video Note'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. Emergency SOS Beacon Alert Modal */}
+      {showSosModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-3xl bg-slate-900 border-2 border-red-500 shadow-2xl p-6 text-center space-y-4">
+            <div className="relative w-20 h-20 mx-auto flex items-center justify-center">
+              <span className="absolute inset-0 rounded-full bg-red-600/30 animate-ping" />
+              <div className="relative w-16 h-16 rounded-full bg-gradient-to-tr from-red-600 to-rose-600 text-white flex items-center justify-center shadow-lg shadow-red-600/50">
+                <ShieldAlert className="w-8 h-8" />
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-lg font-black text-white tracking-wider uppercase">
+                EMERGENCY SOS ALERT
+              </h3>
+              <p className="text-xs text-red-200 mt-1 leading-relaxed">
+                Broadcasting emergency beacon with live GPS coordinates & battery level to this chat.
+              </p>
+            </div>
+
+            {/* Countdown Display */}
+            <div className="py-2">
+              <div className="text-5xl font-black font-mono-num text-red-500 animate-pulse">
+                {sosCountdown}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Auto-sending in {sosCountdown} seconds...
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={handleAbortSos}
+                className="flex-1 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider transition-colors"
+              >
+                Abort / Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSendingSos}
+                onClick={handleExecuteSos}
+                className="flex-1 py-3 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs uppercase tracking-wider transition-colors shadow-lg shadow-red-600/40"
+              >
+                {isSendingSos ? 'Sending...' : 'Send Now'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 8. Group Split Bill / Expense Modal */}
+      {showSplitBillModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-teal-500/10 text-teal-600 dark:text-teal-400 flex items-center justify-center">
+                  <Receipt className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    Split Group Bill
+                  </h3>
+                  <p className="text-[11px] text-slate-500">Calculate & track group shares</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSplitBillModal(false)}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Bill Title
+                </label>
+                <input
+                  type="text"
+                  value={splitBillTitle}
+                  onChange={(e) => setSplitBillTitle(e.target.value)}
+                  placeholder="e.g. Dinner at Sultan's Dine, Picnic Lunch"
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Total Bill Amount (৳)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="any"
+                  value={splitBillTotal}
+                  onChange={(e) => setSplitBillTotal(e.target.value)}
+                  placeholder="e.g. 2400"
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
+                />
+              </div>
+
+              {/* Dynamic Per Person Share preview */}
+              {parseFloat(splitBillTotal) > 0 && (
+                <div className="p-3 rounded-2xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-xs flex items-center justify-between text-teal-800 dark:text-teal-200 font-semibold">
+                  <span>
+                    Share across {Math.max(groupMembers.length, 2)} members:
+                  </span>
+                  <span className="font-bold font-mono-num text-sm text-teal-600 dark:text-teal-400">
+                    ৳{Math.round((parseFloat(splitBillTotal) / Math.max(groupMembers.length, 2)) * 100) / 100} / person
+                  </span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Payment Note (bKash / Nagad / Bank)
+                </label>
+                <input
+                  type="text"
+                  value={splitBillNote}
+                  onChange={(e) => setSplitBillNote(e.target.value)}
+                  placeholder="e.g. bKash: 01711-223344 (Send Money)"
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSplitBillModal(false)}
+                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!splitBillTitle.trim() || !splitBillTotal || splitBillSubmitting}
+                onClick={handleCreateSplitBill}
+                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white text-xs font-bold transition-colors"
+              >
+                {splitBillSubmitting ? 'Creating...' : 'Create Split Bill'}
+              </button>
+            </div>
           </div>
         </div>
       )}
