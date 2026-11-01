@@ -21,7 +21,7 @@ export interface EventData {
   description?: string;
   creatorId: string;
   creatorName: string;
-  rsvps: Record<string, { status: 'going' | 'maybe' | 'declined'; name: string; avatarUrl?: string }>;
+  rsvps: Record<string, { status: 'going' | 'maybe' | 'declined'; name: string; avatarUrl?: string | null }>;
   createdAt: string;
 }
 

@@ -70,6 +70,14 @@ import {
   Zap,
   Handshake,
   Sliders,
+  Tv,
+  Film,
+  Scale,
+  FileCheck,
+  PenTool,
+  Activity,
+  Languages,
+  Calculator,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { WalkieTalkieModal } from '../components/chat/WalkieTalkieModal';
@@ -81,6 +89,14 @@ import { DirectFileBeamModal } from '../components/chat/DirectFileBeamModal';
 import { IOUNoteModal, IOUNoteData } from '../components/chat/IOUNoteModal';
 import { AnimatedChatWallpaper, ChatThemeType } from '../components/chat/AnimatedChatWallpaper';
 import { ChatThemeSelectorModal } from '../components/chat/ChatThemeSelectorModal';
+import { TimeCapsuleModal, TimeCapsuleData } from '../components/chat/TimeCapsuleModal';
+import { CoWatchModal } from '../components/chat/CoWatchModal';
+import { TruthShieldModal, TruthReportData } from '../components/chat/TruthShieldModal';
+import { HeartbeatTouchModal } from '../components/chat/HeartbeatTouchModal';
+import { DigitalDeedModal, DigitalDeedData } from '../components/chat/DigitalDeedModal';
+import { DuressStealthModal, DuressAlertData } from '../components/chat/DuressStealthModal';
+import { BanglaDialectModal } from '../components/chat/BanglaDialectModal';
+import { BargainArbiterModal, BargainDealData } from '../components/chat/BargainArbiterModal';
 import { OSAAvatar } from '../components/OSAAvatar';
 import { RemoteCameraModal } from '../components/RemoteCameraModal';
 import { RemoteLocationModal } from '../components/RemoteLocationModal';
@@ -456,6 +472,16 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [showFileBeamModal, setShowFileBeamModal] = useState(false);
   const [showIouModal, setShowIouModal] = useState(false);
   const [showThemeSelectorModal, setShowThemeSelectorModal] = useState(false);
+
+  // 8 World-First Innovative Modes State
+  const [showTimeCapsuleModal, setShowTimeCapsuleModal] = useState(false);
+  const [showCoWatchModal, setShowCoWatchModal] = useState(false);
+  const [showTruthShieldModal, setShowTruthShieldModal] = useState(false);
+  const [showHeartbeatModal, setShowHeartbeatModal] = useState(false);
+  const [showDigitalDeedModal, setShowDigitalDeedModal] = useState(false);
+  const [showDuressStealthModal, setShowDuressStealthModal] = useState(false);
+  const [showBanglaDialectModal, setShowBanglaDialectModal] = useState(false);
+  const [showBargainArbiterModal, setShowBargainArbiterModal] = useState(false);
   const [chatTheme, setChatTheme] = useState<ChatThemeType>(() => {
     try {
       return (localStorage.getItem(`osa_chat_theme_${chat.id}`) as ChatThemeType) || 'default';
@@ -992,6 +1018,39 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         if (messageId && updatedContent) {
           try {
             confetti({ particleCount: 75, spread: 70, origin: { y: 0.7 } });
+          } catch {}
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
+          );
+        }
+      })
+      .on('broadcast', { event: 'time_capsule_unlock' }, (payload) => {
+        const { messageId, updatedContent } = payload.payload || {};
+        if (messageId && updatedContent) {
+          try {
+            confetti({ particleCount: 85, spread: 80, origin: { y: 0.7 } });
+          } catch {}
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
+          );
+        }
+      })
+      .on('broadcast', { event: 'digital_deed_countersign' }, (payload) => {
+        const { messageId, updatedContent } = payload.payload || {};
+        if (messageId && updatedContent) {
+          try {
+            confetti({ particleCount: 75, spread: 75, origin: { y: 0.7 } });
+          } catch {}
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
+          );
+        }
+      })
+      .on('broadcast', { event: 'bargain_deal_accept' }, (payload) => {
+        const { messageId, updatedContent } = payload.payload || {};
+        if (messageId && updatedContent) {
+          try {
+            confetti({ particleCount: 65, spread: 65, origin: { y: 0.7 } });
           } catch {}
           setMessages((prev) =>
             prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
@@ -2376,6 +2435,188 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   };
 
   // -------------------------------------------------------------
+  // 8 World-First Innovative Feature Handlers
+  // -------------------------------------------------------------
+  const handleSendTimeCapsule = async (capsule: TimeCapsuleData) => {
+    try {
+      const content = `[TIME_CAPSULE]${JSON.stringify(capsule)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send time capsule');
+    }
+  };
+
+  const handleUnlockCapsule = (msg: Message) => {
+    try {
+      const raw = msg.content.replace('[TIME_CAPSULE]', '');
+      const data: TimeCapsuleData = JSON.parse(raw);
+      data.isRevealed = true;
+      const updatedContent = `[TIME_CAPSULE]${JSON.stringify(data)}`;
+
+      try {
+        confetti({ particleCount: 90, spread: 80, origin: { y: 0.7 } });
+      } catch {}
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, content: updatedContent } : m))
+      );
+
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'time_capsule_unlock',
+        payload: { messageId: msg.id, updatedContent },
+      });
+    } catch (e) {
+      console.error('Failed to unlock capsule', e);
+    }
+  };
+
+  const handleSendTruthReport = async (report: TruthReportData) => {
+    try {
+      const content = `[TRUTH_REPORT]${JSON.stringify(report)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send truth report');
+    }
+  };
+
+  const handleSendHeartbeatNote = async (bpm: number, noteText: string) => {
+    try {
+      const payload = {
+        bpm,
+        message: noteText,
+        senderName: currentUser.full_name,
+        timestamp: new Date().toISOString(),
+      };
+      const content = `[HEARTBEAT_PULSE]${JSON.stringify(payload)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send heartbeat pulse');
+    }
+  };
+
+  const handleCreateDigitalDeed = async (deed: DigitalDeedData) => {
+    try {
+      const content = `[DIGITAL_DEED]${JSON.stringify(deed)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create digital deed');
+    }
+  };
+
+  const handleCountersignDeed = (msg: Message) => {
+    try {
+      const raw = msg.content.replace('[DIGITAL_DEED]', '');
+      const deed: DigitalDeedData = JSON.parse(raw);
+      if (deed.status === 'ratified') return;
+
+      deed.status = 'ratified';
+      deed.ratifiedAt = new Date().toISOString();
+      deed.partyBId = currentUser.id;
+      deed.partyBName = currentUser.full_name;
+
+      const updatedContent = `[DIGITAL_DEED]${JSON.stringify(deed)}`;
+
+      try {
+        confetti({ particleCount: 80, spread: 75, origin: { y: 0.7 } });
+      } catch {}
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, content: updatedContent } : m))
+      );
+
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'digital_deed_countersign',
+        payload: { messageId: msg.id, updatedContent },
+      });
+    } catch (e) {
+      console.error('Failed to countersign deed', e);
+    }
+  };
+
+  const handleSendDuressAlert = async (alert: DuressAlertData) => {
+    try {
+      const content = `[DURESS_BEACON]${JSON.stringify(alert)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send duress beacon');
+    }
+  };
+
+  const handleSendBargainDeal = async (deal: BargainDealData) => {
+    try {
+      const content = `[BARGAIN_DEAL]${JSON.stringify(deal)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send bargain deal');
+    }
+  };
+
+  const handleAcceptBargainDeal = (msg: Message) => {
+    try {
+      const raw = msg.content.replace('[BARGAIN_DEAL]', '');
+      const deal: BargainDealData = JSON.parse(raw);
+      if (deal.status === 'accepted') return;
+
+      deal.status = 'accepted';
+      const updatedContent = `[BARGAIN_DEAL]${JSON.stringify(deal)}`;
+
+      try {
+        confetti({ particleCount: 70, spread: 70, origin: { y: 0.7 } });
+      } catch {}
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, content: updatedContent } : m))
+      );
+
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'bargain_deal_accept',
+        payload: { messageId: msg.id, updatedContent },
+      });
+    } catch (e) {
+      console.error('Failed to accept bargain deal', e);
+    }
+  };
+
+  // -------------------------------------------------------------
   // Feature Handlers: Collaborative Canvas & Voice Filter Dispatch
   // -------------------------------------------------------------
   const handleSendCanvasImage = async (dataUrl: string, caption?: string) => {
@@ -2673,6 +2914,26 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               title="Wallpaper & Themes"
             >
               <Palette className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+            </button>
+
+            {/* Co-Watch Cinema Room Quick Launcher */}
+            <button
+              type="button"
+              onClick={() => setShowCoWatchModal(true)}
+              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/50 transition-colors shrink-0"
+              title="Co-Watch Cinema Room"
+            >
+              <Tv className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+            </button>
+
+            {/* Truth Shield Acoustic Stress Radar */}
+            <button
+              type="button"
+              onClick={() => setShowTruthShieldModal(true)}
+              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-950/50 transition-colors shrink-0"
+              title="Truth Shield™ Vocal Stress Radar"
+            >
+              <ShieldAlert className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
 
             <button
@@ -3669,6 +3930,435 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                                 <Handshake className="w-4 h-4" />
                                 <span>Mark as Settled / Paid 🤝</span>
                               </button>
+                            )}
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Time Capsule Message Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[TIME_CAPSULE]')) {
+                      try {
+                        const raw = msg.content.replace('[TIME_CAPSULE]', '');
+                        const capsule: TimeCapsuleData = JSON.parse(raw);
+                        const unlockTime = new Date(capsule.unlockAt).getTime();
+                        const isUnlocked = Date.now() >= unlockTime || capsule.isRevealed;
+
+                        return (
+                          <div className="my-1 min-w-[270px] max-w-[340px] rounded-3xl p-4 shadow-2xl border border-amber-500/30 bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/40 text-white space-y-3">
+                            <div className="flex items-center justify-between pb-2 border-b border-amber-500/20">
+                              <div className="flex items-center gap-2">
+                                <div className={`w-9 h-9 rounded-2xl flex items-center justify-center ${
+                                  isUnlocked ? 'bg-amber-400 text-slate-950' : 'bg-amber-500/20 text-amber-300'
+                                }`}>
+                                  {isUnlocked ? <Sparkles className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+                                </div>
+                                <div>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                                    {isUnlocked ? 'TIME CAPSULE UNLOCKED' : 'SEALED TIME CAPSULE'}
+                                  </span>
+                                  <h4 className="text-sm font-bold text-white line-clamp-1">{capsule.title}</h4>
+                                </div>
+                              </div>
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                isUnlocked
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                  : 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+                              }`}>
+                                {isUnlocked ? 'OPEN' : 'LOCKED'}
+                              </span>
+                            </div>
+
+                            <div className="text-xs space-y-1.5">
+                              <div className="flex items-center justify-between text-slate-400 text-[11px]">
+                                <span>Sealed by:</span>
+                                <span className="font-semibold text-slate-200">{capsule.sealedBy}</span>
+                              </div>
+                              <div className="flex items-center justify-between text-slate-400 text-[11px]">
+                                <span>Unlocks on:</span>
+                                <span className="font-semibold text-amber-300">
+                                  {new Date(capsule.unlockAt).toLocaleString([], {
+                                    month: 'short',
+                                    day: 'numeric',
+                                    year: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                              </div>
+
+                              {capsule.hint && !capsule.isRevealed && (
+                                <div className="p-2.5 rounded-xl bg-black/40 border border-white/5 text-[11px] text-amber-200/90 italic">
+                                  💡 Hint: "{capsule.hint}"
+                                </div>
+                              )}
+                            </div>
+
+                            {capsule.isRevealed ? (
+                              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-100 text-xs font-medium space-y-1 animate-in fade-in">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 block">
+                                  Revealed Secret Message:
+                                </span>
+                                <p className="text-sm italic leading-relaxed text-white">
+                                  "{capsule.secretMessage}"
+                                </p>
+                              </div>
+                            ) : isUnlocked ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleUnlockCapsule(msg);
+                                }}
+                                className="w-full py-2.5 px-4 rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-400/25 active:scale-95 transition-all"
+                              >
+                                <Sparkles className="w-4 h-4" />
+                                <span>Open & Reveal Capsule Now! ✨</span>
+                              </button>
+                            ) : (
+                              <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                                <Clock className="w-4 h-4 text-amber-400 animate-spin" style={{ animationDuration: '8s' }} />
+                                <span>Capsule is cryptographically sealed until countdown ends</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Truth Shield Biometric Radar Report Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[TRUTH_REPORT]')) {
+                      try {
+                        const raw = msg.content.replace('[TRUTH_REPORT]', '');
+                        const report: TruthReportData = JSON.parse(raw);
+
+                        return (
+                          <div className="my-1 min-w-[260px] max-w-[320px] rounded-3xl p-4 shadow-2xl border border-cyan-500/30 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-950/40 text-white space-y-3">
+                            <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
+                              <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-300 flex items-center justify-center">
+                                  <ShieldAlert className="w-4 h-4" />
+                                </div>
+                                <div>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+                                    TRUTH SHIELD™ AUDIT
+                                  </span>
+                                  <h4 className="text-xs font-bold text-slate-200">{report.senderName}</h4>
+                                </div>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  report.verdict === 'calm'
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : report.verdict === 'hesitant'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                }`}
+                              >
+                                {report.verdict.toUpperCase()}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center justify-between py-1 px-3 rounded-2xl bg-slate-900/80 border border-slate-800">
+                              <span className="text-xs text-slate-400">Stress Index:</span>
+                              <span
+                                className={`text-2xl font-black font-mono ${
+                                  report.verdict === 'calm'
+                                    ? 'text-emerald-400'
+                                    : report.verdict === 'hesitant'
+                                    ? 'text-amber-400'
+                                    : 'text-rose-400'
+                                }`}
+                              >
+                                {report.stressScore}%
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-1.5 text-[10px] text-slate-400">
+                              <div className="p-1.5 rounded-xl bg-slate-900 border border-slate-800">
+                                Jitter: <span className="font-bold text-cyan-300">{report.jitterPercent}%</span>
+                              </div>
+                              <div className="p-1.5 rounded-xl bg-slate-900 border border-slate-800">
+                                Shimmer: <span className="font-bold text-cyan-300">{report.shimmerPercent}%</span>
+                              </div>
+                            </div>
+
+                            {report.notes && (
+                              <p className="text-[11px] text-slate-300 italic bg-black/30 p-2 rounded-xl">
+                                "{report.notes}"
+                              </p>
+                            )}
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Live Heartbeat Haptic Pulse Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[HEARTBEAT_PULSE]')) {
+                      try {
+                        const raw = msg.content.replace('[HEARTBEAT_PULSE]', '');
+                        const pulse = JSON.parse(raw);
+
+                        return (
+                          <div className="my-1 min-w-[240px] max-w-[300px] rounded-3xl p-4 shadow-2xl border border-rose-500/30 bg-gradient-to-br from-slate-950 via-slate-900 to-rose-950/40 text-white space-y-3">
+                            <div className="flex items-center justify-between pb-2 border-b border-rose-500/20">
+                              <div className="flex items-center gap-2">
+                                <div className="w-9 h-9 rounded-2xl bg-rose-500 text-white flex items-center justify-center animate-pulse shadow-md shadow-rose-500/30">
+                                  <Heart className="w-5 h-5 fill-current" />
+                                </div>
+                                <div>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-rose-400">
+                                    HEARTBEAT TOUCH
+                                  </span>
+                                  <p className="text-xs font-bold text-white">{pulse.senderName}</p>
+                                </div>
+                              </div>
+                              <span className="text-sm font-mono font-black text-rose-400">{pulse.bpm} BPM</span>
+                            </div>
+
+                            <p className="text-xs italic text-rose-100 bg-rose-950/40 p-2.5 rounded-2xl border border-rose-500/20">
+                              "{pulse.message || 'Sent a live pulse touch ❤️'}"
+                            </p>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if ('vibrate' in navigator) {
+                                  navigator.vibrate([70, 50, 120]);
+                                }
+                              }}
+                              className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-rose-500 to-pink-600 hover:from-rose-600 hover:to-pink-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-rose-500/25 active:scale-95 transition-all"
+                            >
+                              <Activity className="w-4 h-4 animate-pulse" />
+                              <span>Feel Pulse (Vibrate)</span>
+                            </button>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Digital Deed & Mutual Pact Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[DIGITAL_DEED]')) {
+                      try {
+                        const raw = msg.content.replace('[DIGITAL_DEED]', '');
+                        const deed: DigitalDeedData = JSON.parse(raw);
+                        const isRatified = deed.status === 'ratified';
+
+                        return (
+                          <div className="my-1 min-w-[270px] max-w-[340px] rounded-3xl p-4 shadow-2xl border-2 border-amber-600/40 bg-amber-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 space-y-3">
+                            <div className="flex items-center justify-between pb-2 border-b border-amber-300 dark:border-amber-700/40">
+                              <div className="flex items-center gap-2">
+                                <div className="w-9 h-9 rounded-2xl bg-amber-600 text-white flex items-center justify-center shadow-md">
+                                  <FileCheck className="w-5 h-5 stroke-[2.5]" />
+                                </div>
+                                <div>
+                                  <span className="text-[10px] font-mono font-bold text-amber-700 dark:text-amber-400">
+                                    {deed.deedNumber}
+                                  </span>
+                                  <h4 className="text-xs font-bold leading-tight line-clamp-1">{deed.title}</h4>
+                                </div>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  isRatified
+                                    ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                                    : 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 animate-pulse'
+                                }`}
+                              >
+                                {isRatified ? 'RATIFIED' : 'PENDING'}
+                              </span>
+                            </div>
+
+                            <div className="text-[11px] space-y-1.5 p-2 rounded-2xl bg-white/70 dark:bg-slate-900/70 border border-black/5 dark:border-white/5">
+                              <div className="flex justify-between">
+                                <span className="text-slate-500">Party A (Issuer):</span>
+                                <span className="font-bold text-amber-800 dark:text-amber-400">{deed.partyAName}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-500">Party B:</span>
+                                <span className="font-bold">{deed.partyBName}</span>
+                              </div>
+                              {deed.amountOrValue && (
+                                <div className="flex justify-between font-bold text-emerald-600 dark:text-emerald-400">
+                                  <span>Value:</span>
+                                  <span>{deed.amountOrValue}</span>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Terms preview */}
+                            {deed.terms && deed.terms.length > 0 && (
+                              <div className="text-[10px] text-slate-600 dark:text-slate-300 space-y-0.5">
+                                {deed.terms.slice(0, 2).map((t, idx) => (
+                                  <p key={idx} className="line-clamp-1">
+                                    • {t}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Signature Display */}
+                            <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                              <div>
+                                <span className="text-[9px] text-slate-400 uppercase font-bold block">Party A Signature</span>
+                                {deed.partyASignature && (
+                                  <img src={deed.partyASignature} alt="Signature" className="h-6 object-contain" />
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-[9px] text-slate-400 uppercase font-bold block text-right">Party B Status</span>
+                                <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                                  {isRatified ? 'Signed ✓' : 'Awaiting ✍️'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {!isRatified ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCountersignDeed(msg);
+                                }}
+                                className="w-full py-2.5 px-3 rounded-2xl bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-amber-700/25 active:scale-95 transition-all"
+                              >
+                                <PenTool className="w-4 h-4" />
+                                <span>Countersign Deed & Ratify ✍️</span>
+                              </button>
+                            ) : (
+                              <div className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 p-2 rounded-xl border border-emerald-500/20 text-center flex items-center justify-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                                <span>Officially Ratified Mutual Deed</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Duress Silent SOS Beacon Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[DURESS_BEACON]')) {
+                      try {
+                        const raw = msg.content.replace('[DURESS_BEACON]', '');
+                        const alert: DuressAlertData = JSON.parse(raw);
+
+                        return (
+                          <div className="my-1 min-w-[270px] max-w-[330px] rounded-3xl p-4 shadow-2xl border-2 border-rose-500 bg-gradient-to-br from-rose-950 via-slate-950 to-red-950 text-white space-y-3 animate-pulse">
+                            <div className="flex items-center gap-2.5 pb-2 border-b border-rose-500/30">
+                              <div className="w-9 h-9 rounded-2xl bg-rose-600 text-white flex items-center justify-center">
+                                <AlertTriangle className="w-5 h-5 stroke-[2.5]" />
+                              </div>
+                              <div>
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-rose-400">
+                                  EMERGENCY STEALTH SOS
+                                </span>
+                                <h4 className="text-xs font-bold text-white">{alert.senderName}</h4>
+                              </div>
+                            </div>
+
+                            <p className="text-xs text-rose-200 leading-snug">{alert.notes}</p>
+
+                            <div className="p-2.5 rounded-2xl bg-black/50 border border-rose-500/30 text-[11px] space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-400">Coordinates:</span>
+                                <span className="font-mono font-bold text-rose-300">
+                                  {alert.latitude.toFixed(4)}, {alert.longitude.toFixed(4)}
+                                </span>
+                              </div>
+                              {alert.batteryLevel !== undefined && (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-slate-400">Battery Level:</span>
+                                  <span className="font-bold text-rose-300">{alert.batteryLevel}%</span>
+                                </div>
+                              )}
+                            </div>
+
+                            <a
+                              href={alert.mapsUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="w-full py-2.5 px-3 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-rose-600/30 active:scale-95 transition-all text-center block"
+                            >
+                              <MapPin className="w-4 h-4 inline" />
+                              <span>Open Live GPS Coordinates</span>
+                            </a>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Bargain & Deal Arbiter Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[BARGAIN_DEAL]')) {
+                      try {
+                        const raw = msg.content.replace('[BARGAIN_DEAL]', '');
+                        const deal: BargainDealData = JSON.parse(raw);
+                        const isAccepted = deal.status === 'accepted';
+
+                        return (
+                          <div className="my-1 min-w-[270px] max-w-[330px] rounded-3xl p-4 shadow-2xl border border-indigo-500/40 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950/40 text-white space-y-3">
+                            <div className="flex items-center justify-between pb-2 border-b border-indigo-500/20">
+                              <div className="flex items-center gap-2">
+                                <div className="w-9 h-9 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-md">
+                                  <Scale className="w-5 h-5" />
+                                </div>
+                                <div>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
+                                    DEAL ARBITER PROPOSAL
+                                  </span>
+                                  <h4 className="text-xs font-bold text-white line-clamp-1">{deal.itemTitle}</h4>
+                                </div>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  isAccepted
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 animate-pulse'
+                                }`}
+                              >
+                                {isAccepted ? 'AGREED' : 'OFFER'}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2 text-center text-xs">
+                              <div className="p-2 rounded-2xl bg-slate-900 border border-slate-800">
+                                <span className="text-[10px] text-slate-400 block">Seller Ask</span>
+                                <span className="font-bold text-amber-400 font-mono">৳{deal.sellerPrice}</span>
+                              </div>
+                              <div className="p-2 rounded-2xl bg-slate-900 border border-slate-800">
+                                <span className="text-[10px] text-slate-400 block">Buyer Bid</span>
+                                <span className="font-bold text-cyan-400 font-mono">৳{deal.buyerOffer}</span>
+                              </div>
+                            </div>
+
+                            <div className="p-3 rounded-2xl bg-indigo-950/50 border border-indigo-500/30 flex items-center justify-between">
+                              <div>
+                                <span className="text-[10px] uppercase font-bold text-indigo-300 block">
+                                  Fair Compromise Total:
+                                </span>
+                                <span className="text-xs text-emerald-400">
+                                  Saves ৳{deal.buyerSavings} (50/50 Split)
+                                </span>
+                              </div>
+                              <span className="text-2xl font-black font-mono text-emerald-400">৳{deal.finalTotal}</span>
+                            </div>
+
+                            {!isAccepted ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleAcceptBargainDeal(msg);
+                                }}
+                                className="w-full py-2.5 px-3 rounded-2xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/30 active:scale-95 transition-all"
+                              >
+                                <Handshake className="w-4 h-4" />
+                                <span>Accept Compromise Deal 🤝</span>
+                              </button>
+                            ) : (
+                              <div className="text-[11px] font-medium text-emerald-300 bg-emerald-500/10 p-2 rounded-xl border border-emerald-500/20 text-center flex items-center justify-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                <span>Mutual Compromise Accepted</span>
+                              </div>
                             )}
                           </div>
                         );
@@ -4834,7 +5524,143 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       </span>
                     </button>
 
-                    {/* 17. Split Bill (Group only) */}
+                    {/* 17. Time Capsule */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowTimeCapsuleModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-400 text-slate-950 flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Clock className="w-6 h-6 stroke-[2.5]" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Time Capsule
+                      </span>
+                    </button>
+
+                    {/* 18. Co-Watch Cinema */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowCoWatchModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center shadow-md shadow-purple-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Tv className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Co-Watch
+                      </span>
+                    </button>
+
+                    {/* 19. Truth Shield Radar */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowTruthShieldModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-500 to-teal-500 text-slate-950 flex items-center justify-center shadow-md shadow-cyan-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <ShieldAlert className="w-6 h-6 stroke-[2.5]" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Truth Shield
+                      </span>
+                    </button>
+
+                    {/* 20. Heartbeat Touch */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowHeartbeatModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-rose-500 to-pink-600 text-white flex items-center justify-center shadow-md shadow-rose-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Heart className="w-6 h-6 fill-current" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Heartbeat
+                      </span>
+                    </button>
+
+                    {/* 21. Digital Deed & Stamp */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowDigitalDeedModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-700 to-yellow-600 text-white flex items-center justify-center shadow-md shadow-amber-700/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <FileCheck className="w-6 h-6 stroke-[2.5]" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Digital Deed
+                      </span>
+                    </button>
+
+                    {/* 22. Stealth Duress SOS */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowDuressStealthModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-700 text-white flex items-center justify-center shadow-md shadow-red-600/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Calculator className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Stealth SOS
+                      </span>
+                    </button>
+
+                    {/* 23. Bangla Regional Dialect Interpreter */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowBanglaDialectModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 text-white flex items-center justify-center shadow-md shadow-emerald-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Languages className="w-6 h-6 stroke-[2.5]" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Dialects
+                      </span>
+                    </button>
+
+                    {/* 24. AI Deal Arbiter */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowBargainArbiterModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-blue-600 text-white flex items-center justify-center shadow-md shadow-indigo-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Scale className="w-6 h-6 stroke-[2.5]" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Deal Arbiter
+                      </span>
+                    </button>
+
+                    {/* 25. Split Bill (Group only) */}
                     {isGroup && (
                       <button
                         type="button"
@@ -6773,6 +7599,91 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         onOpacityChange={handleThemeOpacityChange}
         speed={themeSpeed}
         onSpeedChange={handleThemeSpeedChange}
+        language={currentUser.language}
+      />
+
+      {/* 9. Time Capsule (Future Vault Message) Modal */}
+      <TimeCapsuleModal
+        isOpen={showTimeCapsuleModal}
+        onClose={() => setShowTimeCapsuleModal(false)}
+        onSendCapsule={handleSendTimeCapsule}
+        currentUserName={currentUser.full_name}
+        currentUserId={currentUser.id}
+        language={currentUser.language}
+      />
+
+      {/* 10. Co-Watch Cinema Room Modal */}
+      <CoWatchModal
+        isOpen={showCoWatchModal}
+        onClose={() => setShowCoWatchModal(false)}
+        channel={channelRef.current}
+        chatId={chat.id}
+        chatTitle={chatTitle}
+        currentUser={currentUser}
+        language={currentUser.language}
+      />
+
+      {/* 11. Truth Shield Biometric Vocal Radar Modal */}
+      <TruthShieldModal
+        isOpen={showTruthShieldModal}
+        onClose={() => setShowTruthShieldModal(false)}
+        onSendTruthReport={handleSendTruthReport}
+        currentUserName={currentUser.full_name}
+        currentUserId={currentUser.id}
+        language={currentUser.language}
+      />
+
+      {/* 12. Heartbeat & Synesthesia Haptic Touch Modal */}
+      <HeartbeatTouchModal
+        isOpen={showHeartbeatModal}
+        onClose={() => setShowHeartbeatModal(false)}
+        channel={channelRef.current}
+        chatId={chat.id}
+        chatTitle={chatTitle}
+        currentUser={currentUser}
+        onSendHeartbeatNote={handleSendHeartbeatNote}
+        language={currentUser.language}
+      />
+
+      {/* 13. Digital Deed & Mutual Pact Modal */}
+      <DigitalDeedModal
+        isOpen={showDigitalDeedModal}
+        onClose={() => setShowDigitalDeedModal(false)}
+        onCreateDeed={handleCreateDigitalDeed}
+        partyAName={currentUser.full_name}
+        partyAId={currentUser.id}
+        partyBName={chatTitle}
+        partyBId={peer?.id}
+        language={currentUser.language}
+      />
+
+      {/* 14. Stealth Duress SOS Modal */}
+      <DuressStealthModal
+        isOpen={showDuressStealthModal}
+        onClose={() => setShowDuressStealthModal(false)}
+        onSendDuressAlert={handleSendDuressAlert}
+        currentUserName={currentUser.full_name}
+        currentUserId={currentUser.id}
+        language={currentUser.language}
+      />
+
+      {/* 15. Bangla Regional Dialect Interpreter Modal */}
+      <BanglaDialectModal
+        isOpen={showBanglaDialectModal}
+        onClose={() => setShowBanglaDialectModal(false)}
+        onInsertMessage={(translatedText) =>
+          setText((prev) => (prev ? prev + ' ' + translatedText : translatedText))
+        }
+        language={currentUser.language}
+      />
+
+      {/* 16. Fair Bargain & Deal Arbiter Modal */}
+      <BargainArbiterModal
+        isOpen={showBargainArbiterModal}
+        onClose={() => setShowBargainArbiterModal(false)}
+        onSendDeal={handleSendBargainDeal}
+        sellerName={isGroup ? 'Seller' : chatTitle}
+        buyerName={currentUser.full_name}
         language={currentUser.language}
       />
     </div>
