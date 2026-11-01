@@ -97,6 +97,7 @@ import { DigitalDeedModal, DigitalDeedData } from '../components/chat/DigitalDee
 import { DuressStealthModal, DuressAlertData } from '../components/chat/DuressStealthModal';
 import { BanglaDialectModal } from '../components/chat/BanglaDialectModal';
 import { BargainArbiterModal, BargainDealData } from '../components/chat/BargainArbiterModal';
+import { AttachmentActionDrawer } from '../components/chat/AttachmentActionDrawer';
 import { OSAAvatar } from '../components/OSAAvatar';
 import { RemoteCameraModal } from '../components/RemoteCameraModal';
 import { RemoteLocationModal } from '../components/RemoteLocationModal';
@@ -482,6 +483,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [showDuressStealthModal, setShowDuressStealthModal] = useState(false);
   const [showBanglaDialectModal, setShowBanglaDialectModal] = useState(false);
   const [showBargainArbiterModal, setShowBargainArbiterModal] = useState(false);
+
+  // Organized Attachment Drawer & Suite Dropdown State
+  const [attachmentCategory, setAttachmentCategory] = useState<'all' | 'media' | 'live' | 'security' | 'deals' | 'ai'>('all');
+  const [attachmentSearchQuery, setAttachmentSearchQuery] = useState('');
+  const [showSuiteDropdown, setShowSuiteDropdown] = useState(false);
   const [chatTheme, setChatTheme] = useState<ChatThemeType>(() => {
     try {
       return (localStorage.getItem(`osa_chat_theme_${chat.id}`) as ChatThemeType) || 'default';
@@ -2864,86 +2870,117 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               </>
             )}
 
+            {/* Search in chat */}
             <button
               type="button"
               onClick={() => setSearchInChatOpen((prev) => !prev)}
-              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
               title={t.searchInConversation}
             >
-              <Search className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+              <Search className="w-4 h-4" />
             </button>
 
-            {/* Ghost Mode Toggle */}
-            <button
-              type="button"
-              onClick={handleToggleGhostMode}
-              className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center transition-colors shrink-0 ${
-                ghostModeActive
-                  ? 'bg-purple-100 dark:bg-purple-950/70 text-purple-600 dark:text-purple-400 ring-2 ring-purple-500/50'
-                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-              title={
-                ghostModeActive
-                  ? 'Ghost Mode: ON (Invisible)'
-                  : 'Ghost Mode: OFF'
-              }
-            >
-              <Ghost className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-            </button>
+            {/* OSA Suite & Advanced Modes Dropdown Toggle */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowSuiteDropdown((prev) => !prev)}
+                className={`w-9 h-9 rounded-full flex items-center justify-center transition-all shrink-0 ${
+                  showSuiteDropdown || ghostModeActive || chatTheme !== 'default'
+                    ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 ring-2 ring-blue-500/40'
+                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+                title="OSA Tools & Modes"
+              >
+                <MoreVertical className="w-4.5 h-4.5" />
+              </button>
 
-            {/* Walkie-Talkie PTT Mode Toggle */}
-            <button
-              type="button"
-              onClick={() => setShowWalkieTalkieModal(true)}
-              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors shrink-0 relative"
-              title="Walkie-Talkie (PTT)"
-            >
-              <Radio className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-              <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            </button>
+              {/* Floating Dropdown Card */}
+              {showSuiteDropdown && (
+                <div className="absolute right-0 top-11 z-50 w-56 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-1.5 space-y-1 animate-in fade-in slide-in-from-top-2 duration-150">
+                  <div className="px-3 py-1.5 border-b border-slate-100 dark:border-slate-800">
+                    <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                      OSA Features & Modes
+                    </p>
+                  </div>
 
-            {/* Chat Themes & Animated Wallpaper */}
-            <button
-              type="button"
-              onClick={() => setShowThemeSelectorModal(true)}
-              className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center transition-colors shrink-0 ${
-                chatTheme !== 'default'
-                  ? 'text-fuchsia-500 dark:text-fuchsia-400 bg-fuchsia-50 dark:bg-fuchsia-950/50'
-                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-              title="Wallpaper & Themes"
-            >
-              <Palette className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-            </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSuiteDropdown(false);
+                      setShowWalkieTalkieModal(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-2.5 transition-colors"
+                  >
+                    <Radio className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Walkie-Talkie (PTT)</span>
+                  </button>
 
-            {/* Co-Watch Cinema Room Quick Launcher */}
-            <button
-              type="button"
-              onClick={() => setShowCoWatchModal(true)}
-              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/50 transition-colors shrink-0"
-              title="Co-Watch Cinema Room"
-            >
-              <Tv className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-            </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSuiteDropdown(false);
+                      setShowCoWatchModal(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-purple-50 dark:hover:bg-purple-950/40 hover:text-purple-600 dark:hover:text-purple-400 flex items-center gap-2.5 transition-colors"
+                  >
+                    <Tv className="w-4 h-4 text-purple-500 shrink-0" />
+                    <span>Co-Watch Cinema Room</span>
+                  </button>
 
-            {/* Truth Shield Acoustic Stress Radar */}
-            <button
-              type="button"
-              onClick={() => setShowTruthShieldModal(true)}
-              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-950/50 transition-colors shrink-0"
-              title="Truth Shield™ Vocal Stress Radar"
-            >
-              <ShieldAlert className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-            </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSuiteDropdown(false);
+                      setShowTruthShieldModal(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-cyan-50 dark:hover:bg-cyan-950/40 hover:text-cyan-600 dark:hover:text-cyan-400 flex items-center gap-2.5 transition-colors"
+                  >
+                    <ShieldAlert className="w-4 h-4 text-cyan-500 shrink-0" />
+                    <span>Truth Shield™ Vocal Radar</span>
+                  </button>
 
-            <button
-              type="button"
-              onClick={() => setShowChatInfo(true)}
-              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
-              title={t.chatInfo}
-            >
-              <Info className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
-            </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSuiteDropdown(false);
+                      setShowThemeSelectorModal(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-fuchsia-50 dark:hover:bg-fuchsia-950/40 hover:text-fuchsia-600 dark:hover:text-fuchsia-400 flex items-center gap-2.5 transition-colors"
+                  >
+                    <Palette className="w-4 h-4 text-fuchsia-500 shrink-0" />
+                    <span>Wallpaper & Themes</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSuiteDropdown(false);
+                      handleToggleGhostMode();
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-purple-50 dark:hover:bg-purple-950/40 hover:text-purple-600 dark:hover:text-purple-400 flex items-center justify-between transition-colors"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Ghost className="w-4 h-4 text-purple-500 shrink-0" />
+                      <span>Ghost Mode (Incognito)</span>
+                    </span>
+                    <span className={`w-2 h-2 rounded-full ${ghostModeActive ? 'bg-purple-500' : 'bg-slate-400'}`} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSuiteDropdown(false);
+                      setShowChatInfo(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 transition-colors border-t border-slate-100 dark:border-slate-800"
+                  >
+                    <Info className="w-4 h-4 text-slate-400 shrink-0" />
+                    <span>{t.chatInfo}</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -5211,476 +5248,93 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               </div>
             )}
 
-              {/* WhatsApp-Style '+' Action Menu Popover */}
-              {showAttachmentMenu && (
-                <div className="shrink-0 p-3 sm:p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-200">
-                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-9 gap-3 sm:gap-4 max-w-4xl mx-auto max-h-[260px] sm:max-h-none overflow-y-auto p-1">
-                    {/* 1. Document / File */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        fileInputRef.current?.click();
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-500 text-white flex items-center justify-center shadow-md shadow-purple-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <FileText className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Document
-                      </span>
-                    </button>
-
-                    {/* 2. Photos & Videos */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        fileInputRef.current?.click();
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-cyan-500 text-white flex items-center justify-center shadow-md shadow-blue-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <ImageIcon className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Gallery
-                      </span>
-                    </button>
-
-                    {/* 3. View Once Media */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsViewOnceNext(true);
-                        setShowAttachmentMenu(false);
-                        fileInputRef.current?.click();
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-500 text-white flex items-center justify-center shadow-md shadow-teal-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Eye className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        View Once
-                      </span>
-                    </button>
-
-                    {/* 4. Poll */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowCreatePollModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-500 text-white flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <BarChart2 className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Poll
-                      </span>
-                    </button>
-
-                    {/* 5. Schedule Message */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        const now = new Date();
-                        now.setMinutes(now.getMinutes() + 10);
-                        const yr = now.getFullYear();
-                        const mo = String(now.getMonth() + 1).padStart(2, '0');
-                        const da = String(now.getDate()).padStart(2, '0');
-                        const ho = String(now.getHours()).padStart(2, '0');
-                        const mi = String(now.getMinutes()).padStart(2, '0');
-                        setScheduleTargetDate(`${yr}-${mo}-${da}`);
-                        setScheduleTargetTime(`${ho}:${mi}`);
-                        setShowScheduleModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-violet-600 to-fuchsia-500 text-white flex items-center justify-center shadow-md shadow-violet-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Clock className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Schedule
-                      </span>
-                    </button>
-
-                    {/* 6. Live GPS Location */}
-                    <button
-                      type="button"
-                      disabled={sharingLocation}
-                      onClick={async () => {
-                        setShowAttachmentMenu(false);
-                        if (!isGroup && peer) {
-                          setSelectedLocationCard(null);
-                          setShowRemoteLocationModal(true);
-                          return;
-                        }
-                        setSharingLocation(true);
-                        setError('');
-                        try {
-                          const pos = await getCurrentDeviceLocation(currentUser.id);
-                          const content = formatLocationChatMessage({
-                            latitude: pos.coords.latitude,
-                            longitude: pos.coords.longitude,
-                            accuracy: Math.round(pos.coords.accuracy || 10),
-                            label: `${currentUser.full_name}'s GPS Location`,
-                            timestamp: new Date(pos.timestamp).toISOString(),
-                          });
-                          const sent = await sendTextMessage({
-                            chatId: chat.id,
-                            senderId: currentUser.id,
-                            content,
-                          });
-                          setMessages((prev) =>
-                            prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
-                          );
-                          onChatUpdated();
-                        } catch (err) {
-                          setError(
-                            err instanceof Error ? err.message : 'Unable to share current GPS location.'
-                          );
-                        } finally {
-                          setSharingLocation(false);
-                        }
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none disabled:opacity-40"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-green-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <MapPin className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Location
-                      </span>
-                    </button>
-
-                    {/* 7. AI Smart Assistant */}
-                    <button
-                      type="button"
-                      disabled={aiDrafting}
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        handleAiDraft();
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none disabled:opacity-40"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-rose-500 to-pink-500 text-white flex items-center justify-center shadow-md shadow-rose-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Sparkles className={`w-6 h-6 ${aiDrafting ? 'animate-pulse' : ''}`} />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        AI Draft
-                      </span>
-                    </button>
-
-                    {/* 8. Round Instant Video Note */}
-                    <button
-                      type="button"
-                      onClick={handleOpenVideoNoteModal}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-fuchsia-600 to-rose-500 text-white flex items-center justify-center shadow-md shadow-fuchsia-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Camera className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Video Note
-                      </span>
-                    </button>
-
-                    {/* 9. Emergency SOS Alert */}
-                    <button
-                      type="button"
-                      onClick={handleOpenSosModal}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-600 text-white flex items-center justify-center shadow-md shadow-red-500/30 group-hover:scale-105 active:scale-95 transition-all animate-pulse">
-                        <ShieldAlert className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-red-600 dark:text-red-400 font-bold">
-                        SOS Alert
-                      </span>
-                    </button>
-
-                    {/* 10. Collaborative Whiteboard & Canvas */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowCanvasModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-sky-500 to-blue-600 text-white flex items-center justify-center shadow-md shadow-sky-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Palette className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Whiteboard
-                      </span>
-                    </button>
-
-                    {/* 11. Studio Voice Effects & Changer */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowVoiceFilterModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-violet-600 to-fuchsia-600 text-white flex items-center justify-center shadow-md shadow-violet-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Sliders className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Voice Effects
-                      </span>
-                    </button>
-
-                    {/* 12. Secret Media Vault */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowSecretVaultModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-rose-600 text-white flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Lock className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Secret Vault
-                      </span>
-                    </button>
-
-                    {/* 13. Event Planner & RSVP */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowEventPlannerModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-md shadow-indigo-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Calendar className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Plan Event
-                      </span>
-                    </button>
-
-                    {/* 14. Direct P2P File Beam */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowFileBeamModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 text-white flex items-center justify-center shadow-md shadow-cyan-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Zap className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        File Beam
-                      </span>
-                    </button>
-
-                    {/* 15. Friendly IOU & Handshake */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowIouModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-600 text-slate-950 flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Handshake className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        IOU Note
-                      </span>
-                    </button>
-
-                    {/* 16. Walkie-Talkie PTT */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowWalkieTalkieModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Radio className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Walkie-Talkie
-                      </span>
-                    </button>
-
-                    {/* 17. Time Capsule */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowTimeCapsuleModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-400 text-slate-950 flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Clock className="w-6 h-6 stroke-[2.5]" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Time Capsule
-                      </span>
-                    </button>
-
-                    {/* 18. Co-Watch Cinema */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowCoWatchModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center shadow-md shadow-purple-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Tv className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Co-Watch
-                      </span>
-                    </button>
-
-                    {/* 19. Truth Shield Radar */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowTruthShieldModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-500 to-teal-500 text-slate-950 flex items-center justify-center shadow-md shadow-cyan-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <ShieldAlert className="w-6 h-6 stroke-[2.5]" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Truth Shield
-                      </span>
-                    </button>
-
-                    {/* 20. Heartbeat Touch */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowHeartbeatModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-rose-500 to-pink-600 text-white flex items-center justify-center shadow-md shadow-rose-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Heart className="w-6 h-6 fill-current" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Heartbeat
-                      </span>
-                    </button>
-
-                    {/* 21. Digital Deed & Stamp */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowDigitalDeedModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-700 to-yellow-600 text-white flex items-center justify-center shadow-md shadow-amber-700/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <FileCheck className="w-6 h-6 stroke-[2.5]" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Digital Deed
-                      </span>
-                    </button>
-
-                    {/* 22. Stealth Duress SOS */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowDuressStealthModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-700 text-white flex items-center justify-center shadow-md shadow-red-600/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Calculator className="w-6 h-6" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Stealth SOS
-                      </span>
-                    </button>
-
-                    {/* 23. Bangla Regional Dialect Interpreter */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowBanglaDialectModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 text-white flex items-center justify-center shadow-md shadow-emerald-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Languages className="w-6 h-6 stroke-[2.5]" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Dialects
-                      </span>
-                    </button>
-
-                    {/* 24. AI Deal Arbiter */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAttachmentMenu(false);
-                        setShowBargainArbiterModal(true);
-                      }}
-                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                    >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-blue-600 text-white flex items-center justify-center shadow-md shadow-indigo-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Scale className="w-6 h-6 stroke-[2.5]" />
-                      </div>
-                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Deal Arbiter
-                      </span>
-                    </button>
-
-                    {/* 25. Split Bill (Group only) */}
-                    {isGroup && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowAttachmentMenu(false);
-                          setShowSplitBillModal(true);
-                        }}
-                        className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                      >
-                        <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-600 text-white flex items-center justify-center shadow-md shadow-teal-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                          <Receipt className="w-6 h-6" />
-                        </div>
-                        <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                          Split Bill
-                        </span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
+              {/* WhatsApp-Style Organized Attachment Action Drawer */}
+              <AttachmentActionDrawer
+                isOpen={showAttachmentMenu}
+                onClose={() => setShowAttachmentMenu(false)}
+                isGroup={isGroup}
+                language={currentUser.language}
+                onOpenFilePicker={() => fileInputRef.current?.click()}
+                onOpenCaptureCamera={() => {
+                  if (fileInputRef.current) {
+                    fileInputRef.current.setAttribute('capture', 'environment');
+                    fileInputRef.current.click();
+                    setTimeout(() => fileInputRef.current?.removeAttribute('capture'), 500);
+                  }
+                }}
+                onEnableViewOnce={() => {
+                  setIsViewOnceNext(true);
+                  fileInputRef.current?.click();
+                }}
+                onOpenCreatePoll={() => setShowCreatePollModal(true)}
+                onOpenSplitBill={() => setShowSplitBillModal(true)}
+                onShareLocation={async () => {
+                  if (!isGroup && peer) {
+                    setSelectedLocationCard(null);
+                    setShowRemoteLocationModal(true);
+                    return;
+                  }
+                  setSharingLocation(true);
+                  setError('');
+                  try {
+                    const pos = await getCurrentDeviceLocation(currentUser.id);
+                    const content = formatLocationChatMessage({
+                      latitude: pos.coords.latitude,
+                      longitude: pos.coords.longitude,
+                      accuracy: Math.round(pos.coords.accuracy || 10),
+                      label: `${currentUser.full_name}'s GPS Location`,
+                      timestamp: new Date(pos.timestamp).toISOString(),
+                    });
+                    const sent = await sendTextMessage({
+                      chatId: chat.id,
+                      senderId: currentUser.id,
+                      content,
+                    });
+                    setMessages((prev) =>
+                      prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+                    );
+                    onChatUpdated();
+                  } catch (err) {
+                    setError(
+                      err instanceof Error ? err.message : 'Unable to share current GPS location.'
+                    );
+                  } finally {
+                    setSharingLocation(false);
+                  }
+                }}
+                onAiDraft={handleAiDraft}
+                onShareContactCard={async () => {
+                  try {
+                    const contactCard = `📇 [Contact Card]\n👤 Name: ${currentUser.full_name}\n🏷️ Username: @${currentUser.username}\n📞 Phone: ${currentUser.phone_number || 'N/A'}`;
+                    const sent = await sendTextMessage({
+                      chatId: chat.id,
+                      senderId: currentUser.id,
+                      content: contactCard,
+                    });
+                    setMessages((prev) =>
+                      prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+                    );
+                    onChatUpdated();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'Failed to share contact card.');
+                  }
+                }}
+                onOpenCanvas={() => setShowCanvasModal(true)}
+                onOpenVoiceFilter={() => setShowVoiceFilterModal(true)}
+                onOpenSecretVault={() => setShowSecretVaultModal(true)}
+                onOpenEventPlanner={() => setShowEventPlannerModal(true)}
+                onOpenFileBeam={() => setShowFileBeamModal(true)}
+                onOpenIou={() => setShowIouModal(true)}
+                onOpenWalkieTalkie={() => setShowWalkieTalkieModal(true)}
+                onOpenTimeCapsule={() => setShowTimeCapsuleModal(true)}
+                onOpenCoWatch={() => setShowCoWatchModal(true)}
+                onOpenTruthShield={() => setShowTruthShieldModal(true)}
+                onOpenHeartbeat={() => setShowHeartbeatModal(true)}
+                onOpenDigitalDeed={() => setShowDigitalDeedModal(true)}
+                onOpenDuressStealth={() => setShowDuressStealthModal(true)}
+                onOpenBanglaDialect={() => setShowBanglaDialectModal(true)}
+                onOpenBargainArbiter={() => setShowBargainArbiterModal(true)}
+              />
 
             <form
               onSubmit={handleSendText}

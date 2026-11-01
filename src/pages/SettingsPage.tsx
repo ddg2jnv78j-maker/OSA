@@ -23,13 +23,17 @@ import {
   Palette,
   Phone,
   Shield,
+  ShieldAlert,
   Sparkles,
   Sun,
   Trash2,
   User,
   Users,
+  Zap,
+  Activity,
 } from 'lucide-react';
 import { Chat, Profile } from '../types/osa';
+import { NewInnovationSettings } from '../components/settings/NewInnovationSettings';
 import { AppUpdateModal } from '../components/AppUpdateModal';
 import { OSAAvatar } from '../components/OSAAvatar';
 import { PWAInstallButton } from '../components/PWAInstallButton';
@@ -137,6 +141,10 @@ export type SettingsSubPage =
   | 'help_guide'
   | 'help_contact'
   | 'help_problem'
+  | 'stealth_shield'
+  | 'ai_studio'
+  | 'data_turbo'
+  | 'haptics_sound'
   | 'about'
   | 'about_terms'
   | 'about_privacy'
@@ -763,6 +771,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               { id: 'account', icon: KeyRound, label: t.account, sub: 'Email, password, delete account' },
               { id: 'cv_maker', icon: FileText, label: 'CV Maker (OCR & Templates)', sub: 'Professional Resumes, NID OCR & QR Code' },
               { id: 'high_security', icon: Shield, label: 'OSA High Security & Recovery', sub: 'New device Yes/No login verification & Secret Code' },
+              {
+                id: 'stealth_shield',
+                icon: ShieldAlert,
+                label: language === 'bn' ? 'স্টিলথ শিল্ড ও ছদ্মবেশী ভল্ট' : 'Stealth Shield & Anti-Snoop Vault',
+                sub: language === 'bn' ? 'ক্যালকুলেটর ছদ্মবেশ, ডিকয় পিন ও ওয়াটারমার্ক' : 'App disguise, decoy PIN & anti-snoop watermark',
+              },
+              {
+                id: 'ai_studio',
+                icon: Sparkles,
+                label: language === 'bn' ? 'এআই স্টুডিও ও আঞ্চলিক অনুবাদ' : 'AI Intelligence & Dialects Studio',
+                sub: language === 'bn' ? 'স্মার্ট রিপ্লাই পার্সোনা ও উপভাষা অনুবাদ' : 'Smart reply personality & auto dialect translation',
+              },
+              {
+                id: 'data_turbo',
+                icon: Zap,
+                label: language === 'bn' ? 'টার্বো পি২পি ও ডাটা সাশ্রয়' : 'Turbo P2P & Data Saver Engine',
+                sub: language === 'bn' ? '৭৫% ডাটা সেভিং ও লোকাল ওয়াইফাই মেশ' : '75% bandwidth saving & local Wi-Fi mesh',
+              },
+              {
+                id: 'haptics_sound',
+                icon: Activity,
+                label: language === 'bn' ? 'হ্যাপটিক্স ও অ্যাম্বিয়েন্ট ল্যাব' : 'Haptics & Sensory Soundscapes',
+                sub: language === 'bn' ? 'স্পর্শীয় ভাইব্রেশন ও লেট-নাইট ফোকাস সাউন্ড' : 'Tactile vibration intensity & focus acoustics',
+              },
               { id: 'privacy', icon: Lock, label: t.privacy, sub: 'Last seen, photo, read receipts' },
               {
                 id: 'calls',
@@ -2605,6 +2637,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             </button>
           </div>
         </div>
+      )}
+
+      {/* 4 New Groundbreaking Innovation Subpages */}
+      {(subPage === 'stealth_shield' ||
+        subPage === 'ai_studio' ||
+        subPage === 'data_turbo' ||
+        subPage === 'haptics_sound') && (
+        <NewInnovationSettings
+          subPage={subPage}
+          currentUser={currentUser}
+          language={language}
+          onBack={() => setSubPage('main')}
+          renderSubHeader={renderSubHeader}
+        />
       )}
       </div>
 
