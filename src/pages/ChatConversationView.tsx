@@ -64,7 +64,23 @@ import {
   Video,
   Volume2,
   X,
+  Radio,
+  Palette,
+  Calendar,
+  Zap,
+  Handshake,
+  Sliders,
 } from 'lucide-react';
+import confetti from 'canvas-confetti';
+import { WalkieTalkieModal } from '../components/chat/WalkieTalkieModal';
+import { CollaborativeCanvasModal } from '../components/chat/CollaborativeCanvasModal';
+import { VoiceFilterSelector } from '../components/chat/VoiceFilterSelector';
+import { SecretMediaVaultModal } from '../components/chat/SecretMediaVaultModal';
+import { EventPlannerModal, EventData } from '../components/chat/EventPlannerModal';
+import { DirectFileBeamModal } from '../components/chat/DirectFileBeamModal';
+import { IOUNoteModal, IOUNoteData } from '../components/chat/IOUNoteModal';
+import { AnimatedChatWallpaper, ChatThemeType } from '../components/chat/AnimatedChatWallpaper';
+import { ChatThemeSelectorModal } from '../components/chat/ChatThemeSelectorModal';
 import { OSAAvatar } from '../components/OSAAvatar';
 import { RemoteCameraModal } from '../components/RemoteCameraModal';
 import { RemoteLocationModal } from '../components/RemoteLocationModal';
@@ -430,6 +446,38 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [splitBillTotal, setSplitBillTotal] = useState('');
   const [splitBillNote, setSplitBillNote] = useState('');
   const [splitBillSubmitting, setSplitBillSubmitting] = useState(false);
+
+  // 8 Flagship Extension States
+  const [showWalkieTalkieModal, setShowWalkieTalkieModal] = useState(false);
+  const [showCanvasModal, setShowCanvasModal] = useState(false);
+  const [showVoiceFilterModal, setShowVoiceFilterModal] = useState(false);
+  const [showSecretVaultModal, setShowSecretVaultModal] = useState(false);
+  const [showEventPlannerModal, setShowEventPlannerModal] = useState(false);
+  const [showFileBeamModal, setShowFileBeamModal] = useState(false);
+  const [showIouModal, setShowIouModal] = useState(false);
+  const [showThemeSelectorModal, setShowThemeSelectorModal] = useState(false);
+  const [chatTheme, setChatTheme] = useState<ChatThemeType>(() => {
+    try {
+      return (localStorage.getItem(`osa_chat_theme_${chat.id}`) as ChatThemeType) || 'default';
+    } catch {
+      return 'default';
+    }
+  });
+  const [themeOpacity, setThemeOpacity] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem(`osa_theme_opacity_${chat.id}`);
+      return saved ? parseFloat(saved) : 0.85;
+    } catch {
+      return 0.85;
+    }
+  });
+  const [themeSpeed, setThemeSpeed] = useState<'off' | 'low' | 'normal' | 'fast'>(() => {
+    try {
+      return (localStorage.getItem(`osa_theme_speed_${chat.id}`) as 'off' | 'low' | 'normal' | 'fast') || 'normal';
+    } catch {
+      return 'normal';
+    }
+  });
 
   const chatViewportRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -926,6 +974,25 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       .on('broadcast', { event: 'split_bill_update' }, (payload) => {
         const { messageId, updatedContent } = payload.payload || {};
         if (messageId && updatedContent) {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
+          );
+        }
+      })
+      .on('broadcast', { event: 'event_rsvp_update' }, (payload) => {
+        const { messageId, updatedContent } = payload.payload || {};
+        if (messageId && updatedContent) {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
+          );
+        }
+      })
+      .on('broadcast', { event: 'iou_settle_update' }, (payload) => {
+        const { messageId, updatedContent } = payload.payload || {};
+        if (messageId && updatedContent) {
+          try {
+            confetti({ particleCount: 75, spread: 70, origin: { y: 0.7 } });
+          } catch {}
           setMessages((prev) =>
             prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
           );
@@ -2208,6 +2275,176 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     }
   };
 
+  // -------------------------------------------------------------
+  // Feature Handlers: Event Planner & RSVP
+  // -------------------------------------------------------------
+  const handleCreateEventCard = async (eventData: EventData) => {
+    try {
+      const content = `[EVENT_CARD]${JSON.stringify(eventData)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to post event card');
+    }
+  };
+
+  const handleToggleEventRsvp = (msg: Message, status: 'going' | 'maybe' | 'declined') => {
+    try {
+      const raw = msg.content.replace('[EVENT_CARD]', '');
+      const data: EventData = JSON.parse(raw);
+      const myId = currentUser.id;
+
+      if (!data.rsvps) data.rsvps = {};
+
+      const currentStatus = data.rsvps[myId]?.status;
+      if (currentStatus === status) {
+        delete data.rsvps[myId];
+      } else {
+        data.rsvps[myId] = {
+          status,
+          name: currentUser.full_name,
+          avatarUrl: currentUser.avatar_url,
+        };
+      }
+
+      const updatedContent = `[EVENT_CARD]${JSON.stringify(data)}`;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, content: updatedContent } : m))
+      );
+
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'event_rsvp_update',
+        payload: { messageId: msg.id, updatedContent },
+      });
+    } catch (e) {
+      console.error('Failed to toggle event RSVP', e);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // Feature Handlers: Friendly IOU & Handshake Notes
+  // -------------------------------------------------------------
+  const handleCreateIOUNote = async (iouData: IOUNoteData) => {
+    try {
+      const content = `[IOU_NOTE]${JSON.stringify(iouData)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to post IOU note');
+    }
+  };
+
+  const handleSettleIOUNote = (msg: Message) => {
+    try {
+      const raw = msg.content.replace('[IOU_NOTE]', '');
+      const data: IOUNoteData = JSON.parse(raw);
+      if (data.status === 'settled') return;
+
+      data.status = 'settled';
+      data.settledAt = new Date().toISOString();
+      data.settledByName = currentUser.full_name;
+
+      const updatedContent = `[IOU_NOTE]${JSON.stringify(data)}`;
+
+      try {
+        confetti({ particleCount: 75, spread: 70, origin: { y: 0.7 } });
+      } catch {}
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, content: updatedContent } : m))
+      );
+
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'iou_settle_update',
+        payload: { messageId: msg.id, updatedContent },
+      });
+    } catch (e) {
+      console.error('Failed to settle IOU note', e);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // Feature Handlers: Collaborative Canvas & Voice Filter Dispatch
+  // -------------------------------------------------------------
+  const handleSendCanvasImage = async (dataUrl: string, caption?: string) => {
+    try {
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `whiteboard-${Date.now()}.png`, { type: 'image/png' });
+
+      await sendMediaAttachmentMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        file,
+        caption: caption || '🎨 Collaborative Canvas Sketch',
+        onProgress: (p) => setUploadProgress(p),
+      });
+      setUploadProgress(null);
+      const fresh = await fetchChatMessages(chat.id, currentUser.id, chat.my_membership?.cleared_at);
+      setMessages(fresh);
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send canvas sketch');
+    }
+  };
+
+  const handleSendFilteredVoice = async (processedBlob: Blob, filterName: string, durationSec: number) => {
+    try {
+      const durationText = `${Math.floor(durationSec / 60)}:${(durationSec % 60).toString().padStart(2, '0')}`;
+      const file = new File([processedBlob], `voice-filter-${Date.now()}.webm`, { type: 'audio/webm' });
+
+      await sendMediaAttachmentMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        file,
+        caption: `🎤 Voice Note (${filterName}) [${durationText}]`,
+        onProgress: (p) => setUploadProgress(p),
+      });
+      setUploadProgress(null);
+      const fresh = await fetchChatMessages(chat.id, currentUser.id, chat.my_membership?.cleared_at);
+      setMessages(fresh);
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send filtered voice message');
+    }
+  };
+
+  // -------------------------------------------------------------
+  // Feature Handlers: Dynamic Animated Chat Themes
+  // -------------------------------------------------------------
+  const handleSelectChatTheme = (newTheme: ChatThemeType) => {
+    setChatTheme(newTheme);
+    try {
+      localStorage.setItem(`osa_chat_theme_${chat.id}`, newTheme);
+    } catch {}
+  };
+
+  const handleThemeOpacityChange = (val: number) => {
+    setThemeOpacity(val);
+    try {
+      localStorage.setItem(`osa_theme_opacity_${chat.id}`, String(val));
+    } catch {}
+  };
+
+  const handleThemeSpeedChange = (sp: 'off' | 'low' | 'normal' | 'fast') => {
+    setThemeSpeed(sp);
+    try {
+      localStorage.setItem(`osa_theme_speed_${chat.id}`, sp);
+    } catch {}
+  };
+
   // Pinned Message Resolution
   const pinnedMessage = pinnedMessageId
     ? messages.find((m) => m.id === pinnedMessageId) || null
@@ -2413,6 +2650,31 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               <Ghost className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
 
+            {/* Walkie-Talkie PTT Mode Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowWalkieTalkieModal(true)}
+              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition-colors shrink-0 relative"
+              title="Walkie-Talkie (PTT)"
+            >
+              <Radio className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+              <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            </button>
+
+            {/* Chat Themes & Animated Wallpaper */}
+            <button
+              type="button"
+              onClick={() => setShowThemeSelectorModal(true)}
+              className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center transition-colors shrink-0 ${
+                chatTheme !== 'default'
+                  ? 'text-fuchsia-500 dark:text-fuchsia-400 bg-fuchsia-50 dark:bg-fuchsia-950/50'
+                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title="Wallpaper & Themes"
+            >
+              <Palette className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+            </button>
+
             <button
               type="button"
               onClick={() => setShowChatInfo(true)}
@@ -2596,9 +2858,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       {/* Messages Stream (Only Scrollable Area) */}
       <div
         ref={messagesContainerRef}
-        className="osa-chat-messages-zone px-3 sm:px-5 py-4 pb-6 space-y-3"
+        className="osa-chat-messages-zone px-3 sm:px-5 py-4 pb-6 space-y-3 relative"
         onClick={() => setActiveMenuMsgId(null)}
       >
+        <AnimatedChatWallpaper theme={chatTheme} opacity={themeOpacity} speed={themeSpeed} />
         {visibleMessages.length === 0 && chatCalls.length === 0 ? (
           <div className="py-16 text-center">
             <p className="text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">
@@ -3188,6 +3451,225 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                               <CheckCircle2 className="w-4 h-4" />
                               <span>{isPaidByMe ? 'Paid (পরিশোধিত)' : 'Mark as Paid (আমি পরিশোধ করেছি)'}</span>
                             </button>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Event Planner & RSVP Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[EVENT_CARD]')) {
+                      try {
+                        const raw = msg.content.replace('[EVENT_CARD]', '');
+                        const evt: EventData = JSON.parse(raw);
+                        const rsvps = evt.rsvps || {};
+                        const rsvpEntries = Object.entries(rsvps);
+                        const goingList = rsvpEntries.filter(([_, v]) => v.status === 'going');
+                        const maybeList = rsvpEntries.filter(([_, v]) => v.status === 'maybe');
+                        const declinedList = rsvpEntries.filter(([_, v]) => v.status === 'declined');
+                        const myRsvp = rsvps[currentUser.id]?.status;
+
+                        // Calculate countdown
+                        const eventDateObj = new Date(`${evt.date}T${evt.time || '00:00'}`);
+                        const now = new Date();
+                        const diffMs = eventDateObj.getTime() - now.getTime();
+                        const isPast = diffMs < 0;
+                        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                        const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                        const countdownText = isPast
+                          ? 'Event Ended'
+                          : diffDays > 0
+                          ? `Starts in ${diffDays}d ${diffHours}h`
+                          : `Starts in ${diffHours}h ${Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))}m`;
+
+                        return (
+                          <div className={`my-1 min-w-[260px] max-w-[340px] rounded-2xl p-4 shadow-xl border space-y-3.5 ${
+                            isMine
+                              ? 'bg-gradient-to-br from-indigo-900/90 to-purple-900/90 border-indigo-400/40 text-white'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white'
+                          }`}>
+                            {/* Card Header with Countdown */}
+                            <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-black/10 dark:border-white/10">
+                              <div className="flex items-center gap-2">
+                                <span className={`p-2.5 rounded-xl shrink-0 ${isMine ? 'bg-white/20 text-white' : 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'}`}>
+                                  <Calendar className="w-5 h-5" />
+                                </span>
+                                <div>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
+                                    {evt.category.toUpperCase()} EVENT
+                                  </span>
+                                  <h4 className="text-sm font-bold truncate max-w-[180px] leading-tight">{evt.title}</h4>
+                                  <p className={`text-[10px] ${isMine ? 'text-indigo-200' : 'text-slate-500'}`}>
+                                    Organized by {evt.creatorName}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold font-mono-num shrink-0 ${
+                                isPast
+                                  ? 'bg-slate-500/20 text-slate-400'
+                                  : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 animate-pulse'
+                              }`}>
+                                {countdownText}
+                              </span>
+                            </div>
+
+                            {/* Date, Time & Venue */}
+                            <div className="space-y-1.5 text-xs">
+                              <div className="flex items-center gap-2">
+                                <Clock className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                <span className="font-semibold font-mono-num">
+                                  {new Date(evt.date).toLocaleDateString([], { month: 'short', day: 'numeric', weekday: 'short' })}, {evt.time}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <MapPin className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                                <span className="truncate">{evt.location}</span>
+                              </div>
+                            </div>
+
+                            {evt.description && (
+                              <p className={`text-[11px] p-2 rounded-xl italic ${isMine ? 'bg-black/20' : 'bg-slate-100 dark:bg-slate-800'}`}>
+                                "{evt.description}"
+                              </p>
+                            )}
+
+                            {/* Attendees breakdown */}
+                            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400 pt-1">
+                              <span>🙋‍♂️ {goingList.length} Going</span>
+                              <span>🤔 {maybeList.length} Maybe</span>
+                              <span>❌ {declinedList.length} Can't Go</span>
+                            </div>
+
+                            {/* RSVP Action Buttons */}
+                            <div className="grid grid-cols-3 gap-1.5 pt-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleEventRsvp(msg, 'going');
+                                }}
+                                className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 ${
+                                  myRsvp === 'going'
+                                    ? 'bg-emerald-600 text-white shadow ring-2 ring-emerald-400/50'
+                                    : 'bg-black/10 dark:bg-white/10 hover:bg-emerald-500/20'
+                                }`}
+                              >
+                                <span>🙋‍♂️</span>
+                                <span>Going</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleEventRsvp(msg, 'maybe');
+                                }}
+                                className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 ${
+                                  myRsvp === 'maybe'
+                                    ? 'bg-amber-600 text-white shadow ring-2 ring-amber-400/50'
+                                    : 'bg-black/10 dark:bg-white/10 hover:bg-amber-500/20'
+                                }`}
+                              >
+                                <span>🤔</span>
+                                <span>Maybe</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleEventRsvp(msg, 'declined');
+                                }}
+                                className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 ${
+                                  myRsvp === 'declined'
+                                    ? 'bg-rose-600 text-white shadow ring-2 ring-rose-400/50'
+                                    : 'bg-black/10 dark:bg-white/10 hover:bg-rose-500/20'
+                                }`}
+                              >
+                                <span>❌</span>
+                                <span>Pass</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Friendly IOU & Handshake Note Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[IOU_NOTE]')) {
+                      try {
+                        const raw = msg.content.replace('[IOU_NOTE]', '');
+                        const iou: IOUNoteData = JSON.parse(raw);
+                        const isSettled = iou.status === 'settled';
+
+                        return (
+                          <div className={`my-1 min-w-[260px] max-w-[330px] rounded-2xl p-4 shadow-xl border space-y-3 ${
+                            isSettled
+                              ? 'bg-gradient-to-br from-emerald-950 via-slate-900 to-slate-950 border-emerald-500/40 text-white'
+                              : isMine
+                              ? 'bg-gradient-to-br from-amber-950 via-slate-900 to-amber-950 border-amber-500/40 text-white'
+                              : 'bg-white dark:bg-slate-900 border-amber-500/30 text-slate-900 dark:text-white'
+                          }`}>
+                            <div className="flex items-start justify-between gap-2 pb-2 border-b border-black/10 dark:border-white/10">
+                              <div className="flex items-center gap-2">
+                                <span className={`p-2 rounded-xl shrink-0 ${
+                                  isSettled ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
+                                }`}>
+                                  <Handshake className="w-5 h-5" />
+                                </span>
+                                <div>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                                    {iou.type === 'lent' ? 'I LENT TO YOU' : iou.type === 'borrowed' ? 'I BORROWED' : 'HANDSHAKE PROMISE'}
+                                  </span>
+                                  <h4 className="text-sm font-bold text-slate-200">{iou.category}</h4>
+                                </div>
+                              </div>
+
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                isSettled ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+                              }`}>
+                                {isSettled ? '✓ SETTLED' : '⏳ PENDING'}
+                              </span>
+                            </div>
+
+                            <div className="py-1">
+                              <p className="text-[11px] text-slate-400">Amount / Agreement:</p>
+                              <p className="text-xl font-black font-mono-num text-amber-400">
+                                {iou.amountOrItem}
+                              </p>
+                            </div>
+
+                            {iou.dueDate && (
+                              <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                                <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                                <span>Due: {new Date(iou.dueDate).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                              </div>
+                            )}
+
+                            {iou.note && (
+                              <p className="text-xs italic text-slate-300 bg-black/20 p-2 rounded-xl">
+                                "{iou.note}"
+                              </p>
+                            )}
+
+                            {isSettled ? (
+                              <div className="text-[11px] font-medium text-emerald-400 bg-emerald-500/10 p-2 rounded-xl border border-emerald-500/20 flex items-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                                <span>Settled by {iou.settledByName || 'Mutual Agreement'}</span>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSettleIOUNote(msg);
+                                }}
+                                className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/25 active:scale-95 transition-all"
+                              >
+                                <Handshake className="w-4 h-4" />
+                                <span>Mark as Settled / Paid 🤝</span>
+                              </button>
+                            )}
                           </div>
                         );
                       } catch {}
@@ -4039,221 +4521,340 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               </div>
             )}
 
-            {/* WhatsApp-Style '+' Action Menu Popover */}
-            {showAttachmentMenu && (
-              <div className="shrink-0 p-3 sm:p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-200">
-                <div className="grid grid-cols-4 sm:grid-cols-7 gap-3 sm:gap-4 max-w-2xl mx-auto">
-                  {/* 1. Document / File */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachmentMenu(false);
-                      fileInputRef.current?.click();
-                    }}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-500 text-white flex items-center justify-center shadow-md shadow-purple-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                      <FileText className="w-6 h-6" />
-                    </div>
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                      Document
-                    </span>
-                  </button>
-
-                  {/* 2. Photos & Videos */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachmentMenu(false);
-                      fileInputRef.current?.click();
-                    }}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-cyan-500 text-white flex items-center justify-center shadow-md shadow-blue-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                      <ImageIcon className="w-6 h-6" />
-                    </div>
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                      Gallery
-                    </span>
-                  </button>
-
-                  {/* 3. View Once Media */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsViewOnceNext(true);
-                      setShowAttachmentMenu(false);
-                      fileInputRef.current?.click();
-                    }}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-500 text-white flex items-center justify-center shadow-md shadow-teal-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                      <Eye className="w-6 h-6" />
-                    </div>
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                      View Once
-                    </span>
-                  </button>
-
-                  {/* 4. Poll */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachmentMenu(false);
-                      setShowCreatePollModal(true);
-                    }}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-500 text-white flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                      <BarChart2 className="w-6 h-6" />
-                    </div>
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                      Poll
-                    </span>
-                  </button>
-
-                  {/* 5. Schedule Message */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachmentMenu(false);
-                      const now = new Date();
-                      now.setMinutes(now.getMinutes() + 10);
-                      const yr = now.getFullYear();
-                      const mo = String(now.getMonth() + 1).padStart(2, '0');
-                      const da = String(now.getDate()).padStart(2, '0');
-                      const ho = String(now.getHours()).padStart(2, '0');
-                      const mi = String(now.getMinutes()).padStart(2, '0');
-                      setScheduleTargetDate(`${yr}-${mo}-${da}`);
-                      setScheduleTargetTime(`${ho}:${mi}`);
-                      setShowScheduleModal(true);
-                    }}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-violet-600 to-fuchsia-500 text-white flex items-center justify-center shadow-md shadow-violet-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                      <Clock className="w-6 h-6" />
-                    </div>
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                      Schedule
-                    </span>
-                  </button>
-
-                  {/* 6. Live GPS Location */}
-                  <button
-                    type="button"
-                    disabled={sharingLocation}
-                    onClick={async () => {
-                      setShowAttachmentMenu(false);
-                      if (!isGroup && peer) {
-                        setSelectedLocationCard(null);
-                        setShowRemoteLocationModal(true);
-                        return;
-                      }
-                      setSharingLocation(true);
-                      setError('');
-                      try {
-                        const pos = await getCurrentDeviceLocation(currentUser.id);
-                        const content = formatLocationChatMessage({
-                          latitude: pos.coords.latitude,
-                          longitude: pos.coords.longitude,
-                          accuracy: Math.round(pos.coords.accuracy || 10),
-                          label: `${currentUser.full_name}'s GPS Location`,
-                          timestamp: new Date(pos.timestamp).toISOString(),
-                        });
-                        const sent = await sendTextMessage({
-                          chatId: chat.id,
-                          senderId: currentUser.id,
-                          content,
-                        });
-                        setMessages((prev) =>
-                          prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
-                        );
-                        onChatUpdated();
-                      } catch (err) {
-                        setError(
-                          err instanceof Error ? err.message : 'Unable to share current GPS location.'
-                        );
-                      } finally {
-                        setSharingLocation(false);
-                      }
-                    }}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none disabled:opacity-40"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-green-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                      <MapPin className="w-6 h-6" />
-                    </div>
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                      Location
-                    </span>
-                  </button>
-
-                  {/* 7. AI Smart Assistant */}
-                  <button
-                    type="button"
-                    disabled={aiDrafting}
-                    onClick={() => {
-                      setShowAttachmentMenu(false);
-                      handleAiDraft();
-                    }}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none disabled:opacity-40"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-rose-500 to-pink-500 text-white flex items-center justify-center shadow-md shadow-rose-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                      <Sparkles className={`w-6 h-6 ${aiDrafting ? 'animate-pulse' : ''}`} />
-                    </div>
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                      AI Draft
-                    </span>
-                  </button>
-
-                  {/* 8. Round Instant Video Note */}
-                  <button
-                    type="button"
-                    onClick={handleOpenVideoNoteModal}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-fuchsia-600 to-rose-500 text-white flex items-center justify-center shadow-md shadow-fuchsia-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                      <Camera className="w-6 h-6" />
-                    </div>
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                      Video Note
-                    </span>
-                  </button>
-
-                  {/* 9. Emergency SOS Alert */}
-                  <button
-                    type="button"
-                    onClick={handleOpenSosModal}
-                    className="flex flex-col items-center gap-1.5 group focus:outline-none"
-                  >
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-600 text-white flex items-center justify-center shadow-md shadow-red-500/30 group-hover:scale-105 active:scale-95 transition-all animate-pulse">
-                      <ShieldAlert className="w-6 h-6" />
-                    </div>
-                    <span className="text-[11px] font-medium text-red-600 dark:text-red-400 font-bold">
-                      SOS Alert
-                    </span>
-                  </button>
-
-                  {/* 10. Split Bill (Group only) */}
-                  {isGroup && (
+              {/* WhatsApp-Style '+' Action Menu Popover */}
+              {showAttachmentMenu && (
+                <div className="shrink-0 p-3 sm:p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-200">
+                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-9 gap-3 sm:gap-4 max-w-4xl mx-auto max-h-[260px] sm:max-h-none overflow-y-auto p-1">
+                    {/* 1. Document / File */}
                     <button
                       type="button"
                       onClick={() => {
                         setShowAttachmentMenu(false);
-                        setShowSplitBillModal(true);
+                        fileInputRef.current?.click();
                       }}
                       className="flex flex-col items-center gap-1.5 group focus:outline-none"
                     >
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-600 text-white flex items-center justify-center shadow-md shadow-teal-500/25 group-hover:scale-105 active:scale-95 transition-all">
-                        <Receipt className="w-6 h-6" />
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-500 text-white flex items-center justify-center shadow-md shadow-purple-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <FileText className="w-6 h-6" />
                       </div>
                       <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                        Split Bill
+                        Document
                       </span>
                     </button>
-                  )}
+
+                    {/* 2. Photos & Videos */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-cyan-500 text-white flex items-center justify-center shadow-md shadow-blue-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <ImageIcon className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Gallery
+                      </span>
+                    </button>
+
+                    {/* 3. View Once Media */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsViewOnceNext(true);
+                        setShowAttachmentMenu(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-500 text-white flex items-center justify-center shadow-md shadow-teal-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Eye className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        View Once
+                      </span>
+                    </button>
+
+                    {/* 4. Poll */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowCreatePollModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-500 text-white flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <BarChart2 className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Poll
+                      </span>
+                    </button>
+
+                    {/* 5. Schedule Message */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        const now = new Date();
+                        now.setMinutes(now.getMinutes() + 10);
+                        const yr = now.getFullYear();
+                        const mo = String(now.getMonth() + 1).padStart(2, '0');
+                        const da = String(now.getDate()).padStart(2, '0');
+                        const ho = String(now.getHours()).padStart(2, '0');
+                        const mi = String(now.getMinutes()).padStart(2, '0');
+                        setScheduleTargetDate(`${yr}-${mo}-${da}`);
+                        setScheduleTargetTime(`${ho}:${mi}`);
+                        setShowScheduleModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-violet-600 to-fuchsia-500 text-white flex items-center justify-center shadow-md shadow-violet-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Clock className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Schedule
+                      </span>
+                    </button>
+
+                    {/* 6. Live GPS Location */}
+                    <button
+                      type="button"
+                      disabled={sharingLocation}
+                      onClick={async () => {
+                        setShowAttachmentMenu(false);
+                        if (!isGroup && peer) {
+                          setSelectedLocationCard(null);
+                          setShowRemoteLocationModal(true);
+                          return;
+                        }
+                        setSharingLocation(true);
+                        setError('');
+                        try {
+                          const pos = await getCurrentDeviceLocation(currentUser.id);
+                          const content = formatLocationChatMessage({
+                            latitude: pos.coords.latitude,
+                            longitude: pos.coords.longitude,
+                            accuracy: Math.round(pos.coords.accuracy || 10),
+                            label: `${currentUser.full_name}'s GPS Location`,
+                            timestamp: new Date(pos.timestamp).toISOString(),
+                          });
+                          const sent = await sendTextMessage({
+                            chatId: chat.id,
+                            senderId: currentUser.id,
+                            content,
+                          });
+                          setMessages((prev) =>
+                            prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]
+                          );
+                          onChatUpdated();
+                        } catch (err) {
+                          setError(
+                            err instanceof Error ? err.message : 'Unable to share current GPS location.'
+                          );
+                        } finally {
+                          setSharingLocation(false);
+                        }
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none disabled:opacity-40"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-green-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <MapPin className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Location
+                      </span>
+                    </button>
+
+                    {/* 7. AI Smart Assistant */}
+                    <button
+                      type="button"
+                      disabled={aiDrafting}
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        handleAiDraft();
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none disabled:opacity-40"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-rose-500 to-pink-500 text-white flex items-center justify-center shadow-md shadow-rose-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Sparkles className={`w-6 h-6 ${aiDrafting ? 'animate-pulse' : ''}`} />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        AI Draft
+                      </span>
+                    </button>
+
+                    {/* 8. Round Instant Video Note */}
+                    <button
+                      type="button"
+                      onClick={handleOpenVideoNoteModal}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-fuchsia-600 to-rose-500 text-white flex items-center justify-center shadow-md shadow-fuchsia-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Camera className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Video Note
+                      </span>
+                    </button>
+
+                    {/* 9. Emergency SOS Alert */}
+                    <button
+                      type="button"
+                      onClick={handleOpenSosModal}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-600 text-white flex items-center justify-center shadow-md shadow-red-500/30 group-hover:scale-105 active:scale-95 transition-all animate-pulse">
+                        <ShieldAlert className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-red-600 dark:text-red-400 font-bold">
+                        SOS Alert
+                      </span>
+                    </button>
+
+                    {/* 10. Collaborative Whiteboard & Canvas */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowCanvasModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-sky-500 to-blue-600 text-white flex items-center justify-center shadow-md shadow-sky-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Palette className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Whiteboard
+                      </span>
+                    </button>
+
+                    {/* 11. Studio Voice Effects & Changer */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowVoiceFilterModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-violet-600 to-fuchsia-600 text-white flex items-center justify-center shadow-md shadow-violet-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Sliders className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Voice Effects
+                      </span>
+                    </button>
+
+                    {/* 12. Secret Media Vault */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowSecretVaultModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-rose-600 text-white flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Lock className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Secret Vault
+                      </span>
+                    </button>
+
+                    {/* 13. Event Planner & RSVP */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowEventPlannerModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-md shadow-indigo-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Calendar className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Plan Event
+                      </span>
+                    </button>
+
+                    {/* 14. Direct P2P File Beam */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowFileBeamModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 text-white flex items-center justify-center shadow-md shadow-cyan-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Zap className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        File Beam
+                      </span>
+                    </button>
+
+                    {/* 15. Friendly IOU & Handshake */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowIouModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-600 text-slate-950 flex items-center justify-center shadow-md shadow-amber-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Handshake className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        IOU Note
+                      </span>
+                    </button>
+
+                    {/* 16. Walkie-Talkie PTT */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false);
+                        setShowWalkieTalkieModal(true);
+                      }}
+                      className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                        <Radio className="w-6 h-6" />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                        Walkie-Talkie
+                      </span>
+                    </button>
+
+                    {/* 17. Split Bill (Group only) */}
+                    {isGroup && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAttachmentMenu(false);
+                          setShowSplitBillModal(true);
+                        }}
+                        className="flex flex-col items-center gap-1.5 group focus:outline-none"
+                      >
+                        <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-600 text-white flex items-center justify-center shadow-md shadow-teal-500/25 group-hover:scale-105 active:scale-95 transition-all">
+                          <Receipt className="w-6 h-6" />
+                        </div>
+                        <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                          Split Bill
+                        </span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
             <form
               onSubmit={handleSendText}
@@ -6093,6 +6694,87 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* 1. Walkie-Talkie PTT Modal */}
+      <WalkieTalkieModal
+        isOpen={showWalkieTalkieModal}
+        onClose={() => setShowWalkieTalkieModal(false)}
+        channel={channelRef.current}
+        chatId={chat.id}
+        chatTitle={chatTitle}
+        currentUser={currentUser}
+        language={currentUser.language}
+      />
+
+      {/* 2. Collaborative Whiteboard & Canvas Modal */}
+      <CollaborativeCanvasModal
+        isOpen={showCanvasModal}
+        onClose={() => setShowCanvasModal(false)}
+        onSendImage={handleSendCanvasImage}
+        channel={channelRef.current}
+        chatId={chat.id}
+        currentUser={currentUser}
+        language={currentUser.language}
+      />
+
+      {/* 3. Studio Voice Filters & Changer Modal */}
+      <VoiceFilterSelector
+        isOpen={showVoiceFilterModal}
+        onClose={() => setShowVoiceFilterModal(false)}
+        onSendVoiceMessage={handleSendFilteredVoice}
+        language={currentUser.language}
+      />
+
+      {/* 4. Secret Media Vault Modal */}
+      <SecretMediaVaultModal
+        isOpen={showSecretVaultModal}
+        onClose={() => setShowSecretVaultModal(false)}
+        chatId={chat.id}
+        currentUser={currentUser}
+        language={currentUser.language}
+      />
+
+      {/* 5. Event Planner & RSVP Modal */}
+      <EventPlannerModal
+        isOpen={showEventPlannerModal}
+        onClose={() => setShowEventPlannerModal(false)}
+        onCreateEvent={handleCreateEventCard}
+        currentUser={currentUser}
+        language={currentUser.language}
+      />
+
+      {/* 6. Direct P2P File Beam Modal */}
+      <DirectFileBeamModal
+        isOpen={showFileBeamModal}
+        onClose={() => setShowFileBeamModal(false)}
+        channel={channelRef.current}
+        chatId={chat.id}
+        currentUser={currentUser}
+        language={currentUser.language}
+      />
+
+      {/* 7. Friendly IOU & Handshake Modal */}
+      <IOUNoteModal
+        isOpen={showIouModal}
+        onClose={() => setShowIouModal(false)}
+        onCreateIOU={handleCreateIOUNote}
+        chatTitle={chatTitle}
+        currentUser={currentUser}
+        language={currentUser.language}
+      />
+
+      {/* 8. Chat Theme & Dynamic Wallpaper Selector Modal */}
+      <ChatThemeSelectorModal
+        isOpen={showThemeSelectorModal}
+        onClose={() => setShowThemeSelectorModal(false)}
+        currentTheme={chatTheme}
+        onSelectTheme={handleSelectChatTheme}
+        opacity={themeOpacity}
+        onOpacityChange={handleThemeOpacityChange}
+        speed={themeSpeed}
+        onSpeedChange={handleThemeSpeedChange}
+        language={currentUser.language}
+      />
     </div>
   );
 };
