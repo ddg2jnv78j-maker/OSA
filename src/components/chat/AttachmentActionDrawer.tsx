@@ -27,9 +27,15 @@ import {
   User,
   Search,
   X,
+  PieChart,
+  PhoneCall,
+  Compass,
+  Gamepad2,
+  Smile,
+  KeyRound,
 } from 'lucide-react';
 
-export type AttachmentCategory = 'all' | 'media' | 'live' | 'security' | 'deals' | 'ai';
+export type AttachmentCategory = 'all' | 'deals' | 'lifestyle' | 'live' | 'ai' | 'security' | 'media';
 
 interface AttachmentActionDrawerProps {
   isOpen: boolean;
@@ -59,6 +65,13 @@ interface AttachmentActionDrawerProps {
   onOpenDuressStealth: () => void;
   onOpenBanglaDialect: () => void;
   onOpenBargainArbiter: () => void;
+  onOpenCashMemo?: () => void;
+  onOpenTripFund?: () => void;
+  onOpenFakeCall?: () => void;
+  onOpenPrayerTimes?: () => void;
+  onOpenMiniGames?: () => void;
+  onOpenDeshiStickers?: () => void;
+  onOpenChatLocker?: () => void;
 }
 
 export const AttachmentActionDrawer: React.FC<AttachmentActionDrawerProps> = ({
@@ -89,6 +102,13 @@ export const AttachmentActionDrawer: React.FC<AttachmentActionDrawerProps> = ({
   onOpenDuressStealth,
   onOpenBanglaDialect,
   onOpenBargainArbiter,
+  onOpenCashMemo,
+  onOpenTripFund,
+  onOpenFakeCall,
+  onOpenPrayerTimes,
+  onOpenMiniGames,
+  onOpenDeshiStickers,
+  onOpenChatLocker,
 }) => {
   const isBn = language === 'bn';
   const [activeCategory, setActiveCategory] = useState<AttachmentCategory>('all');
@@ -98,11 +118,12 @@ export const AttachmentActionDrawer: React.FC<AttachmentActionDrawerProps> = ({
 
   const CATEGORY_TABS: { id: AttachmentCategory; label: string; icon: string }[] = [
     { id: 'all', label: isBn ? 'সকল ফিচার' : 'All Features', icon: '🌟' },
-    { id: 'media', label: isBn ? 'মিডিয়া ও ফাইল' : 'Media & Files', icon: '📁' },
-    { id: 'live', label: isBn ? 'লাইভ ও পিটিটি' : 'Live & PTT', icon: '⚡' },
+    { id: 'deals', label: isBn ? 'হিসাব ও মেমো' : 'Business & Ledger', icon: '💼' },
+    { id: 'lifestyle', label: isBn ? 'লাইফস্টাইল ও টুলস' : 'Lifestyle & Tools', icon: '🕌' },
+    { id: 'live', label: isBn ? 'লাইভ ও গেমস' : 'Live & Games', icon: '⚡' },
+    { id: 'ai', label: isBn ? 'এআই ও স্টিকার' : 'AI & Stickers', icon: '🌐' },
     { id: 'security', label: isBn ? 'নিরাপত্তা ও ভল্ট' : 'Vault & Safety', icon: '🔐' },
-    { id: 'deals', label: isBn ? 'চুক্তি ও হিসাব' : 'Deals & Tasks', icon: '🤝' },
-    { id: 'ai', label: isBn ? 'এআই ও ভাষা' : 'AI & Dialects', icon: '🌐' },
+    { id: 'media', label: isBn ? 'মিডিয়া ও ফাইল' : 'Media & Files', icon: '📁' },
   ];
 
   const ALL_ITEMS = [
@@ -243,6 +264,64 @@ export const AttachmentActionDrawer: React.FC<AttachmentActionDrawerProps> = ({
         onOpenHeartbeat();
       },
     },
+    {
+      id: 'mini_games',
+      name: 'Ludo & Carrom',
+      nameBn: 'লুডু ও ক্যারাম',
+      category: 'live',
+      gradient: 'from-amber-500 to-orange-600',
+      icon: Gamepad2,
+      sub: 'In-Chat Duel',
+      badge: 'GAMES',
+      onClick: () => {
+        onClose();
+        if (onOpenMiniGames) onOpenMiniGames();
+      },
+    },
+
+    // 🕌 LIFESTYLE & TOOLS
+    {
+      id: 'prayer',
+      name: 'Prayer Times',
+      nameBn: 'নামাজ ও কিবলা',
+      category: 'lifestyle',
+      gradient: 'from-emerald-600 to-green-700',
+      icon: Compass,
+      sub: 'Waqt & Qibla',
+      badge: 'ISLAMIC',
+      onClick: () => {
+        onClose();
+        if (onOpenPrayerTimes) onOpenPrayerTimes();
+      },
+    },
+    {
+      id: 'fake_call',
+      name: 'Fake Call',
+      nameBn: 'ফেক কল সেভিয়র',
+      category: 'lifestyle',
+      gradient: 'from-rose-600 to-pink-600',
+      icon: PhoneCall,
+      sub: 'Rescue Escape',
+      badge: 'ESCAPE',
+      onClick: () => {
+        onClose();
+        if (onOpenFakeCall) onOpenFakeCall();
+      },
+    },
+    {
+      id: 'chat_locker',
+      name: 'Chat Locker',
+      nameBn: 'চ্যাট লকার',
+      category: 'lifestyle',
+      gradient: 'from-slate-700 to-slate-900',
+      icon: KeyRound,
+      sub: 'Ghost & PIN',
+      badge: 'PIN',
+      onClick: () => {
+        onClose();
+        if (onOpenChatLocker) onOpenChatLocker();
+      },
+    },
 
     // 🔐 PRIVACY & SECURITY
     {
@@ -303,6 +382,34 @@ export const AttachmentActionDrawer: React.FC<AttachmentActionDrawerProps> = ({
     },
 
     // 🤝 DEALS & SOCIAL
+    {
+      id: 'cash_memo',
+      name: 'Cash Memo',
+      nameBn: 'ক্যাশ মেমো',
+      category: 'deals',
+      gradient: 'from-emerald-600 to-teal-600',
+      icon: Receipt,
+      sub: 'Digital Bill',
+      badge: 'MEMO',
+      onClick: () => {
+        onClose();
+        if (onOpenCashMemo) onOpenCashMemo();
+      },
+    },
+    {
+      id: 'trip_fund',
+      name: 'Trip Fund',
+      nameBn: 'ট্যুর ফান্ড',
+      category: 'deals',
+      gradient: 'from-purple-600 to-indigo-600',
+      icon: PieChart,
+      sub: 'Group Pool',
+      badge: 'LEDGER',
+      onClick: () => {
+        onClose();
+        if (onOpenTripFund) onOpenTripFund();
+      },
+    },
     {
       id: 'deed',
       name: 'Digital Deed',
@@ -386,6 +493,20 @@ export const AttachmentActionDrawer: React.FC<AttachmentActionDrawerProps> = ({
     },
 
     // 🌐 AI & LANGUAGES
+    {
+      id: 'deshi_stickers',
+      name: 'Bangla Stickers',
+      nameBn: 'বাংলা স্টিকার',
+      category: 'ai',
+      gradient: 'from-pink-500 to-rose-600',
+      icon: Smile,
+      sub: 'Deshi Dialogues',
+      badge: 'STICKER',
+      onClick: () => {
+        onClose();
+        if (onOpenDeshiStickers) onOpenDeshiStickers();
+      },
+    },
     {
       id: 'dialect',
       name: 'Dialect AI',

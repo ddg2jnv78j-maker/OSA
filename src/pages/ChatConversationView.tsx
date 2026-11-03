@@ -78,6 +78,10 @@ import {
   Activity,
   Languages,
   Calculator,
+  Compass,
+  PhoneCall,
+  KeyRound,
+  Gamepad2,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { WalkieTalkieModal, playRadioSound } from '../components/chat/WalkieTalkieModal';
@@ -98,6 +102,13 @@ import { DigitalDeedModal, DigitalDeedData } from '../components/chat/DigitalDee
 import { DuressStealthModal, DuressAlertData } from '../components/chat/DuressStealthModal';
 import { BanglaDialectModal } from '../components/chat/BanglaDialectModal';
 import { BargainArbiterModal, BargainDealData } from '../components/chat/BargainArbiterModal';
+import { InstantCashMemoModal, CashMemoData } from '../components/chat/InstantCashMemoModal';
+import { TripFundLedgerModal, TripFundLedgerData } from '../components/chat/TripFundLedgerModal';
+import { FakeCallModal } from '../components/chat/FakeCallModal';
+import { PrayerTimesModal } from '../components/chat/PrayerTimesModal';
+import { MiniLudoCarromModal } from '../components/chat/MiniLudoCarromModal';
+import { DeshiStickersModal } from '../components/chat/DeshiStickersModal';
+import { HiddenChatLockerModal } from '../components/chat/HiddenChatLockerModal';
 import { AttachmentActionDrawer } from '../components/chat/AttachmentActionDrawer';
 import { OSAAvatar } from '../components/OSAAvatar';
 import { RemoteCameraModal } from '../components/RemoteCameraModal';
@@ -486,6 +497,15 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [showBanglaDialectModal, setShowBanglaDialectModal] = useState(false);
   const [showBargainArbiterModal, setShowBargainArbiterModal] = useState(false);
 
+  // New Flagship Features (Cash Memo, Trip Fund, Fake Call, Prayer Times, Mini Games, Deshi Stickers, Chat Locker)
+  const [showCashMemoModal, setShowCashMemoModal] = useState(false);
+  const [showTripFundModal, setShowTripFundModal] = useState(false);
+  const [showFakeCallModal, setShowFakeCallModal] = useState(false);
+  const [showPrayerTimesModal, setShowPrayerTimesModal] = useState(false);
+  const [showMiniGamesModal, setShowMiniGamesModal] = useState(false);
+  const [showDeshiStickersModal, setShowDeshiStickersModal] = useState(false);
+  const [showChatLockerModal, setShowChatLockerModal] = useState(false);
+
   // Organized Attachment Drawer & Suite Dropdown State
   const [attachmentCategory, setAttachmentCategory] = useState<'all' | 'media' | 'live' | 'security' | 'deals' | 'ai'>('all');
   const [attachmentSearchQuery, setAttachmentSearchQuery] = useState('');
@@ -849,22 +869,36 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   // Realtime subscription for messages, attachments, and typing broadcast
   useEffect(() => {
     const channelName = `osa-chat-room-${chat.id}`;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
     try {
       const stale = supabase.getChannels().find(
         (c) => c.topic === `realtime:${channelName}` || c.topic === channelName
       );
       if (stale) {
-        supabase.removeChannel(stale);
+        try {
+          stale.unsubscribe();
+        } catch {}
+        try {
+          supabase.removeChannel(stale);
+        } catch {}
       }
-    } catch {}
 
-    const channel = supabase
-      .channel(channelName, {
-        config: {
-          broadcast: { self: false },
-          presence: { key: currentUser.id },
-        },
-      })
+      // Synchronously purge stale channel from internal realtime registry
+      const realtimeClient = (supabase as unknown as { realtime?: { channels?: Array<{ topic: string }> } }).realtime;
+      if (realtimeClient && Array.isArray(realtimeClient.channels)) {
+        realtimeClient.channels = realtimeClient.channels.filter(
+          (c) => c && c.topic !== `realtime:${channelName}` && c.topic !== channelName
+        );
+      }
+
+      channel = supabase
+        .channel(channelName, {
+          config: {
+            broadcast: { self: false },
+            presence: { key: currentUser.id },
+          },
+        })
       .on(
         'postgres_changes',
         {
@@ -1115,14 +1149,30 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         }
       });
 
-    channelRef.current = channel;
+      channelRef.current = channel;
+    } catch (realtimeErr) {
+      console.warn('Realtime channel initialization bypassed or failed:', realtimeErr);
+    }
 
     return () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       setPeerIsTyping(false);
       setTypingUserName('');
+      if (channel) {
+        try {
+          channel.unsubscribe();
+        } catch {}
+        try {
+          supabase.removeChannel(channel);
+        } catch {}
+      }
       try {
-        supabase.removeChannel(channel);
+        const realtimeClient = (supabase as unknown as { realtime?: { channels?: Array<{ topic: string }> } }).realtime;
+        if (realtimeClient && Array.isArray(realtimeClient.channels)) {
+          realtimeClient.channels = realtimeClient.channels.filter(
+            (c) => c && c.topic !== `realtime:${channelName}` && c.topic !== channelName
+          );
+        }
       } catch {}
       channelRef.current = null;
     };
@@ -2705,6 +2755,85 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     }
   };
 
+  const handleSendCashMemo = async (memo: CashMemoData) => {
+    try {
+      const content = `[OSA_CASH_MEMO]${JSON.stringify(memo)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send cash memo');
+    }
+  };
+
+  const handleSendTripFundLedger = async (ledger: TripFundLedgerData) => {
+    try {
+      const content = `[OSA_FUND_LEDGER]${JSON.stringify(ledger)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send fund ledger');
+    }
+  };
+
+  const handleSendDeshiSticker = async (stickerText: string, emoji: string) => {
+    try {
+      const payload = {
+        text: stickerText,
+        emoji,
+        senderName: currentUser.full_name,
+        timestamp: new Date().toISOString(),
+      };
+      const content = `[OSA_DESHI_STICKER]${JSON.stringify(payload)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send sticker');
+    }
+  };
+
+  const handleSharePrayerTimes = async (prayerText: string) => {
+    try {
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content: prayerText,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to share prayer times');
+    }
+  };
+
+  const handleShareGameScore = async (scoreText: string) => {
+    try {
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content: scoreText,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to share game score');
+    }
+  };
+
   // -------------------------------------------------------------
   // Feature Handlers: Collaborative Canvas & Voice Filter Dispatch
   // -------------------------------------------------------------
@@ -3053,6 +3182,54 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                         <span>Ghost Mode (Incognito)</span>
                       </span>
                       <span className={`w-2 h-2 rounded-full ${ghostModeActive ? 'bg-purple-500' : 'bg-slate-400'}`} />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowPrayerTimesModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-2.5 transition-colors"
+                    >
+                      <Compass className="w-4 h-4 text-emerald-500 shrink-0" />
+                      <span>{currentUser.language === 'bn' ? 'নামাজের সময় ও কিবলা' : 'Prayer Times & Qibla'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowFakeCallModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-rose-50 dark:hover:bg-rose-950/40 hover:text-rose-600 dark:hover:text-rose-400 flex items-center gap-2.5 transition-colors"
+                    >
+                      <PhoneCall className="w-4 h-4 text-rose-500 shrink-0" />
+                      <span>{currentUser.language === 'bn' ? 'ফেক কল সেভিয়র' : 'Fake Call Escape'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowMiniGamesModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-amber-50 dark:hover:bg-amber-950/40 hover:text-amber-600 dark:hover:text-amber-400 flex items-center gap-2.5 transition-colors"
+                    >
+                      <Gamepad2 className="w-4 h-4 text-amber-500 shrink-0" />
+                      <span>{currentUser.language === 'bn' ? 'ইন-চ্যাট লুডু ও ক্যারাম' : 'Mini Ludo & Carrom'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowChatLockerModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white flex items-center gap-2.5 transition-colors"
+                    >
+                      <KeyRound className="w-4 h-4 text-slate-500 shrink-0" />
+                      <span>{currentUser.language === 'bn' ? 'চ্যাট পিন লক' : 'PIN & Ghost Lock'}</span>
                     </button>
 
                     <button
@@ -3781,6 +3958,165 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                                 <span>Call 999</span>
                               </a>
                             </div>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Instant Digital Cash Memo Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[OSA_CASH_MEMO]')) {
+                      try {
+                        const raw = msg.content.replace('[OSA_CASH_MEMO]', '');
+                        const memo: CashMemoData = JSON.parse(raw);
+                        return (
+                          <div
+                            className={`my-1 min-w-[260px] max-w-[340px] rounded-3xl p-4 shadow-xl border space-y-3 ${
+                              isMine
+                                ? 'bg-gradient-to-br from-emerald-950/90 to-teal-950/90 border-emerald-500/40 text-white'
+                                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between border-b border-black/10 dark:border-white/10 pb-2.5">
+                              <div>
+                                <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-500">
+                                  DIGITAL CASH MEMO
+                                </span>
+                                <h4 className="text-sm font-bold truncate max-w-[170px] leading-tight">
+                                  {memo.merchantName}
+                                </h4>
+                                <p className="text-[10px] text-slate-400 font-mono">#{memo.memoId}</p>
+                              </div>
+                              <span
+                                className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                                  memo.status === 'paid'
+                                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                                    : 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                                }`}
+                              >
+                                {memo.status === 'paid' ? 'PAID / পরিশোধিত' : 'DUE / বাকি'}
+                              </span>
+                            </div>
+
+                            <div className="text-xs space-y-1">
+                              <div className="flex justify-between text-slate-400 text-[11px]">
+                                <span>Customer: {memo.customerName}</span>
+                                <span>{memo.date}</span>
+                              </div>
+                              <div className="border-t border-dashed border-slate-300 dark:border-slate-700/80 my-1 pt-1.5 space-y-1 max-h-32 overflow-y-auto pr-1">
+                                {memo.items.map((item, i) => (
+                                  <div key={i} className="flex justify-between text-xs">
+                                    <span className="truncate max-w-[160px]">
+                                      {item.name} <span className="text-slate-400">×{item.quantity}</span>
+                                    </span>
+                                    <span className="font-bold">
+                                      ৳{(item.quantity * item.unitPrice).toLocaleString()}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="pt-1.5 border-t border-black/10 dark:border-white/10 flex items-center justify-between text-xs font-bold">
+                              <span className="text-slate-400">Total Payable:</span>
+                              <span className="text-base font-extrabold text-emerald-400">
+                                ৳{memo.total.toLocaleString()}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center justify-between text-[11px] bg-black/15 dark:bg-white/5 p-2 rounded-xl">
+                              <span className="text-slate-400">Payment: {memo.paymentMethod}</span>
+                              {memo.trxId && (
+                                <span className="font-mono text-[10px] text-emerald-400 font-bold truncate max-w-[120px]">
+                                  Trx: {memo.trxId}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Trip Fund & Tour Budget Ledger Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[OSA_FUND_LEDGER]')) {
+                      try {
+                        const raw = msg.content.replace('[OSA_FUND_LEDGER]', '');
+                        const ledger: TripFundLedgerData = JSON.parse(raw);
+                        const collected = ledger.contributors
+                          .filter((c) => c.status === 'paid')
+                          .reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
+                        const target = Math.max(1, ledger.targetAmount);
+                        const pct = Math.min(100, Math.round((collected / target) * 100));
+
+                        return (
+                          <div
+                            className={`my-1 min-w-[260px] max-w-[340px] rounded-3xl p-4 shadow-xl border space-y-3 ${
+                              isMine
+                                ? 'bg-gradient-to-br from-purple-950/90 to-indigo-950/90 border-purple-500/40 text-white'
+                                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between border-b border-black/10 dark:border-white/10 pb-2">
+                              <div>
+                                <span className="text-[10px] font-extrabold uppercase tracking-wider text-purple-400">
+                                  TRIP & EVENT FUND
+                                </span>
+                                <h4 className="text-sm font-bold truncate max-w-[180px] leading-tight">
+                                  {ledger.title}
+                                </h4>
+                                <p className="text-[10px] text-slate-400">By {ledger.creatorName}</p>
+                              </div>
+                              <span className="text-xs font-mono font-black text-purple-400">
+                                {pct}%
+                              </span>
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-xs">
+                                <span className="text-slate-400">Collected:</span>
+                                <span className="font-extrabold text-purple-300">
+                                  ৳{collected.toLocaleString()} / ৳{target.toLocaleString()}
+                                </span>
+                              </div>
+                              <div className="w-full h-2 rounded-full bg-black/20 dark:bg-white/15 overflow-hidden">
+                                <div
+                                  className="h-full bg-gradient-to-r from-purple-500 to-indigo-500 rounded-full transition-all duration-500"
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                            </div>
+
+                            <div className="text-[11px] text-slate-400">
+                              {ledger.contributors.filter((c) => c.status === 'paid').length} of{' '}
+                              {ledger.contributors.length} members contributed
+                            </div>
+
+                            {ledger.notes && (
+                              <p className="text-[11px] p-2 rounded-xl bg-black/15 dark:bg-white/5 text-slate-300 italic">
+                                {ledger.notes}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      } catch {}
+                    }
+
+                    // Feature: Bangla Cultural Sticker Bubble
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[OSA_DESHI_STICKER]')) {
+                      try {
+                        const raw = msg.content.replace('[OSA_DESHI_STICKER]', '');
+                        const sticker = JSON.parse(raw);
+                        return (
+                          <div
+                            onClick={() => playRadioSound('chirp')}
+                            className="my-1.5 p-3.5 rounded-3xl bg-gradient-to-r from-rose-600 via-pink-600 to-amber-500 text-white shadow-xl hover:scale-105 active:scale-95 transition-transform cursor-pointer select-none max-w-[240px]"
+                          >
+                            <div className="text-3xl mb-1">{sticker.emoji}</div>
+                            <p className="text-sm font-black tracking-wide leading-snug drop-shadow-sm">
+                              {sticker.text}
+                            </p>
+                            <span className="text-[9px] text-white/70 block mt-1">
+                              Tap to chirp sound 🔊
+                            </span>
                           </div>
                         );
                       } catch {}
@@ -5539,6 +5875,13 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 onOpenDuressStealth={() => setShowDuressStealthModal(true)}
                 onOpenBanglaDialect={() => setShowBanglaDialectModal(true)}
                 onOpenBargainArbiter={() => setShowBargainArbiterModal(true)}
+                onOpenCashMemo={() => setShowCashMemoModal(true)}
+                onOpenTripFund={() => setShowTripFundModal(true)}
+                onOpenFakeCall={() => setShowFakeCallModal(true)}
+                onOpenPrayerTimes={() => setShowPrayerTimesModal(true)}
+                onOpenMiniGames={() => setShowMiniGamesModal(true)}
+                onOpenDeshiStickers={() => setShowDeshiStickersModal(true)}
+                onOpenChatLocker={() => setShowChatLockerModal(true)}
               />
 
             <form
@@ -7545,6 +7888,71 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         sellerName={isGroup ? 'Seller' : chatTitle}
         buyerName={currentUser.full_name}
         language={currentUser.language}
+      />
+
+      {/* 17. Instant Cash Memo & Receipt Modal */}
+      <InstantCashMemoModal
+        isOpen={showCashMemoModal}
+        onClose={() => setShowCashMemoModal(false)}
+        language={currentUser.language}
+        chatId={chat.id}
+        currentUserName={currentUser.full_name}
+        peerName={chatTitle}
+        onSendMemo={handleSendCashMemo}
+      />
+
+      {/* 18. Trip & Group Fund Ledger Modal */}
+      <TripFundLedgerModal
+        isOpen={showTripFundModal}
+        onClose={() => setShowTripFundModal(false)}
+        language={currentUser.language}
+        chatId={chat.id}
+        currentUserName={currentUser.full_name}
+        membersList={groupMembers.map((m) => ({ id: m.id, name: m.profile?.full_name || 'Member' }))}
+        onShareLedger={handleSendTripFundLedger}
+      />
+
+      {/* 19. Fake Call Savior Modal */}
+      <FakeCallModal
+        isOpen={showFakeCallModal}
+        onClose={() => setShowFakeCallModal(false)}
+        language={currentUser.language}
+        defaultCallerName={isGroup ? 'Boss / Office' : chatTitle}
+      />
+
+      {/* 20. Smart Prayer Times & Qibla Compass Modal */}
+      <PrayerTimesModal
+        isOpen={showPrayerTimesModal}
+        onClose={() => setShowPrayerTimesModal(false)}
+        language={currentUser.language}
+        onShareToChat={handleSharePrayerTimes}
+      />
+
+      {/* 21. In-Chat Mini Ludo & Carrom Game Modal */}
+      <MiniLudoCarromModal
+        isOpen={showMiniGamesModal}
+        onClose={() => setShowMiniGamesModal(false)}
+        language={currentUser.language}
+        chatTitle={chatTitle}
+        currentUserName={currentUser.full_name}
+        onShareScore={handleShareGameScore}
+      />
+
+      {/* 22. Deshi Bangla Dialogue Stickers Modal */}
+      <DeshiStickersModal
+        isOpen={showDeshiStickersModal}
+        onClose={() => setShowDeshiStickersModal(false)}
+        language={currentUser.language}
+        onSendSticker={handleSendDeshiSticker}
+      />
+
+      {/* 23. Invisible / PIN Protected Chat Locker Modal */}
+      <HiddenChatLockerModal
+        isOpen={showChatLockerModal}
+        onClose={() => setShowChatLockerModal(false)}
+        language={currentUser.language}
+        chatId={chat.id}
+        chatTitle={chatTitle}
       />
     </div>
   );
