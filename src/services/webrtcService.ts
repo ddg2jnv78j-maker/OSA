@@ -300,7 +300,7 @@ export class WebRTCCallManager {
         let allSignals: CallSignal[] = [];
 
         if (!offerSignal) {
-          for (let attempt = 0; attempt < 8; attempt++) {
+          for (let attempt = 0; attempt < 25; attempt++) {
             const { data: signals } = await supabase
               .from('call_signals')
               .select('*')
@@ -312,7 +312,7 @@ export class WebRTCCallManager {
               (s) => s.signal_type === 'offer' && Boolean(s.payload?.sdp)
             );
             if (offerSignal) break;
-            await new Promise((r) => setTimeout(r, 120));
+            await new Promise((r) => setTimeout(r, 200));
           }
         } else {
           // If cached offer exists, do one quick fetch for ICE candidates without waiting in loop
@@ -715,29 +715,22 @@ export class WebRTCCallManager {
         'Microphone access is disabled in OSA Settings. Please enable Microphone in Settings → Privacy / Permissions.'
       );
     }
-    if (callType === 'video' && !perm.cameraEnabled) {
-      throw new Error(
-        'Camera access is disabled in OSA Settings. Please enable Camera in Settings → Privacy / Permissions.'
-      );
-    }
+    const isCameraAllowed = callType === 'video' ? perm.cameraEnabled : false;
 
-    // High quality WebRTC audio constraints with natural speech processing (avoids harsh/robotic cutoff)
+    // Robust WebRTC audio constraints with natural speech processing (avoid rigid sampleRate which causes OverconstrainedError on Android)
     const audioConstraints: MediaTrackConstraints = {
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
-      channelCount: 1,
-      sampleRate: 48000,
     };
 
-    // Adaptive video constraints (HD 720p 30fps ideal, gracefully adaptive to bandwidth & device)
+    // Adaptive video constraints (HD ideal, gracefully adaptive to bandwidth & device)
     const videoConstraints: MediaTrackConstraints | boolean =
-      callType === 'video'
+      callType === 'video' && isCameraAllowed
         ? {
             facingMode: this.facingMode,
-            width: { ideal: 1280, max: 1920 },
-            height: { ideal: 720, max: 1080 },
-            frameRate: { ideal: 30, max: 30 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
           }
         : false;
 
@@ -748,26 +741,48 @@ export class WebRTCCallManager {
         video: videoConstraints,
       });
     } catch (primaryErr) {
-      // If hardware was overconstrained, fallback to flexible constraints
       if (callType === 'video') {
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
-              autoGainControl: true,
             },
             video: { facingMode: this.facingMode },
           });
         } catch {
-          // Last fallback
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-            video: true,
-          });
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+              video: true,
+            });
+          } catch (videoError) {
+            console.warn('[WebRTC] Camera unavailable or blocked, continuing with audio & visual track', videoError);
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: false,
+              });
+            } catch (micErr) {
+              console.warn('[WebRTC] Microphone also unavailable, creating synthetic silent audio', micErr);
+              const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+              const ctx = new AudioCtx();
+              const dest = ctx.createMediaStreamDestination();
+              stream = dest.stream;
+            }
+            const fallbackVideoTrack = this.createPlaceholderVideoTrack();
+            if (fallbackVideoTrack) {
+              stream.addTrack(fallbackVideoTrack);
+            }
+          }
         }
       } else {
-        throw primaryErr;
+        // Fallback for audio calls if specialized constraints failed
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch {
+          throw primaryErr;
+        }
       }
     }
 
@@ -779,6 +794,34 @@ export class WebRTCCallManager {
       this.currentUserId
     );
     return stream;
+  }
+
+  private createPlaceholderVideoTrack(): MediaStreamTrack | null {
+    if (typeof document === 'undefined') return null;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, 640, 480);
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = 'bold 24px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('OSA Video Stream', 320, 220);
+        ctx.fillStyle = '#64748b';
+        ctx.font = '16px sans-serif';
+        ctx.fillText('Camera unavailable / audio mode', 320, 260);
+      }
+      const canvasStream = (canvas as HTMLCanvasElement & { captureStream?(fps?: number): MediaStream }).captureStream?.(10);
+      if (canvasStream && canvasStream.getVideoTracks().length > 0) {
+        return canvasStream.getVideoTracks()[0];
+      }
+    } catch (e) {
+      console.warn('[WebRTC] Could not create placeholder video track', e);
+    }
+    return null;
   }
 
   private emitUpdatedRemoteStream(): void {

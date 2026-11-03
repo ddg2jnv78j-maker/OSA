@@ -29,8 +29,8 @@ export const UserSelectForPermissionModal: React.FC<UserSelectForPermissionModal
       }
       if (c?.members && Array.isArray(c.members)) {
         for (const m of c.members) {
-          if (m?.id && m.id !== currentUser?.id) {
-            map.set(m.id, m);
+          if (m?.profile && m.profile.id !== currentUser?.id) {
+            map.set(m.profile.id, m.profile);
           }
         }
       }

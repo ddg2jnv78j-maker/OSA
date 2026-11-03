@@ -44,7 +44,7 @@ export const UserPermissionDetailModal: React.FC<UserPermissionDetailModalProps>
     setSaving(true);
 
     try {
-      const payload = { owner_user_id: currentUser.id, target_user_id: targetUser.id, ...next };
+      const payload = { ...next, owner_user_id: currentUser.id, target_user_id: targetUser.id };
       localStorage.setItem(`osa_contact_perm_${currentUser.id}_${targetUser.id}`, JSON.stringify(payload));
     } catch {}
 

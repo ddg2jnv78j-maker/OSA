@@ -80,7 +80,8 @@ import {
   Calculator,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { WalkieTalkieModal } from '../components/chat/WalkieTalkieModal';
+import { WalkieTalkieModal, playRadioSound } from '../components/chat/WalkieTalkieModal';
+import { dispatchWebPushNotification } from '../services/pushNotificationService';
 import { CollaborativeCanvasModal } from '../components/chat/CollaborativeCanvasModal';
 import { VoiceFilterSelector } from '../components/chat/VoiceFilterSelector';
 import { SecretMediaVaultModal } from '../components/chat/SecretMediaVaultModal';
@@ -466,6 +467,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
   // 8 Flagship Extension States
   const [showWalkieTalkieModal, setShowWalkieTalkieModal] = useState(false);
+  const [incomingWalkieAlert, setIncomingWalkieAlert] = useState<{ senderId: string; senderName: string } | null>(null);
   const [showCanvasModal, setShowCanvasModal] = useState(false);
   const [showVoiceFilterModal, setShowVoiceFilterModal] = useState(false);
   const [showSecretVaultModal, setShowSecretVaultModal] = useState(false);
@@ -1017,6 +1019,35 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           setMessages((prev) =>
             prev.map((m) => (m.id === messageId ? { ...m, content: updatedContent } : m))
           );
+        }
+      })
+      .on('broadcast', { event: 'walkie_talkie_stream' }, (payload) => {
+        const data = payload.payload;
+        if (!data || data.senderId === currentUser.id) return;
+        if (data.isStart) {
+          playRadioSound('start');
+          setIncomingWalkieAlert({
+            senderId: data.senderId,
+            senderName: data.senderName,
+          });
+        } else if (data.isEnd) {
+          playRadioSound('end');
+          setTimeout(() => {
+            setIncomingWalkieAlert(null);
+          }, 3500);
+        } else if (data.audioBase64) {
+          setIncomingWalkieAlert({
+            senderId: data.senderId,
+            senderName: data.senderName,
+          });
+          try {
+            const audio = new Audio(`data:audio/webm;base64,${data.audioBase64}`);
+            audio.play().catch(() => {});
+            audio.onended = () => {
+              playRadioSound('end');
+              setTimeout(() => setIncomingWalkieAlert(null), 3000);
+            };
+          } catch {}
         }
       })
       .on('broadcast', { event: 'iou_settle_update' }, (payload) => {
@@ -2443,6 +2474,43 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   // -------------------------------------------------------------
   // 8 World-First Innovative Feature Handlers
   // -------------------------------------------------------------
+  const handleSendWalkieTransmission = async (audioBlob: Blob, base64: string) => {
+    try {
+      const payload = {
+        audioBase64: base64,
+        senderName: currentUser.full_name,
+        frequency: `CH-${chat.id.slice(0, 4).toUpperCase()}`,
+        durationSeconds: Math.max(1, Math.round(audioBlob.size / 4000)),
+        timestamp: new Date().toISOString(),
+      };
+      const content = `[WALKIE_TRANSMISSION]${JSON.stringify(payload)}`;
+      const sent = await sendTextMessage({
+        chatId: chat.id,
+        senderId: currentUser.id,
+        content,
+      });
+      setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+      onChatUpdated();
+
+      const recipientIds = isGroup
+        ? groupMembers.map((m) => m.user_id).filter((uid) => uid !== currentUser.id)
+        : peer ? [peer.id] : [];
+
+      if (recipientIds.length > 0) {
+        dispatchWebPushNotification({
+          senderId: currentUser.id,
+          recipientIds,
+          type: 'message',
+          title: `📻 Walkie-Talkie (${currentUser.full_name})`,
+          body: `Transmitted a live PTT radio voice message on CH-${chat.id.slice(0, 4).toUpperCase()}`,
+          chatId: chat.id,
+        }).catch(() => {});
+      }
+    } catch (err) {
+      console.warn('[WalkieTalkie] Error saving transmission:', err);
+    }
+  };
+
   const handleSendTimeCapsule = async (capsule: TimeCapsuleData) => {
     try {
       const content = `[TIME_CAPSULE]${JSON.stringify(capsule)}`;
@@ -2732,7 +2800,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       className="osa-chat-viewport bg-slate-50 dark:bg-slate-950"
     >
       {/* Fixed Top Header Zone (Header + Reconnect/Search/Error Bars) */}
-      <div className="osa-chat-header-zone bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-2xs">
+      <div className="osa-chat-header-zone bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-2xs relative z-30 overflow-visible">
         {/* Reconnect Banner */}
         {realtimeStatus === 'RECONNECTING' && (
           <div className="shrink-0 bg-amber-500 text-white text-xs font-medium px-4 py-1.5 text-center">
@@ -2741,7 +2809,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         )}
 
         {/* Top Conversation Header */}
-        <header className="flex items-center justify-between gap-1 px-2 sm:px-5 min-h-16 pt-safe bg-white dark:bg-slate-900 shrink-0 w-full max-w-full overflow-hidden">
+        <header className="flex items-center justify-between gap-1 px-2 sm:px-5 min-h-16 pt-safe bg-white dark:bg-slate-900 shrink-0 w-full max-w-full relative z-30 overflow-visible">
           <div className="flex items-center gap-1.5 sm:gap-2.5 flex-1 min-w-0 overflow-hidden">
             <button
               type="button"
@@ -2897,92 +2965,139 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
               {/* Floating Dropdown Card */}
               {showSuiteDropdown && (
-                <div className="absolute right-0 top-11 z-50 w-56 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-1.5 space-y-1 animate-in fade-in slide-in-from-top-2 duration-150">
-                  <div className="px-3 py-1.5 border-b border-slate-100 dark:border-slate-800">
-                    <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                      OSA Features & Modes
-                    </p>
+                <>
+                  <div
+                    className="fixed inset-0 z-40 bg-black/20"
+                    onClick={() => setShowSuiteDropdown(false)}
+                  />
+                  <div className="absolute right-0 top-11 z-50 w-60 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-1.5 space-y-1 animate-in fade-in slide-in-from-top-2 duration-150">
+                    <div className="px-3 py-1.5 border-b border-slate-100 dark:border-slate-800">
+                      <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        OSA Features & Modes
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowWalkieTalkieModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-2.5 transition-colors"
+                    >
+                      <Radio className="w-4 h-4 text-emerald-500 shrink-0" />
+                      <span>Walkie-Talkie (PTT)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowCoWatchModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-purple-50 dark:hover:bg-purple-950/40 hover:text-purple-600 dark:hover:text-purple-400 flex items-center gap-2.5 transition-colors"
+                    >
+                      <Tv className="w-4 h-4 text-purple-500 shrink-0" />
+                      <span>Co-Watch Cinema Room</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowTruthShieldModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-cyan-50 dark:hover:bg-cyan-950/40 hover:text-cyan-600 dark:hover:text-cyan-400 flex items-center gap-2.5 transition-colors"
+                    >
+                      <ShieldAlert className="w-4 h-4 text-cyan-500 shrink-0" />
+                      <span>Truth Shield™ Vocal Radar</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowThemeSelectorModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-fuchsia-50 dark:hover:bg-fuchsia-950/40 hover:text-fuchsia-600 dark:hover:text-fuchsia-400 flex items-center gap-2.5 transition-colors"
+                    >
+                      <Palette className="w-4 h-4 text-fuchsia-500 shrink-0" />
+                      <span>Wallpaper & Themes</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        handleToggleGhostMode();
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-purple-50 dark:hover:bg-purple-950/40 hover:text-purple-600 dark:hover:text-purple-400 flex items-center justify-between transition-colors"
+                    >
+                      <span className="flex items-center gap-2.5">
+                        <Ghost className="w-4 h-4 text-purple-500 shrink-0" />
+                        <span>Ghost Mode (Incognito)</span>
+                      </span>
+                      <span className={`w-2 h-2 rounded-full ${ghostModeActive ? 'bg-purple-500' : 'bg-slate-400'}`} />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowDisappearingModal(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-amber-50 dark:hover:bg-amber-950/40 hover:text-amber-600 dark:hover:text-amber-400 flex items-center gap-2.5 transition-colors"
+                    >
+                      <Timer className="w-4 h-4 text-amber-500 shrink-0" />
+                      <span>Disappearing Messages</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSuiteDropdown(false);
+                        setShowChatInfo(true);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 transition-colors border-t border-slate-100 dark:border-slate-800"
+                    >
+                      <Info className="w-4 h-4 text-slate-400 shrink-0" />
+                      <span>{t.chatInfo}</span>
+                    </button>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowSuiteDropdown(false);
-                      setShowWalkieTalkieModal(true);
-                    }}
-                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-2.5 transition-colors"
-                  >
-                    <Radio className="w-4 h-4 text-emerald-500 shrink-0" />
-                    <span>Walkie-Talkie (PTT)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowSuiteDropdown(false);
-                      setShowCoWatchModal(true);
-                    }}
-                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-purple-50 dark:hover:bg-purple-950/40 hover:text-purple-600 dark:hover:text-purple-400 flex items-center gap-2.5 transition-colors"
-                  >
-                    <Tv className="w-4 h-4 text-purple-500 shrink-0" />
-                    <span>Co-Watch Cinema Room</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowSuiteDropdown(false);
-                      setShowTruthShieldModal(true);
-                    }}
-                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-cyan-50 dark:hover:bg-cyan-950/40 hover:text-cyan-600 dark:hover:text-cyan-400 flex items-center gap-2.5 transition-colors"
-                  >
-                    <ShieldAlert className="w-4 h-4 text-cyan-500 shrink-0" />
-                    <span>Truth Shield™ Vocal Radar</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowSuiteDropdown(false);
-                      setShowThemeSelectorModal(true);
-                    }}
-                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-fuchsia-50 dark:hover:bg-fuchsia-950/40 hover:text-fuchsia-600 dark:hover:text-fuchsia-400 flex items-center gap-2.5 transition-colors"
-                  >
-                    <Palette className="w-4 h-4 text-fuchsia-500 shrink-0" />
-                    <span>Wallpaper & Themes</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowSuiteDropdown(false);
-                      handleToggleGhostMode();
-                    }}
-                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-purple-50 dark:hover:bg-purple-950/40 hover:text-purple-600 dark:hover:text-purple-400 flex items-center justify-between transition-colors"
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <Ghost className="w-4 h-4 text-purple-500 shrink-0" />
-                      <span>Ghost Mode (Incognito)</span>
-                    </span>
-                    <span className={`w-2 h-2 rounded-full ${ghostModeActive ? 'bg-purple-500' : 'bg-slate-400'}`} />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowSuiteDropdown(false);
-                      setShowChatInfo(true);
-                    }}
-                    className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 transition-colors border-t border-slate-100 dark:border-slate-800"
-                  >
-                    <Info className="w-4 h-4 text-slate-400 shrink-0" />
-                    <span>{t.chatInfo}</span>
-                  </button>
-                </div>
+                </>
               )}
             </div>
           </div>
         </header>
+
+        {/* Live Incoming Walkie-Talkie Broadcast Banner */}
+        {incomingWalkieAlert && (
+          <div className="shrink-0 px-3 sm:px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white flex items-center justify-between shadow-md animate-in fade-in slide-in-from-top-2 duration-150">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center animate-pulse shrink-0">
+                <Radio className="w-4 h-4 text-white" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold truncate">
+                  📻 {incomingWalkieAlert.senderName} is transmitting on PTT
+                </p>
+                <p className="text-[10px] text-emerald-100 font-mono">
+                  CH-{chat.id.slice(0, 4).toUpperCase()} · Live Radio Stream
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setIncomingWalkieAlert(null);
+                setShowWalkieTalkieModal(true);
+              }}
+              className="px-3 py-1 rounded-xl bg-white text-emerald-800 text-xs font-bold hover:bg-emerald-50 shrink-0 ml-2 shadow-xs active:scale-95 transition-transform"
+            >
+              Open PTT
+            </button>
+          </div>
+        )}
 
         {/* Ghost Mode Active Incognito Status Bar */}
         {ghostModeActive && (
@@ -4402,6 +4517,81 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       } catch {}
                     }
 
+                    // Feature: Walkie-Talkie PTT Radio Transmission Card
+                    if (!msg.is_deleted_for_everyone && msg.content.startsWith('[WALKIE_TRANSMISSION]')) {
+                      try {
+                        const raw = msg.content.replace('[WALKIE_TRANSMISSION]', '');
+                        const ptt = JSON.parse(raw);
+
+                        return (
+                          <div className="my-1 min-w-[270px] max-w-[320px] rounded-3xl p-3.5 shadow-2xl border border-emerald-500/40 bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950/40 text-white space-y-2.5">
+                            <div className="flex items-center justify-between pb-2 border-b border-emerald-500/20">
+                              <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 rounded-xl bg-emerald-600/30 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shadow-xs">
+                                  <Radio className="w-4 h-4 animate-pulse" />
+                                </div>
+                                <div>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                                    PTT WALKIE-TALKIE
+                                  </span>
+                                  <h4 className="text-xs font-bold text-white line-clamp-1">{ptt.senderName || 'Radio Dispatch'}</h4>
+                                </div>
+                              </div>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                {ptt.frequency || 'PTT'}
+                              </span>
+                            </div>
+
+                            {/* Audio Player Bar */}
+                            <div className="p-2.5 rounded-2xl bg-black/40 border border-emerald-500/20 flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  playRadioSound('start');
+                                  try {
+                                    const audio = new Audio(`data:audio/webm;base64,${ptt.audioBase64}`);
+                                    audio.play().catch(() => {});
+                                    audio.onended = () => playRadioSound('end');
+                                  } catch {}
+                                }}
+                                className="w-10 h-10 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shadow-md active:scale-95 transition-transform shrink-0"
+                                title="Play Walkie-Talkie audio"
+                              >
+                                <Volume2 className="w-5 h-5" />
+                              </button>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1 h-6">
+                                  {[40, 70, 30, 90, 60, 100, 50, 80, 45, 95, 30, 75, 60, 40].map((h, idx) => (
+                                    <div
+                                      key={idx}
+                                      className="flex-1 bg-emerald-500/50 rounded-full"
+                                      style={{ height: `${h}%` }}
+                                    />
+                                  ))}
+                                </div>
+                                <span className="text-[10px] text-emerald-300/80 font-mono">
+                                  {ptt.durationSeconds ? `00:${String(ptt.durationSeconds).padStart(2, '0')}` : 'Voice Note'} · Radio Recorded
+                                </span>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShowWalkieTalkieModal(true);
+                              }}
+                              className="w-full py-2 px-3 rounded-xl bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/40 text-emerald-200 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                            >
+                              <Radio className="w-3.5 h-3.5" />
+                              <span>Reply on Walkie-Talkie PTT</span>
+                            </button>
+                          </div>
+                        );
+                      } catch {}
+                    }
+
                     // Check for Group Poll Card
                     if (!msg.is_deleted_for_everyone && msg.content.startsWith('[POLL_DATA]')) {
                       try {
@@ -5305,7 +5495,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 onAiDraft={handleAiDraft}
                 onShareContactCard={async () => {
                   try {
-                    const contactCard = `📇 [Contact Card]\n👤 Name: ${currentUser.full_name}\n🏷️ Username: @${currentUser.username}\n📞 Phone: ${currentUser.phone_number || 'N/A'}`;
+                    const contactCard = `📇 [Contact Card]\n👤 Name: ${currentUser.full_name}\n🏷️ Username: @${currentUser.username}\n📞 Phone: ${currentUser.phone || 'N/A'}`;
                     const sent = await sendTextMessage({
                       chatId: chat.id,
                       senderId: currentUser.id,
@@ -7184,6 +7374,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         chatTitle={chatTitle}
         currentUser={currentUser}
         language={currentUser.language}
+        onSendWalkieTransmission={handleSendWalkieTransmission}
       />
 
       {/* 2. Collaborative Whiteboard & Canvas Modal */}

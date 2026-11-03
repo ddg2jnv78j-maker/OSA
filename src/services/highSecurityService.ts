@@ -57,7 +57,7 @@ export async function fetchUserSecuritySettings(userId: string): Promise<UserSec
         primary_device_id: getDeviceFingerprint(),
       };
       localStorage.setItem(localKey, JSON.stringify(defaultSettings));
-      supabase.from('user_security_settings').upsert(defaultSettings).catch(() => {});
+      Promise.resolve(supabase.from('user_security_settings').upsert(defaultSettings)).catch(() => {});
       return defaultSettings;
     }
     localStorage.setItem(localKey, JSON.stringify(data));
@@ -90,10 +90,11 @@ export async function updateUserSecuritySettings(
     localStorage.setItem(localKey, JSON.stringify(payload));
 
     // Try sync to Supabase in background
-    supabase
-      .from('user_security_settings')
-      .upsert(payload, { onConflict: 'user_id' })
-      .catch(() => {});
+    Promise.resolve(
+      supabase
+        .from('user_security_settings')
+        .upsert(payload, { onConflict: 'user_id' })
+    ).catch(() => {});
 
     return true;
   } catch {

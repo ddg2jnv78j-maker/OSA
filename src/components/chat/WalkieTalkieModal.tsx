@@ -14,8 +14,9 @@ import {
   ShieldCheck 
 } from 'lucide-react';
 import { RealtimeChannel } from '@supabase/supabase-js';
+import { supabase } from '../../lib/supabase';
 
-interface WalkieTalkieModalProps {
+export interface WalkieTalkieModalProps {
   isOpen: boolean;
   onClose: () => void;
   channel: RealtimeChannel | null;
@@ -27,10 +28,11 @@ interface WalkieTalkieModalProps {
     avatar_url?: string | null;
   };
   language?: string;
+  onSendWalkieTransmission?: (audioBlob: Blob, base64: string) => Promise<void>;
 }
 
 // Tactical audio synthesizer for walkie-talkie squelch & beeps
-const playRadioSound = (type: 'start' | 'end' | 'chirp') => {
+export const playRadioSound = (type: 'start' | 'end' | 'chirp') => {
   try {
     const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
@@ -92,6 +94,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   chatTitle,
   currentUser,
   language = 'en',
+  onSendWalkieTransmission,
 }) => {
   const isBn = language === 'bn';
   const [isMinimized, setIsMinimized] = useState(false);
@@ -102,6 +105,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   const [activeMembers, setActiveMembers] = useState<string[]>([currentUser.full_name]);
   const [volumeLevel, setVolumeLevel] = useState<number>(0);
 
+  const fallbackChannelRef = useRef<RealtimeChannel | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -110,9 +114,24 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const incomingAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  useEffect(() => {
+    if (!channel && !fallbackChannelRef.current && chatId) {
+      const ch = supabase.channel(`osa-chat-room-${chatId}`);
+      ch.subscribe();
+      fallbackChannelRef.current = ch;
+    }
+    return () => {
+      if (fallbackChannelRef.current && !channel) {
+        supabase.removeChannel(fallbackChannelRef.current);
+        fallbackChannelRef.current = null;
+      }
+    };
+  }, [channel, chatId]);
+
   // Set up Supabase Realtime listeners for walkie-talkie
   useEffect(() => {
-    if (!channel || !isOpen) return;
+    const ch = channel || fallbackChannelRef.current;
+    if (!ch || !isOpen) return;
 
     // Join presence
     playRadioSound('chirp');
@@ -142,7 +161,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
       }
     };
 
-    channel.on('broadcast', { event: 'walkie_talkie_stream' }, handleTransmission);
+    ch.on('broadcast', { event: 'walkie_talkie_stream' }, handleTransmission);
 
     return () => {
       if (incomingAudioRef.current) {
@@ -150,7 +169,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
         incomingAudioRef.current = null;
       }
     };
-  }, [channel, isOpen, currentUser.id, isMuted]);
+  }, [channel, isOpen, currentUser.id, isMuted, chatId]);
 
   // Clean up mic stream on unmount
   useEffect(() => {
@@ -230,7 +249,8 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
       updateVolume();
 
       // Broadcast start signal
-      channel?.send({
+      const activeCh = channel || fallbackChannelRef.current;
+      activeCh?.send({
         type: 'broadcast',
         event: 'walkie_talkie_stream',
         payload: {
@@ -258,7 +278,8 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
           reader.readAsDataURL(audioBlob);
           reader.onloadend = () => {
             const base64data = (reader.result as string).split(',')[1];
-            channel?.send({
+            const chNow = channel || fallbackChannelRef.current;
+            chNow?.send({
               type: 'broadcast',
               event: 'walkie_talkie_stream',
               payload: {
@@ -267,6 +288,9 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
                 audioBase64: base64data,
               },
             });
+            if (onSendWalkieTransmission) {
+              onSendWalkieTransmission(audioBlob, base64data).catch(() => {});
+            }
           };
         }
       };
@@ -303,7 +327,8 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
     }
 
     // Broadcast end signal
-    channel?.send({
+    const activeCh = channel || fallbackChannelRef.current;
+    activeCh?.send({
       type: 'broadcast',
       event: 'walkie_talkie_stream',
       payload: {

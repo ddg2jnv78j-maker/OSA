@@ -194,7 +194,7 @@ export async function extractTextAndFieldsFromDocument(
       reader.readAsText(file);
     } else {
       setTimeout(() => {
-        reader.onload({ target: { result: 'Mock binary scan result' } } as any);
+        reader.onload?.({ target: { result: 'Mock binary scan result' } } as any);
       }, 1000);
     }
   });

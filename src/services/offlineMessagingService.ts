@@ -77,8 +77,7 @@ export async function syncOfflineMessages(): Promise<void> {
             last_message_text: item.content.slice(0, 120),
             last_message_at: new Date().toISOString(),
           })
-          .eq('id', item.chatId)
-          .catch(() => {});
+          .eq('id', item.chatId);
       }
     } catch {
       remaining.push(item);

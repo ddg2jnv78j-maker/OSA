@@ -80,27 +80,29 @@ export async function updateContactPermission(
     localStorage.setItem(localKey, JSON.stringify(payload));
 
     // Try sync to Supabase in background
-    supabase
-      .from('user_contact_permissions')
-      .select('id')
-      .eq('owner_user_id', ownerUserId)
-      .eq('target_user_id', targetUserId)
-      .maybeSingle()
-      .then(({ data: checkData }) => {
+    (async () => {
+      try {
+        const { data: checkData } = await supabase
+          .from('user_contact_permissions')
+          .select('id')
+          .eq('owner_user_id', ownerUserId)
+          .eq('target_user_id', targetUserId)
+          .maybeSingle();
+
         if (checkData?.id) {
-          supabase
+          await supabase
             .from('user_contact_permissions')
             .update(payload)
-            .eq('id', checkData.id)
-            .then(() => {});
+            .eq('id', checkData.id);
         } else {
-          supabase
+          await supabase
             .from('user_contact_permissions')
-            .insert([payload])
-            .then(() => {});
+            .insert([payload]);
         }
-      })
-      .catch(() => {});
+      } catch {
+        // Ignore background sync error
+      }
+    })();
 
     return true;
   } catch {
@@ -131,27 +133,29 @@ export async function logFeatureAccess(
     const localKey = `osa_contact_perm_${ownerUserId}_${targetUserId}`;
     localStorage.setItem(localKey, JSON.stringify(payload));
 
-    supabase
-      .from('user_contact_permissions')
-      .select('id')
-      .eq('owner_user_id', ownerUserId)
-      .eq('target_user_id', targetUserId)
-      .maybeSingle()
-      .then(({ data: checkData }) => {
+    (async () => {
+      try {
+        const { data: checkData } = await supabase
+          .from('user_contact_permissions')
+          .select('id')
+          .eq('owner_user_id', ownerUserId)
+          .eq('target_user_id', targetUserId)
+          .maybeSingle();
+
         if (checkData?.id) {
-          supabase
+          await supabase
             .from('user_contact_permissions')
             .update(payload)
-            .eq('id', checkData.id)
-            .then(() => {});
+            .eq('id', checkData.id);
         } else {
-          supabase
+          await supabase
             .from('user_contact_permissions')
-            .insert([payload])
-            .then(() => {});
+            .insert([payload]);
         }
-      })
-      .catch(() => {});
+      } catch {
+        // Ignore background sync error
+      }
+    })();
   } catch {
     // Ignore log error
   }

@@ -1003,7 +1003,7 @@ export async function sendTextMessage(params: {
       status: 'pending_offline',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    } as Message;
+    } as unknown as Message;
   }
 }
 
@@ -1236,17 +1236,18 @@ export async function addStatusReaction(statusId: string, userId: string, emoji:
     localStorage.setItem(key, JSON.stringify(filtered));
   } catch {}
 
-  await supabase
-    .from('status_reactions')
-    .upsert(
-      {
-        status_id: statusId,
-        user_id: userId,
-        emoji,
-      },
-      { onConflict: 'status_id,user_id' }
-    )
-    .catch(() => {});
+  try {
+    await supabase
+      .from('status_reactions')
+      .upsert(
+        {
+          status_id: statusId,
+          user_id: userId,
+          emoji,
+        },
+        { onConflict: 'status_id,user_id' }
+      );
+  } catch {}
 }
 
 export async function createTextStatus(

@@ -195,6 +195,7 @@ export async function queryShoppingAssistant(
   explanation: string;
   matchedProducts: AffiliateProduct[];
   intent: ShoppingIntentAnalysis;
+  cardMessagePayloads: string[];
 }> {
   const intent = analyzeShoppingIntent(userQuery);
   const isBn = userLanguage === 'bn' || intent.language === 'bn';
@@ -205,6 +206,7 @@ export async function queryShoppingAssistant(
       explanation: '',
       matchedProducts: [],
       intent,
+      cardMessagePayloads: [],
     };
   }
 
@@ -216,7 +218,7 @@ export async function queryShoppingAssistant(
     if (intent.category && p.category.toLowerCase() !== intent.category.toLowerCase()) {
       return false;
     }
-    if (intent.maxBudget && p.price > intent.maxBudget) {
+    if (intent.maxBudget && p.current_price > intent.maxBudget) {
       return false;
     }
     return true;
@@ -242,7 +244,7 @@ export async function queryShoppingAssistant(
   const catalogContext = matchedProducts
     .map(
       (p, idx) =>
-        `[Item ${idx + 1}] Title: ${p.title} | Category: ${p.category} | Price: ৳${p.price.toLocaleString()} | Rating: ${p.rating}★ (${p.reviews_count} reviews) | Merchant: ${p.merchant_name} | Description: ${p.description}`
+        `[Item ${idx + 1}] Title: ${p.title} | Category: ${p.category} | Price: ৳${(p.current_price || 0).toLocaleString()} | Merchant: ${p.merchant?.display_name || 'Verified Partner'} | Description: ${p.description}`
     )
     .join('\n');
 
@@ -282,6 +284,7 @@ export async function queryShoppingAssistant(
   return {
     isShopping: true,
     explanation: `${explanation}\n\n${cardMessagePayloads.join('\n')}`,
+    cardMessagePayloads,
     matchedProducts,
     intent,
   };

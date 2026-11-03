@@ -172,12 +172,18 @@ export function getIceServers(): RTCIceServer[] {
     .map((s) => s.trim())
     .filter((s) => /^stuns?:/i.test(s));
 
+  const defaultStuns = [
+    'stun:stun.l.google.com:19302',
+    'stun:stun1.l.google.com:19302',
+    'stun:stun2.l.google.com:19302',
+    'stun:stun3.l.google.com:19302',
+    'stun:stun4.l.google.com:19302',
+    'stun:global.stun.twilio.com:3478',
+  ];
+
   const iceServers: RTCIceServer[] = [
     {
-      urls:
-        stunUrls.length > 0
-          ? stunUrls
-          : ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'],
+      urls: stunUrls.length > 0 ? Array.from(new Set([...stunUrls, ...defaultStuns])) : defaultStuns,
     },
   ];
 
