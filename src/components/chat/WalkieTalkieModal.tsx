@@ -105,7 +105,6 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   const [activeMembers, setActiveMembers] = useState<string[]>([currentUser.full_name]);
   const [volumeLevel, setVolumeLevel] = useState<number>(0);
 
-  const fallbackChannelRef = useRef<RealtimeChannel | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -114,31 +113,24 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const incomingAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  useEffect(() => {
-    if (!channel && !fallbackChannelRef.current && chatId) {
-      const ch = supabase.channel(`osa-chat-room-${chatId}`);
-      ch.subscribe();
-      fallbackChannelRef.current = ch;
-    }
-    return () => {
-      if (fallbackChannelRef.current && !channel) {
-        supabase.removeChannel(fallbackChannelRef.current);
-        fallbackChannelRef.current = null;
-      }
-    };
-  }, [channel, chatId]);
+  const getActiveChannel = () => {
+    if (channel) return channel;
+    const channelName = `osa-chat-room-${chatId}`;
+    const found = supabase.getChannels().find(
+      (c) => c.topic === `realtime:${channelName}` || c.topic === channelName
+    );
+    return found || null;
+  };
 
-  // Set up Supabase Realtime listeners for walkie-talkie
+  // Listen for live walkie-talkie transmissions dispatched from chat room channel
   useEffect(() => {
-    const ch = channel || fallbackChannelRef.current;
-    if (!ch || !isOpen) return;
+    if (!isOpen) return;
 
-    // Join presence
     playRadioSound('chirp');
 
-    const handleTransmission = (payload: { payload: { senderId: string; senderName: string; audioBase64: string; isStart?: boolean; isEnd?: boolean } }) => {
-      const data = payload.payload;
-      if (data.senderId === currentUser.id) return;
+    const handleTransmission = (e: Event) => {
+      const data = (e as CustomEvent).detail;
+      if (!data || data.senderId === currentUser.id) return;
 
       if (data.isStart) {
         setActiveSpeaker({ id: data.senderId, name: data.senderName });
@@ -161,15 +153,16 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
       }
     };
 
-    ch.on('broadcast', { event: 'walkie_talkie_stream' }, handleTransmission);
+    window.addEventListener('osa_walkie_talkie_stream', handleTransmission);
 
     return () => {
+      window.removeEventListener('osa_walkie_talkie_stream', handleTransmission);
       if (incomingAudioRef.current) {
         incomingAudioRef.current.pause();
         incomingAudioRef.current = null;
       }
     };
-  }, [channel, isOpen, currentUser.id, isMuted, chatId]);
+  }, [isOpen, currentUser.id, isMuted]);
 
   // Clean up mic stream on unmount
   useEffect(() => {
@@ -249,7 +242,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
       updateVolume();
 
       // Broadcast start signal
-      const activeCh = channel || fallbackChannelRef.current;
+      const activeCh = getActiveChannel();
       activeCh?.send({
         type: 'broadcast',
         event: 'walkie_talkie_stream',
@@ -278,7 +271,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
           reader.readAsDataURL(audioBlob);
           reader.onloadend = () => {
             const base64data = (reader.result as string).split(',')[1];
-            const chNow = channel || fallbackChannelRef.current;
+            const chNow = getActiveChannel();
             chNow?.send({
               type: 'broadcast',
               event: 'walkie_talkie_stream',
@@ -327,7 +320,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
     }
 
     // Broadcast end signal
-    const activeCh = channel || fallbackChannelRef.current;
+    const activeCh = getActiveChannel();
     activeCh?.send({
       type: 'broadcast',
       event: 'walkie_talkie_stream',

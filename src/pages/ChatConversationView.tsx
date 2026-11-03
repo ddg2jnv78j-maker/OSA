@@ -848,8 +848,18 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
   // Realtime subscription for messages, attachments, and typing broadcast
   useEffect(() => {
+    const channelName = `osa-chat-room-${chat.id}`;
+    try {
+      const stale = supabase.getChannels().find(
+        (c) => c.topic === `realtime:${channelName}` || c.topic === channelName
+      );
+      if (stale) {
+        supabase.removeChannel(stale);
+      }
+    } catch {}
+
     const channel = supabase
-      .channel(`osa-chat-room-${chat.id}`, {
+      .channel(channelName, {
         config: {
           broadcast: { self: false },
           presence: { key: currentUser.id },
@@ -1024,6 +1034,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       .on('broadcast', { event: 'walkie_talkie_stream' }, (payload) => {
         const data = payload.payload;
         if (!data || data.senderId === currentUser.id) return;
+        try {
+          window.dispatchEvent(new CustomEvent('osa_walkie_talkie_stream', { detail: data }));
+        } catch {}
         if (data.isStart) {
           playRadioSound('start');
           setIncomingWalkieAlert({
@@ -1108,7 +1121,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       setPeerIsTyping(false);
       setTypingUserName('');
-      supabase.removeChannel(channel);
+      try {
+        supabase.removeChannel(channel);
+      } catch {}
       channelRef.current = null;
     };
   }, [chat.id, currentUser.id]);
