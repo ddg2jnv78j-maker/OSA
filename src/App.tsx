@@ -3,6 +3,7 @@ import {
   Bell,
   Bookmark,
   CircleDot,
+  Compass,
   Lock,
   MessageSquare,
   MessageSquarePlus,
@@ -41,6 +42,7 @@ import { NotificationsModal } from './pages/NotificationsModal';
 import { SettingsPage } from './pages/SettingsPage';
 import { StatusPage } from './pages/StatusPage';
 import { DealsPage } from './pages/DealsPage';
+import { ExploreHubPage } from './pages/ExploreHubPage';
 import { AgentWorkbench } from './components/AgentWorkbench';
 import {
   applyThemeToDocument,
@@ -2525,6 +2527,7 @@ export default function App() {
             {(
               [
                 { id: 'chats', icon: MessageSquare, label: t.chats, badge: totalUnreadChats },
+                { id: 'explore', icon: Compass, label: 'এক্সপ্লোর', badge: 0 },
                 { id: 'status', icon: CircleDot, label: t.status, badge: 0 },
                 { id: 'groups', icon: Users, label: t.groups, badge: 0 },
                 { id: 'calls', icon: Phone, label: t.calls, badge: 0 },
@@ -2932,6 +2935,10 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'explore' && (
+            <ExploreHubPage currentUser={currentUser} />
+          )}
+
           {activeTab === 'calls' && (
             <CallsPage
               currentUser={currentUser}
@@ -2968,10 +2975,11 @@ export default function App() {
         </main>
 
         {/* Functional Mobile Bottom Navigation */}
-        <nav className="md:hidden z-20 grid grid-cols-5 items-center min-h-16 pt-1.5 pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 shrink-0">
+        <nav className="md:hidden z-20 grid grid-cols-6 items-center min-h-16 pt-1.5 pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 shrink-0">
           {(
             [
               { id: 'chats', icon: MessageSquare, label: t.chats, badge: totalUnreadChats },
+              { id: 'explore', icon: Compass, label: 'এক্সপ্লোর', badge: 0 },
               { id: 'status', icon: CircleDot, label: t.status, badge: 0 },
               { id: 'groups', icon: Users, label: t.groups, badge: 0 },
               { id: 'calls', icon: Phone, label: t.calls, badge: 0 },

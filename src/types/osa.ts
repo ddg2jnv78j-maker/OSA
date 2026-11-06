@@ -1,7 +1,7 @@
 export type LanguageCode = 'en' | 'bn';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type VisibilityScope = 'everyone' | 'contacts' | 'nobody';
-export type MainTab = 'chats' | 'status' | 'groups' | 'calls' | 'deals' | 'agent' | 'settings';
+export type MainTab = 'chats' | 'explore' | 'status' | 'groups' | 'calls' | 'deals' | 'agent' | 'settings';
 
 export type MessageType = 'text' | 'image' | 'video' | 'audio' | 'document' | 'system';
 export type MessageDeliveryStatus = 'sent' | 'delivered' | 'read';

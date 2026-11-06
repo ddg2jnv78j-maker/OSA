@@ -300,6 +300,29 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [savingSecurity, setSavingSecurity] = useState(false);
   const [securityMessage, setSecurityMessage] = useState<string | null>(null);
 
+  // Stealth Decoy PIN, Anti-Screenshot & Intruder Selfie
+  const [decoyPin, setDecoyPin] = useState(() => {
+    try {
+      return localStorage.getItem('osa_decoy_pin') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [antiScreenshot, setAntiScreenshot] = useState(() => {
+    try {
+      return localStorage.getItem('osa_anti_screenshot') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [intruderSelfie, setIntruderSelfie] = useState(() => {
+    try {
+      return localStorage.getItem('osa_intruder_selfie') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
   useEffect(() => {
     if (currentUser?.id) {
       fetchUserSecuritySettings(currentUser.id).then((sec) => {
@@ -1186,6 +1209,107 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   </>
                 )}
               </button>
+            </div>
+
+            {/* Stealth Decoy PIN Section */}
+            <div className="pt-6 border-t border-slate-200 dark:border-slate-800 space-y-4">
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Lock className="w-4 h-4 text-rose-500" />
+                স্টিলথ ডিকয় অ্যাপ লক (Stealth Decoy PIN)
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                কেউ জোর করে অ্যাপের পাসকোড আনলক করতে বললে এই নকল পিনটি দিন। অ্যাপ আপনার সমস্ত পার্সোনাল চ্যাট লুকিয়ে সম্পূর্ণ ব্ল্যাংক ডিকয় মোডে ওপেন হবে।
+              </p>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  নকল পিন (Decoy PIN):
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    maxLength={6}
+                    placeholder="যেমন: 0000"
+                    value={decoyPin}
+                    onChange={(e) => setDecoyPin(e.target.value)}
+                    className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        localStorage.setItem('osa_decoy_pin', decoyPin.trim());
+                        alert('স্টিলথ ডিকয় পিন সফলভাবে সংরক্ষিত হয়েছে!');
+                      } catch {}
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-bold"
+                  >
+                    সেভ করুন
+                  </button>
+                </div>
+              </div>
+
+              {/* Anti-screenshot toggle */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-slate-900 dark:text-white">
+                    অ্যান্টি-লিক স্ক্রিনশট গার্ড
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    অন্য কেউ চ্যাট বা প্রোফাইলের স্ক্রিনশট নিলে সতর্কবার্তা আসবে
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !antiScreenshot;
+                    setAntiScreenshot(next);
+                    try {
+                      localStorage.setItem('osa_anti_screenshot', String(next));
+                    } catch {}
+                  }}
+                  className={`w-11 h-6 rounded-full transition-colors relative p-0.5 ${
+                    antiScreenshot ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'
+                  }`}
+                >
+                  <div
+                    className={`w-5 h-5 rounded-full bg-white transition-transform ${
+                      antiScreenshot ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* Intruder selfie toggle */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-slate-900 dark:text-white">
+                    ইন্ট্রুডার সেলফি অ্যালার্ট (Intruder Selfie)
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    পরপর ৩ বার ভুল পিন দিলে ফ্রন্ট ক্যামেরা দিয়ে ছবি তোলার প্রটোকল
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !intruderSelfie;
+                    setIntruderSelfie(next);
+                    try {
+                      localStorage.setItem('osa_intruder_selfie', String(next));
+                    } catch {}
+                  }}
+                  className={`w-11 h-6 rounded-full transition-colors relative p-0.5 ${
+                    intruderSelfie ? 'bg-rose-600' : 'bg-slate-300 dark:bg-slate-700'
+                  }`}
+                >
+                  <div
+                    className={`w-5 h-5 rounded-full bg-white transition-transform ${
+                      intruderSelfie ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
           </div>
         </div>
