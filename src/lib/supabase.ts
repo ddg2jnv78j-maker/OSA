@@ -202,3 +202,75 @@ export function getIceServers(): RTCIceServer[] {
 
   return iceServers;
 }
+
+/**
+ * Creates a pristine, un-subscribed Realtime channel instance.
+ * Synchronously removes and unregisters any stale channel matching the topic
+ * so that adding `.on('postgres_changes', ...)` or `.on('broadcast', ...)`
+ * will never throw the Supabase error:
+ * "cannot add 'postgres_changes' callbacks for ... after 'subscribe()' ".
+ */
+export function createSafeRealtimeChannel(
+  channelName: string,
+  opts?: Parameters<SupabaseClient['channel']>[1]
+): ReturnType<SupabaseClient['channel']> {
+  const client = getSupabaseClient();
+  const topic = `realtime:${channelName}`;
+
+  try {
+    const existing = client.getChannels().filter(
+      (c) => c && (c.topic === topic || c.topic === channelName)
+    );
+    for (const ch of existing) {
+      try {
+        ch.unsubscribe();
+      } catch {}
+      try {
+        (ch as unknown as { teardown?: () => void }).teardown?.();
+      } catch {}
+      try {
+        client.removeChannel(ch);
+      } catch {}
+    }
+  } catch {}
+
+  try {
+    const realtime = (client as unknown as { realtime?: { channels?: Array<{ topic: string }> } }).realtime;
+    if (realtime && Array.isArray(realtime.channels)) {
+      realtime.channels = realtime.channels.filter(
+        (c) => c && c.topic !== topic && c.topic !== channelName
+      );
+    }
+  } catch {}
+
+  return client.channel(channelName, opts);
+}
+
+/**
+ * Safely unsubscribes, tears down, and deletes a channel from Supabase's internal registry.
+ */
+export function safelyRemoveRealtimeChannel(
+  channel: ReturnType<SupabaseClient['channel']> | null | undefined
+): void {
+  if (!channel) return;
+  const client = getSupabaseClient();
+  const topic = channel.topic;
+  try {
+    channel.unsubscribe();
+  } catch {}
+  try {
+    (channel as unknown as { teardown?: () => void }).teardown?.();
+  } catch {}
+  try {
+    client.removeChannel(channel);
+  } catch {}
+  try {
+    const realtime = (client as unknown as { realtime?: { channels?: Array<{ topic: string }> } }).realtime;
+    if (realtime && Array.isArray(realtime.channels)) {
+      realtime.channels = realtime.channels.filter(
+        (c) => c && c.topic !== topic && c !== (channel as unknown)
+      );
+    }
+  } catch {}
+}
+

@@ -12,6 +12,7 @@ import {
   X,
   Sparkles,
   Download,
+  Smartphone,
 } from 'lucide-react';
 
 interface DigitalBusinessCardModalProps {
@@ -36,6 +37,7 @@ export const DigitalBusinessCardModal: React.FC<DigitalBusinessCardModalProps> =
 
   const [isEditing, setIsEditing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
 
   useEffect(() => {
     try {
@@ -70,6 +72,57 @@ export const DigitalBusinessCardModal: React.FC<DigitalBusinessCardModalProps> =
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Generate 100% real standard vCard 3.0 specification file
+  const generateVCardString = () => {
+    return [
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      `FN:${currentUserName}`,
+      `TITLE:${title}`,
+      `TEL;TYPE=CELL,VOICE:${phone}`,
+      `EMAIL;TYPE=INTERNET,PREF:${email}`,
+      `URL:${website}`,
+      `NOTE:${bio.replace(/\r?\n/g, ' ')}`,
+      'END:VCARD',
+    ].join('\r\n');
+  };
+
+  // Real vCard .vcf file download directly saving contact into phonebook
+  const handleDownloadVCard = () => {
+    const vcardContent = generateVCardString();
+    const blob = new Blob([vcardContent], { type: 'text/vcard;charset=utf-8' });
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    const cleanFileName = currentUserName.trim().replace(/\s+/g, '_') || 'Contact';
+    link.download = `${cleanFileName}.vcf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(blobUrl);
+  };
+
+  // Real Web Share API
+  const handleNativeShare = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `${currentUserName} - Digital Card`,
+          text: `${currentUserName}\n${title}\nPhone: ${phone}\nEmail: ${email}`,
+          url: website,
+        });
+      } catch {
+        // User cancelled share
+      }
+    } else {
+      handleCopyLink();
+    }
+  };
+
+  const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(
+    website || `tel:${phone}`
+  )}`;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col max-h-[90vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -81,10 +134,10 @@ export const DigitalBusinessCardModal: React.FC<DigitalBusinessCardModalProps> =
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                ডিজিটাল বিজনেস কার্ড ও পোর্টফোলিও
+                ডিজিটাল বিজনেস কার্ড ও কন্টাক্ট
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                ১-ট্যাপে নিজের কাজ ও কন্টাক্ট ক্লায়েন্টের সাথে শেয়ার করুন
+                সরাসরি ফোনের কন্টাক্টে সেভ করুন (.vcf) অথবা QR স্ক্যান করুন
               </p>
             </div>
           </div>
@@ -114,10 +167,29 @@ export const DigitalBusinessCardModal: React.FC<DigitalBusinessCardModalProps> =
                 </div>
               </div>
 
-              <div className="p-1.5 rounded-xl bg-white/10 backdrop-blur-md">
-                <QrCode className="w-10 h-10 text-white" />
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowQrModal(!showQrModal)}
+                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors"
+                title="QR কোড বড় করে দেখুন"
+              >
+                <QrCode className="w-7 h-7 text-white" />
+              </button>
             </div>
+
+            {/* Live QR popup if toggled */}
+            {showQrModal && (
+              <div className="p-4 rounded-2xl bg-white text-slate-900 text-center space-y-2 animate-in fade-in">
+                <img
+                  src={qrImageUrl}
+                  alt="Contact QR"
+                  className="w-40 h-40 mx-auto rounded-xl border border-slate-200 shadow"
+                />
+                <p className="text-[11px] font-semibold text-slate-600">
+                  যেকোনো ক্যামেরা দিয়ে স্ক্যান করলেই কন্টাক্ট ও লিঙ্ক খুলবে
+                </p>
+              </div>
+            )}
 
             <p className="text-xs text-slate-300 leading-relaxed italic">{bio}</p>
 
@@ -135,14 +207,20 @@ export const DigitalBusinessCardModal: React.FC<DigitalBusinessCardModalProps> =
 
             {/* Contacts strip */}
             <div className="pt-3 border-t border-white/10 grid grid-cols-2 gap-2 text-xs text-slate-300">
-              <div className="flex items-center gap-1.5">
-                <Phone className="w-3.5 h-3.5 text-cyan-400" />
+              <a
+                href={`tel:${phone.replace(/\s+/g, '')}`}
+                className="flex items-center gap-1.5 hover:text-white transition-colors"
+              >
+                <Phone className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                 <span className="truncate">{phone}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Mail className="w-3.5 h-3.5 text-blue-400" />
+              </a>
+              <a
+                href={`mailto:${email}`}
+                className="flex items-center gap-1.5 hover:text-white transition-colors"
+              >
+                <Mail className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                 <span className="truncate">{email}</span>
-              </div>
+              </a>
             </div>
           </div>
 
@@ -216,11 +294,20 @@ export const DigitalBusinessCardModal: React.FC<DigitalBusinessCardModalProps> =
             </button>
           )}
 
-          {/* Action buttons */}
-          <div className="flex gap-2">
+          {/* Real Actions: Download vCard & Share */}
+          <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={handleCopyLink}
-              className="flex-1 py-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-blue-600/25 transition"
+              type="button"
+              onClick={handleDownloadVCard}
+              className="py-3 px-3 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition active:scale-95"
+            >
+              <Download className="w-4 h-4" /> ফোনে সেভ করুন (.vcf)
+            </button>
+
+            <button
+              type="button"
+              onClick={handleNativeShare}
+              className="py-3 px-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-blue-600/20 transition active:scale-95"
             >
               {copied ? (
                 <>
@@ -228,7 +315,7 @@ export const DigitalBusinessCardModal: React.FC<DigitalBusinessCardModalProps> =
                 </>
               ) : (
                 <>
-                  <Copy className="w-4 h-4" /> কার্ড লিংক কপি করুন
+                  <Share2 className="w-4 h-4" /> কার্ড শেয়ার করুন
                 </>
               )}
             </button>

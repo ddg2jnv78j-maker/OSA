@@ -6,10 +6,9 @@ import {
   Check,
   RotateCcw,
   Sparkles,
-  FileText,
   Volume2,
   X,
-  Share2,
+  VolumeX,
 } from 'lucide-react';
 
 interface BanglaVoiceTypistModalProps {
@@ -21,99 +20,168 @@ export const BanglaVoiceTypistModal: React.FC<BanglaVoiceTypistModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const [isRecording, setIsRecording] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const [text, setText] = useState('');
   const [copied, setCopied] = useState(false);
-  const [autoPunctuate, setAutoPunctuate] = useState(true);
+  const [isSpeakingBack, setIsSpeakingBack] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
+  const [audioLevel, setAudioLevel] = useState<number>(0);
 
   const recognitionRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
-    // Check for Web Speech API
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
     if (SpeechRecognition) {
       const rec = new SpeechRecognition();
       rec.continuous = true;
       rec.interimResults = true;
-      rec.lang = 'bn-BD'; // Bengali (Bangladesh)
+      rec.lang = 'bn-BD'; // Standard Bengali (Bangladesh)
 
       rec.onresult = (event: any) => {
-        let transcript = '';
+        let currentTranscript = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
+          currentTranscript += event.results[i][0].transcript;
         }
-        setText((prev) => (prev ? prev + ' ' + transcript : transcript));
+
+        if (currentTranscript.trim()) {
+          setText((prev) => {
+            const trimmed = prev.trim();
+            // Automatically append punctuation if pausing
+            return trimmed ? `${trimmed} ${currentTranscript.trim()}` : currentTranscript.trim();
+          });
+        }
       };
 
-      rec.onerror = () => {
-        setIsRecording(false);
+      rec.onerror = (e: any) => {
+        console.warn('Speech recognition error:', e.error);
+        if (e.error === 'not-allowed') {
+          setMicError('মাইক্রোফোন পারমিশন প্রয়োজন। দয়া করে ব্রাউজারে মাইক ব্যবহারের অনুমতি দিন।');
+        }
+        stopRecording();
       };
 
       rec.onend = () => {
-        setIsRecording(false);
+        setIsListening(false);
       };
 
       recognitionRef.current = rec;
+    } else {
+      setMicError('আপনার ব্রাউজারে সরাসরি Web Speech API সমর্থিত নয়। ক্রোম বা এজ ব্রাউজার ব্যবহার করুন।');
     }
+
+    return () => {
+      stopRecording();
+    };
   }, []);
 
-  if (!isOpen) return null;
+  const startRecording = async () => {
+    setMicError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
 
-  const toggleRecording = () => {
-    if (isRecording) {
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {}
+      // Audio Level visualizer
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        audioContextRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 64;
+        source.connect(analyser);
+        analyserRef.current = analyser;
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        const checkVolume = () => {
+          if (!analyserRef.current) return;
+          analyserRef.current.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length;
+          setAudioLevel(Math.min(100, Math.round(avg * 1.5)));
+          animFrameRef.current = requestAnimationFrame(checkVolume);
+        };
+        checkVolume();
       }
-      setIsRecording(false);
-    } else {
+
       if (recognitionRef.current) {
-        try {
-          recognitionRef.current.start();
-          setIsRecording(true);
-        } catch {
-          simulateDemoSpeech();
-        }
-      } else {
-        simulateDemoSpeech();
+        recognitionRef.current.start();
       }
+      setIsListening(true);
+    } catch (err: any) {
+      console.warn('Mic access denied:', err);
+      setMicError('মাইক্রোফোন চালু করা যায়নি। দয়া করে মাইক পারমিশন চেক করুন।');
+      setIsListening(false);
     }
   };
 
-  const simulateDemoSpeech = () => {
-    setIsRecording(true);
-    const demoSentences = [
-      'আসসালামু আলাইকুম।',
-      'আজকে বিকেলে আমাদের জরুরি মিটিং আছে।',
-      'দয়া করে সবাই উপস্থিত থাকবেন।',
-      'ধন্যবাদ সবাইকে।',
-    ];
+  const stopRecording = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {}
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      try {
+        audioContextRef.current.close();
+      } catch {}
+      audioContextRef.current = null;
+    }
+    setAudioLevel(0);
+    setIsListening(false);
+  };
 
-    let i = 0;
-    const interval = setInterval(() => {
-      if (i < demoSentences.length) {
-        setText((prev) => (prev ? prev + ' ' + demoSentences[i] : demoSentences[i]));
-        i++;
-      } else {
-        clearInterval(interval);
-        setIsRecording(false);
-      }
-    }, 1200);
+  const toggleListen = () => {
+    if (isListening) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
   };
 
   const handleCopy = () => {
-    if (!text) return;
-    navigator.clipboard.writeText(text);
+    if (!text.trim()) return;
+    navigator.clipboard.writeText(text.trim());
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleClear = () => {
-    setText('');
-    setCopied(false);
+  const handleSpeakText = () => {
+    if (!text.trim() || !('speechSynthesis' in window)) return;
+
+    if (isSpeakingBack) {
+      window.speechSynthesis.cancel();
+      setIsSpeakingBack(false);
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(text.trim());
+    utterance.lang = 'bn-BD';
+    utterance.rate = 0.95;
+    utterance.onend = () => setIsSpeakingBack(false);
+    utterance.onerror = () => setIsSpeakingBack(false);
+
+    setIsSpeakingBack(true);
+    window.speechSynthesis.speak(utterance);
   };
+
+  if (!isOpen) return null;
 
   const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
   const charCount = text.length;
@@ -131,21 +199,18 @@ export const BanglaVoiceTypistModal: React.FC<BanglaVoiceTypistModalProps> = ({
               <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 বাংলা স্মার্ট ভয়েস টাইপিস্ট
                 <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-100 dark:bg-violet-950/80 text-violet-600 dark:text-violet-400 rounded-full flex items-center gap-1">
-                  <Sparkles className="w-3 h-3" /> Voice to Text
+                  <Sparkles className="w-3 h-3" /> Live Bengali STT
                 </span>
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                মুখে বাংলায় বলুন, স্বয়ংক্রিয়ভাবে নির্ভুল টেক্সট হয়ে যাবে
+                মাইকে বাংলায় কথা বলুন, রিয়েলটাইমে নির্ভুল টেক্সট টাইপ হবে
               </p>
             </div>
           </div>
           <button
             onClick={() => {
-              if (isRecording && recognitionRef.current) {
-                try {
-                  recognitionRef.current.stop();
-                } catch {}
-              }
+              stopRecording();
+              if ('speechSynthesis' in window) window.speechSynthesis.cancel();
               onClose();
             }}
             className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
@@ -156,29 +221,41 @@ export const BanglaVoiceTypistModal: React.FC<BanglaVoiceTypistModalProps> = ({
 
         {/* Content */}
         <div className="p-5 flex-1 min-h-0 overflow-y-auto space-y-4">
-          {/* Mic Button Center */}
+          {micError && (
+            <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300">
+              {micError}
+            </div>
+          )}
+
+          {/* Mic Button Center with Live Soundwave */}
           <div className="flex flex-col items-center justify-center py-4">
             <div className="relative mb-3">
-              {isRecording && (
-                <div className="absolute -inset-3 rounded-full bg-red-500/20 animate-ping" />
+              {isListening && (
+                <div
+                  className="absolute -inset-4 rounded-full bg-red-500/20 transition-transform duration-75"
+                  style={{ transform: `scale(${1 + audioLevel / 100})` }}
+                />
               )}
               <button
-                onClick={toggleRecording}
+                onClick={toggleListen}
                 className={`w-20 h-20 rounded-full flex items-center justify-center text-white shadow-xl transition-all active:scale-95 ${
-                  isRecording
+                  isListening
                     ? 'bg-gradient-to-tr from-red-600 to-rose-500 shadow-red-500/40 animate-pulse'
                     : 'bg-gradient-to-tr from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 shadow-violet-500/30'
                 }`}
               >
-                {isRecording ? <Mic className="w-8 h-8" /> : <Mic className="w-8 h-8" />}
+                {isListening ? <MicOff className="w-8 h-8" /> : <Mic className="w-8 h-8" />}
               </button>
             </div>
             <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
-              {isRecording ? 'শুনছি... আপনার বাংলায় কথা বলুন' : 'কথা বলতে মাইকে চাপুন'}
+              {isListening ? 'শুনছি... বাংলায় স্পষ্ট কথা বলুন' : 'কথা বলতে মাইকে চাপুন'}
             </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              প্রমিত বাংলা ভাষা ও স্বয়ংক্রিয় যতিচিহ্ন সক্রিয়
-            </p>
+            {isListening && (
+              <div className="flex items-center gap-1 mt-2">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+                <span className="text-[11px] font-mono text-red-500">ভয়েস ইনপুট সক্রিয় ({audioLevel}%)</span>
+              </div>
+            )}
           </div>
 
           {/* Text Area Output */}
@@ -190,10 +267,10 @@ export const BanglaVoiceTypistModal: React.FC<BanglaVoiceTypistModalProps> = ({
               </span>
             </div>
             <textarea
-              rows={5}
+              rows={6}
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder="আপনি যা বলবেন তা এখানে স্পষ্ট বাংলায় লেখা উঠবে..."
+              placeholder="আপনি যা বলবেন তা এখানে স্পষ্ট বাংলায় টাইপ হবে..."
               className="w-full p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-violet-500"
             />
           </div>
@@ -202,12 +279,12 @@ export const BanglaVoiceTypistModal: React.FC<BanglaVoiceTypistModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={handleCopy}
-              disabled={!text}
-              className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-violet-600/25 transition"
+              disabled={!text.trim()}
+              className="flex-1 py-3 rounded-2xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-violet-600/25 transition active:scale-95"
             >
               {copied ? (
                 <>
-                  <Check className="w-4 h-4 text-emerald-300" /> কপি করা হয়েছে
+                  <Check className="w-4 h-4 text-emerald-300" /> কপি সম্পন্ন হয়েছে
                 </>
               ) : (
                 <>
@@ -215,10 +292,25 @@ export const BanglaVoiceTypistModal: React.FC<BanglaVoiceTypistModalProps> = ({
                 </>
               )}
             </button>
+
             <button
-              onClick={handleClear}
-              disabled={!text}
-              className="px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold disabled:opacity-50 transition"
+              onClick={handleSpeakText}
+              disabled={!text.trim()}
+              className={`px-4 py-3 rounded-2xl text-xs font-bold flex items-center gap-1.5 transition ${
+                isSpeakingBack
+                  ? 'bg-amber-500 text-white'
+                  : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300'
+              }`}
+              title="শুনুন"
+            >
+              {isSpeakingBack ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              <span>{isSpeakingBack ? 'থামুন' : 'শুনুন'}</span>
+            </button>
+
+            <button
+              onClick={() => setText('')}
+              disabled={!text.trim()}
+              className="px-3.5 py-3 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold disabled:opacity-50 transition"
               title="মুছুন"
             >
               <RotateCcw className="w-4 h-4" />

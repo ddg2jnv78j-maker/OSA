@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Film,
   Play,
@@ -10,6 +10,10 @@ import {
   X,
   Sparkles,
   Tv,
+  Link,
+  Flame,
+  ThumbsUp,
+  Share2,
 } from 'lucide-react';
 
 interface WatchPartyModalProps {
@@ -18,61 +22,173 @@ interface WatchPartyModalProps {
   currentUserName?: string;
 }
 
-const PRESET_VIDEOS = [
-  { id: '1', title: 'বাংলাদেশ ক্রিকেট রোমাঞ্চকর শেষ ওভারের জয়', channel: 'টি-টোয়েন্টি হাইলাইটস', views: '১.২ মিলিয়ন' },
-  { id: '2', title: 'বাংলা কমেডি নাটক - ব্যাচেলর আড্ডা', channel: 'নাটক ড্রামা ক্লাব', views: '৮৫০ হাজার' },
-  { id: '3', title: 'বৃষ্টির দিনে রিল্যাক্সিং বাংলা ও লফি মেলোডি', channel: 'OSA মিউজিক স্টেশন', views: '২.৫ মিলিয়ন' },
+interface WatchPartyVideo {
+  id: string;
+  youtubeId: string;
+  title: string;
+  channel: string;
+}
+
+const PRESET_VIDEOS: WatchPartyVideo[] = [
+  {
+    id: '1',
+    youtubeId: '9bZkp7q19f0',
+    title: 'Psy - Gangnam Style (Global Party Hit)',
+    channel: 'Official Music',
+  },
+  {
+    id: '2',
+    youtubeId: 'L_LUpnjgPso',
+    title: 'Relaxing Instrumental & Nature Sounds',
+    channel: 'Calm Studio',
+  },
+  {
+    id: '3',
+    youtubeId: 'kJQP7kiw5Fk',
+    title: 'Despacito - Luis Fonsi ft. Daddy Yankee',
+    channel: 'Music Vevo',
+  },
 ];
+
+function extractYouTubeId(urlOrId: string): string | null {
+  const clean = urlOrId.trim();
+  if (/^[a-zA-Z0-9_-]{11}$/.test(clean)) {
+    return clean;
+  }
+  const match = clean.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+  return match ? match[1] : null;
+}
 
 export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
   isOpen,
   onClose,
   currentUserName = 'User',
 }) => {
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [selectedVideo, setSelectedVideo] = useState(PRESET_VIDEOS[0]);
+  const [selectedVideo, setSelectedVideo] = useState<WatchPartyVideo>(PRESET_VIDEOS[0]);
+  const [customUrl, setCustomUrl] = useState('');
+  const [urlError, setUrlError] = useState('');
   const [chatInput, setChatInput] = useState('');
-  const [messages, setMessages] = useState<{ id: string; user: string; text: string }[]>([
-    { id: '1', user: 'সাকিব', text: 'কী দারুণ ম্যাচ ভাই!' },
-    { id: '2', user: 'সাদিয়া', text: 'শেষের ছক্কাটা অসাধারণ ছিল 🔥' },
+  const [messages, setMessages] = useState<{ id: string; user: string; text: string; time: string }[]>([
+    { id: '1', user: 'সাকিব', text: 'সবাই রেডি? একসাথে দেখা শুরু করি!', time: '১০:০০' },
   ]);
-  const [flyingEmojis, setFlyingEmojis] = useState<{ id: number; char: string }[]>([]);
+  const [flyingEmojis, setFlyingEmojis] = useState<{ id: number; char: string; left: number }[]>([]);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+
+  // Sync across tabs and peers via BroadcastChannel
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel('osa_watch_party_stream');
+      broadcastChannelRef.current = bc;
+
+      bc.onmessage = (event) => {
+        const data = event.data;
+        if (!data) return;
+
+        if (data.type === 'change_video' && data.video) {
+          setSelectedVideo(data.video);
+        } else if (data.type === 'chat_message' && data.message) {
+          setMessages((prev) => [...prev, data.message]);
+        } else if (data.type === 'emoji_reaction' && data.char) {
+          triggerEmojiLocal(data.char);
+        }
+      };
+    } catch {}
+
+    return () => {
+      try {
+        bc?.close();
+      } catch {}
+      broadcastChannelRef.current = null;
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const triggerEmoji = (char: string) => {
-    const newId = Date.now();
-    setFlyingEmojis((prev) => [...prev, { id: newId, char }]);
+  const triggerEmojiLocal = (char: string) => {
+    const newId = Date.now() + Math.random();
+    const left = 20 + Math.random() * 60;
+    setFlyingEmojis((prev) => [...prev, { id: newId, char, left }]);
     setTimeout(() => {
       setFlyingEmojis((prev) => prev.filter((e) => e.id !== newId));
-    }, 1500);
+    }, 1600);
+  };
+
+  const handleSendEmoji = (char: string) => {
+    triggerEmojiLocal(char);
+    broadcastChannelRef.current?.postMessage({
+      type: 'emoji_reaction',
+      char,
+    });
   };
 
   const handleSendChat = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
-    setMessages([...messages, { id: 'm_' + Date.now(), user: currentUserName, text: chatInput.trim() }]);
+    const newMsg = {
+      id: 'm_' + Date.now(),
+      user: currentUserName,
+      text: chatInput.trim(),
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    setMessages((prev) => [...prev, newMsg]);
+    broadcastChannelRef.current?.postMessage({
+      type: 'chat_message',
+      message: newMsg,
+    });
     setChatInput('');
   };
 
+  const handleApplyCustomUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    setUrlError('');
+    const ytid = extractYouTubeId(customUrl);
+    if (!ytid) {
+      setUrlError('সঠিক ইউটিউব লিংক দিন (যেমন: youtube.com/watch?v=...)');
+      return;
+    }
+    const newVid: WatchPartyVideo = {
+      id: 'custom_' + Date.now(),
+      youtubeId: ytid,
+      title: 'কাস্টম শেয়ার্ড ভিডিও',
+      channel: currentUserName + ' শেয়ার করেছেন',
+    };
+    setSelectedVideo(newVid);
+    broadcastChannelRef.current?.postMessage({
+      type: 'change_video',
+      video: newVid,
+    });
+    setCustomUrl('');
+  };
+
+  const handleSelectPreset = (vid: WatchPartyVideo) => {
+    setSelectedVideo(vid);
+    broadcastChannelRef.current?.postMessage({
+      type: 'change_video',
+      video: vid,
+    });
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col max-h-[90vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-3 sm:p-4">
+      <div className="w-full max-w-2xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col max-h-[92vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
-        <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-gradient-to-r from-purple-500/10 via-pink-500/5 to-transparent">
+        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-gradient-to-r from-purple-500/10 via-pink-500/5 to-transparent">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-purple-600 to-pink-600 text-white flex items-center justify-center shadow-lg shadow-purple-500/25">
               <Film className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                OSA ওয়াচ পার্টি ও রেডিও রুম
-                <span className="px-2 py-0.5 text-[10px] font-bold bg-purple-100 dark:bg-purple-950/80 text-purple-600 dark:text-purple-400 rounded-full flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" /> ৩ জন লাইভ
+              <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                OSA লাইভ ওয়াচ পার্টি
+                <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950/80 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> লাইভ সিঙ্ক
                 </span>
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                বন্ধুরা মিলে একসাথে নাটক, খেলা ও সিনেমা দেখার ভার্চুয়াল রুম
+                বন্ধুরা মিলে একসাথে আসল ইউটিউব নাটক, সিনেমা ও ম্যাচ দেখার সিঙ্ক রুম
               </p>
             </div>
           </div>
@@ -84,103 +200,137 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
           </button>
         </div>
 
-        {/* Video Canvas Simulation */}
-        <div className="relative aspect-video bg-slate-950 flex flex-col items-center justify-center text-white p-4 overflow-hidden">
-          {/* Flying emojis */}
-          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        {/* Real YouTube Player */}
+        <div className="relative aspect-video w-full bg-black overflow-hidden flex items-center justify-center">
+          <iframe
+            key={selectedVideo.youtubeId}
+            src={`https://www.youtube-nocookie.com/embed/${selectedVideo.youtubeId}?autoplay=1&rel=0&modestbranding=1`}
+            title={selectedVideo.title}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+            className="w-full h-full border-0"
+          />
+
+          {/* Flying emojis overlay */}
+          <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
             {flyingEmojis.map((e) => (
               <span
                 key={e.id}
-                className="absolute text-3xl animate-bounce"
+                className="absolute text-3xl animate-bounce drop-shadow-lg"
                 style={{
-                  left: `${20 + Math.random() * 60}%`,
-                  bottom: '20px',
-                  transition: 'transform 1s ease-out, opacity 1s',
+                  left: `${e.left}%`,
+                  bottom: '24px',
+                  animationDuration: '1.4s',
                 }}
               >
                 {e.char}
               </span>
             ))}
           </div>
+        </div>
 
-          <div className="flex flex-col items-center z-10">
-            <Tv className="w-12 h-12 text-purple-400 mb-2 animate-pulse" />
-            <p className="text-sm font-bold text-center max-w-sm">{selectedVideo.title}</p>
-            <p className="text-xs text-purple-300 mt-1">{selectedVideo.channel} • {selectedVideo.views}</p>
+        {/* Video Info Bar */}
+        <div className="p-3 bg-slate-950 text-white flex items-center justify-between text-xs px-4">
+          <div className="min-w-0 pr-2">
+            <h3 className="font-bold truncate text-sm">{selectedVideo.title}</h3>
+            <p className="text-[11px] text-slate-400 truncate">{selectedVideo.channel}</p>
           </div>
 
-          {/* Controls overlay */}
-          <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-2xl">
+          {/* Live Floating Reaction Buttons */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {['❤️', '🔥', '😂', '👏'].map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => handleSendEmoji(emoji)}
+                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/25 active:scale-125 transition flex items-center justify-center text-base"
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Custom YouTube Link Input */}
+        <div className="p-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40">
+          <form onSubmit={handleApplyCustomUrl} className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                type="text"
+                placeholder="ইউটিউব ভিডিওর লিংক পেস্ট করুন (যেমন: https://youtu.be/...)"
+                value={customUrl}
+                onChange={(e) => setCustomUrl(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+              />
+              <Link className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+            </div>
             <button
-              onClick={() => setIsPlaying(!isPlaying)}
-              className="p-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
+              type="submit"
+              className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shrink-0"
             >
-              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-white" />}
+              প্লে করুন
             </button>
-            <span className="text-xs font-mono text-purple-200">
-              {isPlaying ? '● লাইভ স্ট্রিমিং হচ্ছে' : 'বিরতি'}
-            </span>
-            <div className="flex gap-1.5">
-              {['🔥', '❤️', '👏', '😂'].map((emoji) => (
+          </form>
+          {urlError && <p className="text-[11px] text-rose-500 mt-1">{urlError}</p>}
+        </div>
+
+        {/* Presets + Real Chat Bottom Area */}
+        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3 flex-1 min-h-0 overflow-y-auto">
+          {/* Preset Videos */}
+          <div className="space-y-2">
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-300">জনপ্রিয় প্লেলিস্ট:</p>
+            <div className="space-y-1.5">
+              {PRESET_VIDEOS.map((vid) => (
                 <button
-                  key={emoji}
-                  onClick={() => triggerEmoji(emoji)}
-                  className="hover:scale-125 transition text-base"
+                  key={vid.id}
+                  type="button"
+                  onClick={() => handleSelectPreset(vid)}
+                  className={`w-full text-left p-2.5 rounded-xl text-xs transition border flex items-center gap-2.5 ${
+                    selectedVideo.youtubeId === vid.youtubeId
+                      ? 'bg-purple-50 dark:bg-purple-950/40 border-purple-500 text-purple-700 dark:text-purple-300 font-bold'
+                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-slate-400'
+                  }`}
                 >
-                  {emoji}
+                  <Play className="w-3.5 h-3.5 shrink-0 text-purple-600" />
+                  <div className="min-w-0 flex-1 truncate">
+                    <p className="truncate">{vid.title}</p>
+                    <p className="text-[10px] text-slate-400 truncate">{vid.channel}</p>
+                  </div>
                 </button>
               ))}
             </div>
           </div>
-        </div>
 
-        {/* Room Chat & Presets */}
-        <div className="p-4 flex-1 min-h-0 flex flex-col space-y-3">
-          {/* Preset list */}
-          <div className="flex gap-2 overflow-x-auto no-scrollbar">
-            {PRESET_VIDEOS.map((v) => (
+          {/* Real Live Watch Room Chat */}
+          <div className="flex flex-col h-48 md:h-auto border border-slate-200 dark:border-slate-800 rounded-2xl bg-white dark:bg-slate-900 p-2.5">
+            <p className="text-[11px] font-bold text-slate-500 mb-2 px-1">লাইভ আড্ডা রুম:</p>
+            <div className="flex-1 overflow-y-auto space-y-1.5 text-xs pr-1">
+              {messages.map((m) => (
+                <div key={m.id} className="p-1.5 rounded-lg bg-slate-50 dark:bg-slate-800/60">
+                  <span className="font-bold text-purple-600 dark:text-purple-400 mr-1.5">
+                    {m.user}:
+                  </span>
+                  <span className="text-slate-800 dark:text-slate-200">{m.text}</span>
+                </div>
+              ))}
+            </div>
+
+            <form onSubmit={handleSendChat} className="mt-2 flex gap-1.5">
+              <input
+                type="text"
+                placeholder="মন্তব্য লিখুন..."
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                className="flex-1 px-2.5 py-1 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white border-0"
+              />
               <button
-                key={v.id}
-                onClick={() => setSelectedVideo(v)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                  selectedVideo.id === v.id
-                    ? 'bg-purple-600 text-white'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-                }`}
+                type="submit"
+                className="p-1.5 rounded-xl bg-purple-600 text-white shrink-0 hover:bg-purple-700"
               >
-                {v.title.slice(0, 20)}...
+                <Send className="w-3.5 h-3.5" />
               </button>
-            ))}
+            </form>
           </div>
-
-          {/* Mini Room Chat */}
-          <div className="flex-1 min-h-[100px] overflow-y-auto space-y-1.5 bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded-2xl border border-slate-200 dark:border-slate-700">
-            {messages.map((m) => (
-              <p key={m.id} className="text-xs">
-                <span className="font-bold text-purple-600 dark:text-purple-400 mr-1.5">
-                  {m.user}:
-                </span>
-                <span className="text-slate-700 dark:text-slate-200">{m.text}</span>
-              </p>
-            ))}
-          </div>
-
-          {/* Chat input */}
-          <form onSubmit={handleSendChat} className="flex gap-2">
-            <input
-              type="text"
-              placeholder="রুমের বন্ধুদের কিছু বলুন..."
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              className="flex-1 px-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-purple-500"
-            />
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-sm"
-            >
-              <Send className="w-3.5 h-3.5" />
-            </button>
-          </form>
         </div>
       </div>
     </div>

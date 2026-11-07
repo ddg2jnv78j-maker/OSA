@@ -1,6 +1,6 @@
 const BASE_PATH = self.location.pathname.replace(/service-worker\.js$/, '');
 const PRODUCTION_APP_URL = 'https://osa-chat.com/';
-const CACHE_NAME = 'osa-pwa-cache-v17';
+const CACHE_NAME = 'osa-pwa-cache-v18';
 const SW_META_CACHE = 'osa-sw-meta-v1';
 const SW_META_URL = 'https://osa-chat.com/__sw_sub_meta';
 const SUPABASE_PUSH_FN_URL =

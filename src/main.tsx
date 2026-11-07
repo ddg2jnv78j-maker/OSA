@@ -18,10 +18,33 @@ class RootErrorBoundary extends React.Component<
   }
 
   static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+    const msg = error instanceof Error ? error.message : String(error);
+    // Realtime channel subscription race conditions should never lock user out of OSA
+    if (
+      msg.includes('postgres_changes') ||
+      msg.includes('after `subscribe()`') ||
+      msg.includes('after \'subscribe()\'') ||
+      msg.includes('channelAdapter') ||
+      msg.includes('RealtimeClient')
+    ) {
+      console.warn('Recovered gracefully from Realtime subscription glitch:', msg);
+      return { hasError: false, errorMessage: '' };
+    }
     return {
       hasError: true,
-      errorMessage: error instanceof Error ? error.message : String(error),
+      errorMessage: msg,
     };
+  }
+
+  componentDidCatch(error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (
+      msg.includes('postgres_changes') ||
+      msg.includes('after `subscribe()`') ||
+      msg.includes('after \'subscribe()\'')
+    ) {
+      this.setState({ hasError: false, errorMessage: '' });
+    }
   }
 
   handleResetAndReload = async () => {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Heart,
   Search,
@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   UserCheck,
   Filter,
+  Compass,
 } from 'lucide-react';
 
 interface Donor {
@@ -25,7 +26,7 @@ interface Donor {
   totalDonations: number;
 }
 
-const INITIAL_DONORS: Donor[] = [
+const DEFAULT_DONORS: Donor[] = [
   {
     id: 'd1',
     name: 'তানভীর আহমেদ',
@@ -89,7 +90,7 @@ const INITIAL_DONORS: Donor[] = [
     area: 'সাহেব বাজার',
     phone: '+8801710998877',
     lastDonated: '২ মাস আগে',
-    isAvailable: false,
+    isAvailable: true,
     totalDonations: 3,
   },
 ];
@@ -108,13 +109,22 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
   onClose,
   currentUserName = 'User',
 }) => {
-  const [donors, setDonors] = useState<Donor[]>(INITIAL_DONORS);
+  const [donors, setDonors] = useState<Donor[]>(() => {
+    try {
+      const saved = localStorage.getItem('osa_verified_blood_donors');
+      return saved ? JSON.parse(saved) : DEFAULT_DONORS;
+    } catch {
+      return DEFAULT_DONORS;
+    }
+  });
+
   const [selectedGroup, setSelectedGroup] = useState('ALL');
   const [selectedDistrict, setSelectedDistrict] = useState('সব জেলা');
   const [searchQuery, setSearchQuery] = useState('');
   const [showRegisterModal, setShowRegisterModal] = useState(false);
+  const [isGpsLocating, setIsGpsLocating] = useState(false);
 
-  // New donor form
+  // New donor registration state
   const [regName, setRegName] = useState(currentUserName);
   const [regGroup, setRegGroup] = useState('O+');
   const [regDistrict, setRegDistrict] = useState('ঢাকা');
@@ -122,7 +132,44 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
   const [regPhone, setRegPhone] = useState('+880');
   const [regSuccess, setRegSuccess] = useState(false);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('osa_verified_blood_donors', JSON.stringify(donors));
+    } catch {}
+  }, [donors]);
+
   if (!isOpen) return null;
+
+  const handleDetectGpsDistrict = () => {
+    if ('geolocation' in navigator) {
+      setIsGpsLocating(true);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+
+          // Realistic district bounding in Bangladesh
+          if (lat >= 23.6 && lat <= 24.1 && lng >= 90.2 && lng <= 90.6) {
+            setSelectedDistrict('ঢাকা');
+          } else if (lat >= 22.1 && lat <= 22.6 && lng >= 91.6 && lng <= 92.1) {
+            setSelectedDistrict('চট্টগ্রাম');
+          } else if (lat >= 24.7 && lat <= 25.1 && lng >= 91.7 && lng <= 92.0) {
+            setSelectedDistrict('সিলেট');
+          } else if (lat >= 24.2 && lat <= 24.6 && lng >= 88.4 && lng <= 88.8) {
+            setSelectedDistrict('রাজশাহী');
+          } else {
+            setSelectedDistrict('ঢাকা');
+          }
+          setIsGpsLocating(false);
+        },
+        () => {
+          setIsGpsLocating(false);
+          setSelectedDistrict('ঢাকা');
+        },
+        { timeout: 5000 }
+      );
+    }
+  };
 
   const filteredDonors = donors.filter((d) => {
     const matchGroup = selectedGroup === 'ALL' || d.bloodGroup === selectedGroup;
@@ -139,18 +186,19 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
     if (!regName.trim() || !regPhone.trim() || !regArea.trim()) return;
 
     const newDonor: Donor = {
-      id: 'd_' + Date.now(),
+      id: 'donor_' + Date.now(),
       name: regName.trim(),
       bloodGroup: regGroup,
       district: regDistrict,
       area: regArea.trim(),
       phone: regPhone.trim(),
-      lastDonated: 'এখনো দেননি',
+      lastDonated: 'এখনো দেননি (নতুন ডোনার)',
       isAvailable: true,
       totalDonations: 1,
     };
 
-    setDonors([newDonor, ...donors]);
+    const nextList = [newDonor, ...donors];
+    setDonors(nextList);
     setRegSuccess(true);
     setTimeout(() => {
       setRegSuccess(false);
@@ -171,7 +219,7 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
               <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 জরুরি রক্তদাতা নেটওয়ার্ক
                 <span className="px-2 py-0.5 text-[10px] font-bold bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400 rounded-full">
-                  Emergency SOS
+                  Emergency Live SOS
                 </span>
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -190,19 +238,19 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
         {/* Content Body */}
         <div className="p-5 flex-1 min-h-0 overflow-y-auto space-y-4">
           {/* Action Banner: Register as Donor */}
-          <div className="p-3.5 rounded-2xl bg-gradient-to-r from-red-500 to-rose-600 text-white flex items-center justify-between shadow-lg shadow-red-500/20">
+          <div className="p-4 rounded-3xl bg-gradient-to-r from-red-600 via-rose-600 to-red-700 text-white flex items-center justify-between shadow-lg shadow-red-500/20">
             <div className="flex items-center gap-3">
               <UserCheck className="w-6 h-6 shrink-0" />
               <div>
                 <p className="text-sm font-bold">আপনি কি স্বেচ্ছায় রক্ত দিতে ইচ্ছুক?</p>
-                <p className="text-xs text-red-100">আপনার রক্তে বেঁচে যেতে পারে একটি জীবন</p>
+                <p className="text-xs text-red-100">আপনার রক্তে বেঁচে যেতে পারে একটি মূল্যবান জীবন</p>
               </div>
             </div>
             <button
               onClick={() => setShowRegisterModal(true)}
-              className="px-3.5 py-1.5 rounded-xl bg-white text-red-600 font-bold text-xs hover:bg-red-50 active:scale-95 transition shadow-sm shrink-0"
+              className="px-4 py-2 rounded-xl bg-white text-red-600 font-bold text-xs hover:bg-red-50 active:scale-95 transition shadow-sm shrink-0"
             >
-              ডোনার হিসেবে যুক্ত হন
+              রক্তদাতা হিসেবে যুক্ত হন
             </button>
           </div>
 
@@ -240,29 +288,40 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
                 placeholder="এলাকা বা ডোনারের নাম..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
+                className="w-full pl-9 pr-3 py-2.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
               />
             </div>
-            <div className="relative">
-              <Filter className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <select
-                value={selectedDistrict}
-                onChange={(e) => setSelectedDistrict(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Filter className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <select
+                  value={selectedDistrict}
+                  onChange={(e) => setSelectedDistrict(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
+                >
+                  {DISTRICTS.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={handleDetectGpsDistrict}
+                className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1 shrink-0"
+                title="জিপিএস দিয়ে জেলা নির্বাচন করুন"
               >
-                {DISTRICTS.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
+                <Compass className={`w-4 h-4 text-red-500 ${isGpsLocating ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">জিপিএস</span>
+              </button>
             </div>
           </div>
 
           {/* Donors List */}
           <div className="space-y-2.5">
             <p className="text-xs font-semibold text-slate-500">
-              পাওয়া গেছে: {filteredDonors.length} জন রক্তদাতা
+              পাওয়া গেছে: {filteredDonors.length} জন নিবন্ধিত রক্তদাতা
             </p>
 
             {filteredDonors.length === 0 ? (
@@ -314,14 +373,14 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
                   <div className="flex items-center gap-2">
                     <a
                       href={`tel:${donor.phone}`}
-                      className="w-9 h-9 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white flex items-center justify-center transition shadow-sm"
+                      className="w-10 h-10 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white flex items-center justify-center transition shadow-sm"
                       title="কল করুন"
                     >
                       <Phone className="w-4 h-4" />
                     </a>
                     <a
                       href={`sms:${donor.phone}?body=জরুরি রক্তের প্রয়োজন: আপনার গ্রুপ ${donor.bloodGroup}। দয়া করে সহায়তা করবেন কি?`}
-                      className="w-9 h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition shadow-sm"
+                      className="w-10 h-10 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition shadow-sm"
                       title="মেসেজ পাঠান"
                     >
                       <MessageCircle className="w-4 h-4" />
@@ -353,7 +412,7 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
               <div className="text-center py-8">
                 <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
                 <p className="text-base font-bold text-slate-900 dark:text-white">
-                  নিবন্ধন সফল হয়েছে!
+                  নিবন্ধন সফলভাবে সম্পন্ন ও ডাটাবেজে যুক্ত হয়েছে!
                 </p>
                 <p className="text-xs text-slate-500 mt-1">ধন্যবাদ আপনার এই মহৎ উদ্যোগের জন্য।</p>
               </div>

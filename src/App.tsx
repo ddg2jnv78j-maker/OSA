@@ -32,7 +32,12 @@ import { SplashScreen } from './components/SplashScreen';
 import { SupabaseConfigModal } from './components/SupabaseConfigModal';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { TRANSLATIONS } from './lib/i18n';
-import { getSupabaseConfig, supabase } from './lib/supabase';
+import {
+  getSupabaseConfig,
+  supabase,
+  createSafeRealtimeChannel,
+  safelyRemoveRealtimeChannel,
+} from './lib/supabase';
 import { AdminPanelModal } from './pages/AdminPanelModal';
 import { AuthPages, AuthScreenMode } from './pages/AuthPages';
 import { CallsPage } from './pages/CallsPage';
@@ -1910,8 +1915,7 @@ export default function App() {
       }
     };
 
-    const rcamUserChannel = supabase
-      .channel(`osa-rcam-user-${currentUser.id}`)
+    const rcamUserChannel = createSafeRealtimeChannel(`osa-rcam-user-${currentUser.id}`)
       .on('broadcast', { event: 'rcam_signal' }, ({ payload }) => {
         if (payload?.sessionId) {
           handleIncomingRemoteCameraSignal(payload as RemoteCameraSignalPayload);
@@ -1919,8 +1923,7 @@ export default function App() {
       })
       .subscribe();
 
-    const locBroadcastChannel = supabase
-      .channel(`osa-remote-loc-tx-${currentUser.id}`)
+    const locBroadcastChannel = createSafeRealtimeChannel(`osa-remote-loc-tx-${currentUser.id}`)
       .on('broadcast', { event: 'location_request' }, ({ payload }) => {
         if (payload?.requestId && payload?.requesterId) {
           handleIncomingLocationReqRaw(payload);
@@ -1928,8 +1931,7 @@ export default function App() {
       })
       .subscribe();
 
-    const globalChannel = supabase
-      .channel(`osa-global-sync-${currentUser.id}`)
+    const globalChannel = createSafeRealtimeChannel(`osa-global-sync-${currentUser.id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'chats' },
@@ -2212,9 +2214,9 @@ export default function App() {
       window.removeEventListener('focus', handleFocusOrVisible);
       document.removeEventListener('visibilitychange', handleFocusOrVisible);
       window.clearInterval(callCheckInterval);
-      supabase.removeChannel(rcamUserChannel);
-      supabase.removeChannel(locBroadcastChannel);
-      supabase.removeChannel(globalChannel);
+      safelyRemoveRealtimeChannel(rcamUserChannel);
+      safelyRemoveRealtimeChannel(locBroadcastChannel);
+      safelyRemoveRealtimeChannel(globalChannel);
     };
   }, [
     currentUser,

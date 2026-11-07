@@ -118,7 +118,11 @@ import { RingtoneModal } from '../components/RingtoneSelector';
 import { AffiliateProductCard } from '../components/AffiliateProductCard';
 import { AffiliateProduct } from '../types/osa';
 import { TranslationDictionary } from '../lib/i18n';
-import { supabase } from '../lib/supabase';
+import {
+  supabase,
+  createSafeRealtimeChannel,
+  safelyRemoveRealtimeChannel,
+} from '../lib/supabase';
 import {
   generateSmartDraftOrReply,
   queryShoppingAssistant,
@@ -869,103 +873,98 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   // Realtime subscription for messages, attachments, and typing broadcast
   useEffect(() => {
     const channelName = `osa-chat-room-${chat.id}`;
-    let channel: ReturnType<typeof supabase.channel> | null = null;
+    const pgChannelName = `osa-chat-pg-${chat.id}-${currentUser.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    let bcastChannel: ReturnType<typeof supabase.channel> | null = null;
+    let pgChannel: ReturnType<typeof supabase.channel> | null = null;
 
     try {
-      const stale = supabase.getChannels().find(
-        (c) => c.topic === `realtime:${channelName}` || c.topic === channelName
-      );
-      if (stale) {
-        try {
-          stale.unsubscribe();
-        } catch {}
-        try {
-          supabase.removeChannel(stale);
-        } catch {}
-      }
-
-      // Synchronously purge stale channel from internal realtime registry
-      const realtimeClient = (supabase as unknown as { realtime?: { channels?: Array<{ topic: string }> } }).realtime;
-      if (realtimeClient && Array.isArray(realtimeClient.channels)) {
-        realtimeClient.channels = realtimeClient.channels.filter(
-          (c) => c && c.topic !== `realtime:${channelName}` && c.topic !== channelName
-        );
-      }
-
-      channel = supabase
-        .channel(channelName, {
-          config: {
-            broadcast: { self: false },
-            presence: { key: currentUser.id },
+      // 1. Dedicated database change subscription on an isolated, collision-proof channel topic
+      pgChannel = createSafeRealtimeChannel(pgChannelName)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'messages',
+            filter: `chat_id=eq.${chat.id}`,
           },
-        })
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'messages',
-          filter: `chat_id=eq.${chat.id}`,
-        },
-        async () => {
-          const fresh = await fetchChatMessages(
-            chat.id,
-            currentUser.id,
-            chat.my_membership?.cleared_at
-          );
-          setMessages(fresh);
-          if (!ghostModeActive) {
-            await markChatAsRead(
+          async () => {
+            const fresh = await fetchChatMessages(
               chat.id,
               currentUser.id,
-              myPrivacy ? myPrivacy.read_receipts : true
+              chat.my_membership?.cleared_at
             );
+            setMessages(fresh);
+            if (!ghostModeActive) {
+              await markChatAsRead(
+                chat.id,
+                currentUser.id,
+                myPrivacy ? myPrivacy.read_receipts : true
+              );
+            }
+            onChatUpdated();
           }
-          onChatUpdated();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'message_attachments',
-          filter: `chat_id=eq.${chat.id}`,
-        },
-        async () => {
-          const fresh = await fetchChatMessages(
-            chat.id,
-            currentUser.id,
-            chat.my_membership?.cleared_at
-          );
-          setMessages(fresh);
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'calls',
-        },
-        async () => {
-          if (!isGroup) {
-            const freshCalls = await fetchConversationCallHistory(
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'message_attachments',
+            filter: `chat_id=eq.${chat.id}`,
+          },
+          async () => {
+            const fresh = await fetchChatMessages(
               chat.id,
               currentUser.id,
-              peer?.id
-            ).catch(() => []);
-            const clearedTime = chat.my_membership?.cleared_at
-              ? new Date(chat.my_membership.cleared_at).getTime()
-              : 0;
-            setChatCalls(
-              clearedTime
-                ? freshCalls.filter((c) => new Date(c.created_at).getTime() > clearedTime)
-                : freshCalls
+              chat.my_membership?.cleared_at
             );
+            setMessages(fresh);
           }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'calls',
+          },
+          async () => {
+            if (!isGroup) {
+              const freshCalls = await fetchConversationCallHistory(
+                chat.id,
+                currentUser.id,
+                peer?.id
+              ).catch(() => []);
+              const clearedTime = chat.my_membership?.cleared_at
+                ? new Date(chat.my_membership.cleared_at).getTime()
+                : 0;
+              setChatCalls(
+                clearedTime
+                  ? freshCalls.filter((c) => new Date(c.created_at).getTime() > clearedTime)
+                  : freshCalls
+              );
+            }
+          }
+        );
+
+      pgChannel.subscribe((status) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Realtime database sync status:', status);
         }
-      )
+      });
+    } catch (pgErr) {
+      console.warn('Realtime database channel initialization bypassed:', pgErr);
+    }
+
+    try {
+      // 2. Chat room broadcast and presence channel cleanly purged and created
+      bcastChannel = createSafeRealtimeChannel(channelName, {
+        config: {
+          broadcast: { self: false },
+          presence: { key: currentUser.id },
+        },
+      })
       .on('broadcast', { event: 'typing' }, (payload) => {
         const senderId = payload.payload?.userId as string | undefined;
         const senderName = payload.payload?.name as string | undefined;
@@ -1149,7 +1148,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         }
       });
 
-      channelRef.current = channel;
+      channelRef.current = bcastChannel;
     } catch (realtimeErr) {
       console.warn('Realtime channel initialization bypassed or failed:', realtimeErr);
     }
@@ -1158,22 +1157,8 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       setPeerIsTyping(false);
       setTypingUserName('');
-      if (channel) {
-        try {
-          channel.unsubscribe();
-        } catch {}
-        try {
-          supabase.removeChannel(channel);
-        } catch {}
-      }
-      try {
-        const realtimeClient = (supabase as unknown as { realtime?: { channels?: Array<{ topic: string }> } }).realtime;
-        if (realtimeClient && Array.isArray(realtimeClient.channels)) {
-          realtimeClient.channels = realtimeClient.channels.filter(
-            (c) => c && c.topic !== `realtime:${channelName}` && c.topic !== channelName
-          );
-        }
-      } catch {}
+      safelyRemoveRealtimeChannel(bcastChannel);
+      safelyRemoveRealtimeChannel(pgChannel);
       channelRef.current = null;
     };
   }, [chat.id, currentUser.id]);

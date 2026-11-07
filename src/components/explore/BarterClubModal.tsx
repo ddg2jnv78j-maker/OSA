@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Repeat,
   Book,
@@ -67,7 +67,13 @@ export const BarterClubModal: React.FC<BarterClubModalProps> = ({
   onClose,
   currentUserName = 'User',
 }) => {
-  const [items, setItems] = useState<BarterItem[]>(DEFAULT_ITEMS);
+  const [items, setItems] = useState<BarterItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('osa_barter_items');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_ITEMS;
+  });
   const [showAddForm, setShowAddForm] = useState(false);
 
   const [title, setTitle] = useState('');
@@ -76,6 +82,12 @@ export const BarterClubModal: React.FC<BarterClubModalProps> = ({
   const [wantsInReturn, setWantsInReturn] = useState('');
   const [phone, setPhone] = useState('+880');
   const [isGift, setIsGift] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('osa_barter_items', JSON.stringify(items));
+    } catch {}
+  }, [items]);
 
   if (!isOpen) return null;
 

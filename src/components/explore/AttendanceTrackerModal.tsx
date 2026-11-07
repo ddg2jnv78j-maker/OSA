@@ -10,6 +10,7 @@ import {
   Calendar,
   X,
   Users,
+  Download,
 } from 'lucide-react';
 
 interface Member {
@@ -92,8 +93,8 @@ export const AttendanceTrackerModal: React.FC<AttendanceTrackerModalProps> = ({
     text += `মোট: ${total} | উপস্থিত: ${presentCount} | অনুপস্থিত: ${absentCount} | লেট: ${lateCount}\n`;
     text += `উপস্থিতির হার: ${percentage}%\n\n`;
     members.forEach((m) => {
-      const icon = m.status === 'present' ? '✅' : m.status === 'absent' ? '❌' : '⏳';
-      text += `${icon} [রোল ${m.roll}] ${m.name}\n`;
+      const icon = m.status === 'present' ? '✅ উপস্থিত' : m.status === 'absent' ? '❌ অনুপস্থিত' : '⏳ লেট';
+      text += `[রোল ${m.roll}] ${m.name}: ${icon}\n`;
     });
     return text;
   };
@@ -102,6 +103,25 @@ export const AttendanceTrackerModal: React.FC<AttendanceTrackerModalProps> = ({
     navigator.clipboard.writeText(generateReportText());
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const exportExcelCSV = () => {
+    const date = new Date().toISOString().split('T')[0];
+    let csvContent = '\uFEFF'; // UTF-8 BOM for Bengali excel support
+    csvContent += `রোল,নাম,স্ট্যাটাস,তারিখ\n`;
+    members.forEach((m) => {
+      const st = m.status === 'present' ? 'উপস্থিত' : m.status === 'absent' ? 'অনুপস্থিত' : 'লেট';
+      csvContent += `"${m.roll}","${m.name}","${st}","${date}"\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `attendance_report_${date}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   return (
@@ -118,7 +138,7 @@ export const AttendanceTrackerModal: React.FC<AttendanceTrackerModalProps> = ({
                 ক্লাস/অফিস হাজিরা ট্র্যাকার
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                ১-ট্যাপে উপস্থিতি রেকর্ড করুন ও চ্যাটে রিপোর্ট পাঠান
+                ১-ট্যাপে উপস্থিতি রেকর্ড করুন, এক্সেল শিট ডাউনলোড করুন
               </p>
             </div>
           </div>
@@ -260,21 +280,30 @@ export const AttendanceTrackerModal: React.FC<AttendanceTrackerModalProps> = ({
             </form>
           )}
 
-          {/* Action copy */}
-          <button
-            onClick={copyReport}
-            className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 transition active:scale-95"
-          >
-            {copied ? (
-              <>
-                <Check className="w-4 h-4 text-emerald-200" /> রিপোর্ট কপি করা হয়েছে
-              </>
-            ) : (
-              <>
-                <Copy className="w-4 h-4" /> চ্যাটে পাঠানোর জন্য সম্পূর্ণ রিপোর্ট কপি করুন
-              </>
-            )}
-          </button>
+          {/* Action buttons */}
+          <div className="grid grid-cols-2 gap-2 pt-2">
+            <button
+              onClick={copyReport}
+              className="py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/25 transition active:scale-95"
+            >
+              {copied ? (
+                <>
+                  <Check className="w-4 h-4 text-emerald-200" /> কপি সম্পন্ন
+                </>
+              ) : (
+                <>
+                  <Copy className="w-4 h-4" /> চ্যাট রিপোর্ট কপি
+                </>
+              )}
+            </button>
+
+            <button
+              onClick={exportExcelCSV}
+              className="py-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-blue-600/25 transition active:scale-95"
+            >
+              <Download className="w-4 h-4" /> এক্সেল CSV ডাউনলোড
+            </button>
+          </div>
         </div>
       </div>
     </div>
