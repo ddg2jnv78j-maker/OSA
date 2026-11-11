@@ -20,13 +20,7 @@ interface Member {
   status: 'present' | 'absent' | 'late';
 }
 
-const DEFAULT_MEMBERS: Member[] = [
-  { id: '1', name: 'তানভীর আহমেদ', roll: '০১', status: 'present' },
-  { id: '2', name: 'সাদিয়া ইসলাম', roll: '০২', status: 'present' },
-  { id: '3', name: 'মাহমুদুল হাসান', roll: '০৩', status: 'absent' },
-  { id: '4', name: 'নাজমুল সাকিব', roll: '০৪', status: 'late' },
-  { id: '5', name: 'ফারহানা চৌধুরী', roll: '০৫', status: 'present' },
-];
+const DEFAULT_MEMBERS: Member[] = [];
 
 interface AttendanceTrackerModalProps {
   isOpen: boolean;
@@ -40,9 +34,22 @@ export const AttendanceTrackerModal: React.FC<AttendanceTrackerModalProps> = ({
   const [members, setMembers] = useState<Member[]>(() => {
     try {
       const saved = localStorage.getItem('osa_attendance_roster');
-      return saved ? JSON.parse(saved) : DEFAULT_MEMBERS;
+      if (saved) {
+        const parsed: Member[] = JSON.parse(saved);
+        const demoIds = new Set(['1', '2', '3', '4', '5']);
+        return parsed.filter(
+          (m) =>
+            !demoIds.has(m.id) &&
+            m.name !== 'তানভীর আহমেদ' &&
+            m.name !== 'সাদিয়া ইসলাম' &&
+            m.name !== 'মাহমুদুল হাসান' &&
+            m.name !== 'নাজমুল সাকিব' &&
+            m.name !== 'ফারহানা চৌধুরী'
+        );
+      }
+      return [];
     } catch {
-      return DEFAULT_MEMBERS;
+      return [];
     }
   });
 
@@ -195,11 +202,18 @@ export const AttendanceTrackerModal: React.FC<AttendanceTrackerModalProps> = ({
 
           {/* Members List */}
           <div className="space-y-2">
-            {members.map((m) => (
-              <div
-                key={m.id}
-                className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 flex items-center justify-between"
-              >
+            {members.length === 0 ? (
+              <div className="text-center py-8 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-dashed border-slate-200 dark:border-slate-700 space-y-1.5">
+                <Users className="w-8 h-8 text-emerald-500 mx-auto" />
+                <p className="text-xs font-bold text-slate-700 dark:text-slate-300">কোনো শিক্ষার্থী বা সদস্য যুক্ত নেই</p>
+                <p className="text-[11px] text-slate-400">হাজিরা নেওয়ার জন্য উপরের "+ নতুন শিক্ষার্থী/সদস্য" বাটনে চাপ দিয়ে নাম ও রোল যুক্ত করুন</p>
+              </div>
+            ) : (
+              members.map((m) => (
+                <div
+                  key={m.id}
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 flex items-center justify-between"
+                >
                 <div>
                   <p className="text-xs font-bold text-slate-900 dark:text-white">
                     [রোল {m.roll}] {m.name}
@@ -239,8 +253,9 @@ export const AttendanceTrackerModal: React.FC<AttendanceTrackerModalProps> = ({
                   </button>
                 </div>
               </div>
-            ))}
-          </div>
+            ))
+          )}
+        </div>
 
           {/* Add member form */}
           {showAddMember && (

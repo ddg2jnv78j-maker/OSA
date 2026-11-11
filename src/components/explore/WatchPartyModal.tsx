@@ -68,9 +68,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
   const [customUrl, setCustomUrl] = useState('');
   const [urlError, setUrlError] = useState('');
   const [chatInput, setChatInput] = useState('');
-  const [messages, setMessages] = useState<{ id: string; user: string; text: string; time: string }[]>([
-    { id: '1', user: 'সাকিব', text: 'সবাই রেডি? একসাথে দেখা শুরু করি!', time: '১০:০০' },
-  ]);
+  const [messages, setMessages] = useState<{ id: string; user: string; text: string; time: string }[]>([]);
   const [flyingEmojis, setFlyingEmojis] = useState<{ id: number; char: string; left: number }[]>([]);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
 
@@ -305,14 +303,18 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
           <div className="flex flex-col h-48 md:h-auto border border-slate-200 dark:border-slate-800 rounded-2xl bg-white dark:bg-slate-900 p-2.5">
             <p className="text-[11px] font-bold text-slate-500 mb-2 px-1">লাইভ আড্ডা রুম:</p>
             <div className="flex-1 overflow-y-auto space-y-1.5 text-xs pr-1">
-              {messages.map((m) => (
-                <div key={m.id} className="p-1.5 rounded-lg bg-slate-50 dark:bg-slate-800/60">
-                  <span className="font-bold text-purple-600 dark:text-purple-400 mr-1.5">
-                    {m.user}:
-                  </span>
-                  <span className="text-slate-800 dark:text-slate-200">{m.text}</span>
-                </div>
-              ))}
+              {messages.length === 0 ? (
+                <p className="text-[11px] text-slate-400 italic text-center py-4">এখনও কোনো বার্তা নেই। আড্ডা শুরু করতে নিচে লিখুন!</p>
+              ) : (
+                messages.map((m) => (
+                  <div key={m.id} className="p-1.5 rounded-lg bg-slate-50 dark:bg-slate-800/60">
+                    <span className="font-bold text-purple-600 dark:text-purple-400 mr-1.5">
+                      {m.user}:
+                    </span>
+                    <span className="text-slate-800 dark:text-slate-200">{m.text}</span>
+                  </div>
+                ))
+              )}
             </div>
 
             <form onSubmit={handleSendChat} className="mt-2 flex gap-1.5">

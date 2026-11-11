@@ -51,7 +51,7 @@ const TUNES = [
 export const AiCallerTuneModal: React.FC<AiCallerTuneModalProps> = ({
   isOpen,
   onClose,
-  currentUserName = 'রাকিব',
+  currentUserName = 'ইউজার',
 }) => {
   const [userName, setUserName] = useState(currentUserName);
   const [selectedTune, setSelectedTune] = useState(TUNES[0]);

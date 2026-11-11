@@ -90,184 +90,8 @@ const DISTRICTS = [
   'নারায়ণগঞ্জ',
 ];
 
-const INITIAL_REQUESTS: BloodRequest[] = [
-  {
-    id: 'req_1',
-    patientName: 'রহিমা বেগম (৫৫)',
-    bloodGroup: 'O+',
-    bagsNeeded: 2,
-    hospital: 'ঢাকা মেডিকেল কলেজ হাসপাতাল (জরুরি বিভাগ)',
-    district: 'ঢাকা',
-    area: 'বকশীবাজার',
-    neededTime: 'আজ বিকাল ৪:০০ টার মধ্যে',
-    contactPhone: '+8801712345678',
-    notes: 'জরুরি ওপেন হার্ট সার্জারির জন্য ২ ব্যাগ ফ্রেশ রক্তের প্রয়োজন। রক্তদাতাকে গাড়িভাড়া দেওয়া হবে।',
-    posterId: 'user_rahim',
-    posterName: 'তানভীর আহমেদ',
-    posterAvatar: null,
-    status: 'urgent',
-    createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-    comments: [
-      {
-        id: 'c_1',
-        userId: 'u_donor1',
-        userName: 'সাকিব আল হাসান',
-        userAvatar: null,
-        text: 'আমি ১ ব্যাগ দিতে পারব, হাসপাতালে রওনা দিচ্ছি। ফোন নম্বরটা চালু রাখবেন।',
-        createdAt: new Date(Date.now() - 3600000).toISOString(),
-      },
-      {
-        id: 'c_2',
-        userId: 'u_donor2',
-        userName: 'তানজিলা হক',
-        userAvatar: null,
-        text: 'আমাদের ফ্রেন্ডস গ্রুপে শেয়ার করে দিয়েছি ভাই, দ্রুত ম্যানেজ হয়ে যাবে ইনশাআল্লাহ।',
-        createdAt: new Date(Date.now() - 1800000).toISOString(),
-      },
-    ],
-  },
-  {
-    id: 'req_2',
-    patientName: 'ছোট্ট শিশু আরিয়ান (৪ বছর)',
-    bloodGroup: 'B-',
-    bagsNeeded: 1,
-    hospital: 'চট্টগ্রাম মা ও শিশু হাসপাতাল',
-    district: 'চট্টগ্রাম',
-    area: 'আগ্রাবাদ',
-    neededTime: 'আগামীকাল সকাল ১০:০০ টার আগে',
-    contactPhone: '+8801819876543',
-    notes: 'থ্যালাসেমিয়া নিয়মিত রক্ত গ্রহণকারী বাচ্চা। নেগেটিভ গ্রুপের রক্তদাতা অতি জরুরি।',
-    posterId: 'user_karim',
-    posterName: 'মাহমুদুল করিম',
-    posterAvatar: null,
-    status: 'urgent',
-    createdAt: new Date(Date.now() - 3600000 * 5).toISOString(),
-    comments: [
-      {
-        id: 'c_3',
-        userId: 'u_donor3',
-        userName: 'ফাহিম আহমেদ',
-        userAvatar: null,
-        text: 'আমার B- গ্রুপ, শেষ রক্ত দিয়েছি ৪ মাস আগে। সকালে যেতে পারব ইনশাআল্লাহ।',
-        createdAt: new Date(Date.now() - 3600000 * 3).toISOString(),
-      },
-    ],
-  },
-  {
-    id: 'req_3',
-    patientName: 'আবুল কালাম আজাদ',
-    bloodGroup: 'A+',
-    bagsNeeded: 2,
-    hospital: 'সিলেট এম এ জি ওসমানী মেডিকেল কলেজ',
-    district: 'সিলেট',
-    area: 'কাজীর বাজার',
-    neededTime: 'আজ রাত ৮:০০ টার মধ্যে',
-    contactPhone: '+8801615556677',
-    notes: 'রোড এক্সিডেন্টে রক্তক্ষরণ। এ পজিটিভ রক্তদাতা এগিয়ে আসুন।',
-    posterId: 'user_sadek',
-    posterName: 'সাদেকুর রহমান',
-    posterAvatar: null,
-    status: 'managed',
-    createdAt: new Date(Date.now() - 3600000 * 8).toISOString(),
-    comments: [
-      {
-        id: 'c_4',
-        userId: 'u_donor4',
-        userName: 'নাজমুল হাসান',
-        userAvatar: null,
-        text: 'আলহামদুলিল্লাহ প্রয়োজনীয় ২ ব্যাগ রক্ত ম্যানেজ হয়েছে। সবাইকে ধন্যবাদ।',
-        createdAt: new Date(Date.now() - 3600000 * 1).toISOString(),
-      },
-    ],
-  },
-];
-
-const INITIAL_DONORS: Donor[] = [
-  {
-    id: 'd1',
-    userId: 'donor_tanvir',
-    name: 'তানভীর আহমেদ',
-    avatarUrl: null,
-    bloodGroup: 'O+',
-    district: 'ঢাকা',
-    area: 'ধানমন্ডি',
-    phone: '+8801712345678',
-    lastDonated: '৩ মাস আগে',
-    isAvailable: true,
-    totalDonations: 8,
-    registeredAt: new Date(Date.now() - 86400000 * 45).toISOString(),
-  },
-  {
-    id: 'd2',
-    userId: 'donor_farhana',
-    name: 'ফারহানা ইসলাম',
-    avatarUrl: null,
-    bloodGroup: 'A+',
-    district: 'ঢাকা',
-    area: 'মিরপুর-১০',
-    phone: '+8801819876543',
-    lastDonated: '৫ মাস আগে',
-    isAvailable: true,
-    totalDonations: 4,
-    registeredAt: new Date(Date.now() - 86400000 * 20).toISOString(),
-  },
-  {
-    id: 'd3',
-    userId: 'donor_mahmud',
-    name: 'মাহমুদুল হাসান',
-    avatarUrl: null,
-    bloodGroup: 'B+',
-    district: 'চট্টগ্রাম',
-    area: 'জিইসি মোড়',
-    phone: '+8801911223344',
-    lastDonated: '১ মাস আগে',
-    isAvailable: false,
-    totalDonations: 12,
-    registeredAt: new Date(Date.now() - 86400000 * 90).toISOString(),
-  },
-  {
-    id: 'd4',
-    userId: 'donor_sakib',
-    name: 'নাজমুল সাকিব',
-    avatarUrl: null,
-    bloodGroup: 'AB+',
-    district: 'সিলেট',
-    area: 'জিন্দাবাজার',
-    phone: '+8801615556677',
-    lastDonated: '৪ মাস আগে',
-    isAvailable: true,
-    totalDonations: 6,
-    registeredAt: new Date(Date.now() - 86400000 * 15).toISOString(),
-  },
-  {
-    id: 'd5',
-    userId: 'donor_arif',
-    name: 'আরিফুল হক',
-    avatarUrl: null,
-    bloodGroup: 'O-',
-    district: 'ঢাকা',
-    area: 'উত্তরা',
-    phone: '+8801518889900',
-    lastDonated: '৬ মাস আগে',
-    isAvailable: true,
-    totalDonations: 5,
-    registeredAt: new Date(Date.now() - 86400000 * 60).toISOString(),
-  },
-  {
-    id: 'd6',
-    userId: 'donor_sadia',
-    name: 'সাদিয়া আক্তার',
-    avatarUrl: null,
-    bloodGroup: 'A-',
-    district: 'রাজশাহী',
-    area: 'সাহেব বাজার',
-    phone: '+8801710998877',
-    lastDonated: '২ মাস আগে',
-    isAvailable: true,
-    totalDonations: 3,
-    registeredAt: new Date(Date.now() - 86400000 * 10).toISOString(),
-  },
-];
+const INITIAL_REQUESTS: BloodRequest[] = [];
+const INITIAL_DONORS: Donor[] = [];
 
 interface BloodDonorModalProps {
   isOpen: boolean;
@@ -295,9 +119,21 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
   const [requests, setRequests] = useState<BloodRequest[]>(() => {
     try {
       const saved = localStorage.getItem('osa_blood_requests_v3');
-      return saved ? JSON.parse(saved) : INITIAL_REQUESTS;
+      if (saved) {
+        const parsed: BloodRequest[] = JSON.parse(saved);
+        const demoIds = new Set(['req_1', 'req_2', 'req_3']);
+        return parsed.filter(
+          (r) =>
+            !demoIds.has(r.id) &&
+            !r.posterId?.startsWith('user_') &&
+            r.posterName !== 'তানভীর আহমেদ' &&
+            r.posterName !== 'মাহমুদুল করিম' &&
+            r.posterName !== 'সাদেকুর রহমান'
+        );
+      }
+      return [];
     } catch {
-      return INITIAL_REQUESTS;
+      return [];
     }
   });
 
@@ -305,9 +141,24 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
   const [donors, setDonors] = useState<Donor[]>(() => {
     try {
       const saved = localStorage.getItem('osa_verified_blood_donors_v3');
-      return saved ? JSON.parse(saved) : INITIAL_DONORS;
+      if (saved) {
+        const parsed: Donor[] = JSON.parse(saved);
+        const demoIds = new Set(['d1', 'd2', 'd3', 'd4', 'd5', 'd6']);
+        return parsed.filter(
+          (d) =>
+            !demoIds.has(d.id) &&
+            !d.userId?.startsWith('donor_') &&
+            d.name !== 'তানভীর আহমেদ' &&
+            d.name !== 'ফারহানা ইসলাম' &&
+            d.name !== 'মাহমুদুল হাসান' &&
+            d.name !== 'নাজমুল সাকিব' &&
+            d.name !== 'আরিফুল হক' &&
+            d.name !== 'সাদিয়া আক্তার'
+        );
+      }
+      return [];
     } catch {
-      return INITIAL_DONORS;
+      return [];
     }
   });
 

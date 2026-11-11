@@ -23,38 +23,7 @@ interface BarterItem {
   isGift: boolean;
 }
 
-const DEFAULT_ITEMS: BarterItem[] = [
-  {
-    id: 'b1',
-    title: 'হুমায়ূন আহমেদের "দেয়াল" ও "মিসির আলি সমগ্র ১"',
-    type: 'বই',
-    condition: 'একদম নতুনের মতো',
-    wantsInReturn: 'অন্য যেকোনো থ্রিলার বা সায়েন্স ফিকশন বই',
-    owner: 'তানভীর',
-    phone: '+8801711223344',
-    isGift: false,
-  },
-  {
-    id: 'b2',
-    title: 'সায়েন্স ফিকশন ও প্রোগ্রামিং সি (তামিম শাহরিয়ার সুবিন)',
-    type: 'বই',
-    condition: 'ভালো কন্ডিশন',
-    wantsInReturn: 'ফ্রি গিফট (যেকোনো আগ্রহী শিক্ষার্থীকে দেব)',
-    owner: 'সাদিয়া',
-    phone: '+8801819556677',
-    isGift: true,
-  },
-  {
-    id: 'b3',
-    title: 'লজিটেক ওয়্যারলেস মাউস (Logitech B170)',
-    type: 'গ্যাজেট',
-    condition: 'রানিং ও ফ্রেশ',
-    wantsInReturn: 'ইউএসবি হাব বা ওটিজি কেবল',
-    owner: 'রাকিবুল',
-    phone: '+8801912889900',
-    isGift: false,
-  },
-];
+const DEFAULT_ITEMS: BarterItem[] = [];
 
 interface BarterClubModalProps {
   isOpen: boolean;
@@ -70,9 +39,19 @@ export const BarterClubModal: React.FC<BarterClubModalProps> = ({
   const [items, setItems] = useState<BarterItem[]>(() => {
     try {
       const saved = localStorage.getItem('osa_barter_items');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed: BarterItem[] = JSON.parse(saved);
+        const demoIds = new Set(['b1', 'b2', 'b3']);
+        return parsed.filter(
+          (item) =>
+            !demoIds.has(item.id) &&
+            item.owner !== 'তানভীর' &&
+            item.owner !== 'সাদিয়া' &&
+            item.owner !== 'রাকিবুল'
+        );
+      }
     } catch {}
-    return DEFAULT_ITEMS;
+    return [];
   });
   const [showAddForm, setShowAddForm] = useState(false);
 
@@ -153,11 +132,18 @@ export const BarterClubModal: React.FC<BarterClubModalProps> = ({
 
         {/* Content */}
         <div className="p-5 flex-1 min-h-0 overflow-y-auto space-y-3">
-          {items.map((item) => (
-            <div
-              key={item.id}
-              className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2"
-            >
+          {items.length === 0 ? (
+            <div className="text-center py-8 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-dashed border-slate-200 dark:border-slate-700 space-y-1.5">
+              <Repeat className="w-8 h-8 text-amber-500 mx-auto" />
+              <p className="text-xs font-bold text-slate-700 dark:text-slate-300">কোনো বিনিময় বা গিফটের আইটেম নেই</p>
+              <p className="text-[11px] text-slate-400">আপনার অপ্রয়োজনীয় বই বা গ্যাজেট শেয়ার করতে উপরের "+ নতুন আইটেম যুক্ত করুন" বাটনে চাপ দিন</p>
+            </div>
+          ) : (
+            items.map((item) => (
+              <div
+                key={item.id}
+                className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2"
+              >
               <div className="flex items-center justify-between">
                 <span className="px-2.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] font-bold">
                   {item.type} • {item.condition}
@@ -191,7 +177,8 @@ export const BarterClubModal: React.FC<BarterClubModalProps> = ({
                 </a>
               </div>
             </div>
-          ))}
+          ))
+        )}
         </div>
 
         {/* Add Modal */}

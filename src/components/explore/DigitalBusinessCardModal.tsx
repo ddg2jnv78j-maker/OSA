@@ -25,15 +25,15 @@ interface DigitalBusinessCardModalProps {
 export const DigitalBusinessCardModal: React.FC<DigitalBusinessCardModalProps> = ({
   isOpen,
   onClose,
-  currentUserName = 'রাকিব হাসান',
+  currentUserName = 'ব্যবহারকারী',
   currentUserAvatar,
 }) => {
-  const [title, setTitle] = useState('Full-Stack Web & App Developer');
-  const [skills, setSkills] = useState(['React', 'Node.js', 'UI/UX Design', 'Tailwind', 'Python']);
-  const [phone, setPhone] = useState('+880 1711-234567');
-  const [email, setEmail] = useState('rakib.developer@gmail.com');
-  const [website, setWebsite] = useState('https://osa-profile.me/rakib');
-  const [bio, setBio] = useState('৫ বছরের অভিজ্ঞ প্রফেশনাল সফটওয়্যার ইঞ্জিনিয়ার ও টেক কনসালট্যান্ট।');
+  const [title, setTitle] = useState('OSA মেম্বার');
+  const [skills, setSkills] = useState(['কানেক্টেড']);
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [website, setWebsite] = useState('https://osa.chat');
+  const [bio, setBio] = useState('OSA কমিউনিটিতে স্বাগতম!');
 
   const [isEditing, setIsEditing] = useState(false);
   const [copied, setCopied] = useState(false);
