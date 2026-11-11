@@ -42,9 +42,10 @@ import { Profile } from '../types/osa';
 
 interface ExploreHubPageProps {
   currentUser: Profile;
+  onOpenDirectChat?: (targetUserId: string, initialMessage?: string) => Promise<void> | void;
 }
 
-export const ExploreHubPage: React.FC<ExploreHubPageProps> = ({ currentUser }) => {
+export const ExploreHubPage: React.FC<ExploreHubPageProps> = ({ currentUser, onOpenDirectChat }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'safety' | 'khata' | 'ai' | 'community' | 'lifestyle'>('all');
 
@@ -333,7 +334,9 @@ export const ExploreHubPage: React.FC<ExploreHubPageProps> = ({ currentUser }) =
       <BloodDonorModal
         isOpen={showBloodDonor}
         onClose={() => setShowBloodDonor(false)}
+        currentUser={currentUser}
         currentUserName={currentUser.full_name}
+        onOpenDirectChat={onOpenDirectChat}
       />
       <FamilySosModal
         isOpen={showFamilySos}

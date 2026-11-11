@@ -2938,7 +2938,30 @@ export default function App() {
           )}
 
           {activeTab === 'explore' && (
-            <ExploreHubPage currentUser={currentUser} />
+            <ExploreHubPage
+              currentUser={currentUser}
+              onOpenDirectChat={async (targetUserId, initialMessage) => {
+                try {
+                  const cid = await openOrCreateDirectChat(currentUser.id, targetUserId);
+                  if (initialMessage && initialMessage.trim()) {
+                    try {
+                      await sendTextMessage({
+                        chatId: cid,
+                        senderId: currentUser.id,
+                        content: initialMessage.trim(),
+                      });
+                    } catch (err) {
+                      console.warn('Initial message send failed, opening chat anyway', err);
+                    }
+                  }
+                  await refreshChatsAndNotifications(currentUser.id);
+                  setSelectedChatId(cid);
+                  setActiveTab('chats');
+                } catch (e) {
+                  console.error('Error opening direct chat from Explore:', e);
+                }
+              }}
+            />
           )}
 
           {activeTab === 'calls' && (
