@@ -140,9 +140,9 @@ export const ExploreHubPage: React.FC<ExploreHubPageProps> = ({ currentUser, onO
     {
       id: 'fair_ride',
       title: 'ন্যায্য রিকশা/সিএনজি ভাড়া ও ট্রাফিক মিটার',
-      subtitle: 'বিভিন্ন রুটে রিকশা ও সিএনজির সঠিক ভাড়া রেঞ্জ এবং লাইভ জ্যাম সতর্কবার্তা',
+      subtitle: 'সারা বাংলাদেশের ৬৪ জেলা ও যেকোনো স্থানের রিকশা, অটো, সিএনজি ও বাইক ভাড়া এবং লাইভ মিটার',
       icon: Navigation,
-      badge: 'Ride Meter',
+      badge: 'All BD 64',
       category: 'lifestyle',
       gradient: 'from-emerald-600 to-teal-600',
       action: () => setShowFairRide(true),
