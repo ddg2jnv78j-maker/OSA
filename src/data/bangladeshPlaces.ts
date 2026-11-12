@@ -10,15 +10,27 @@ export type DivisionId =
 
 export type PlaceTier = 'metro' | 'district' | 'upazila';
 
+export type LocalPlaceCategory =
+  | 'mor'
+  | 'road'
+  | 'bazar'
+  | 'station'
+  | 'stand'
+  | 'campus'
+  | 'hospital'
+  | 'area';
+
 export interface BangladeshPlace {
   id: string;
   nameBn: string;
   nameEn: string;
   districtBn: string;
+  upazilaBn?: string;
   division: DivisionId;
   lat: number;
   lng: number;
   tier: PlaceTier;
+  category?: LocalPlaceCategory;
 }
 
 export interface DivisionInfo {
@@ -217,16 +229,40 @@ export const BANGLADESH_PLACES: BangladeshPlace[] = [
   // ======================== রংপুর বিভাগ (৮ জেলা + গুরুত্বপূর্ণ এলাকা) ========================
   { id: 'ran_jahaj', nameBn: 'রংপুর (জাহাজ কোম্পানি / শাপলা চত্বর)', nameEn: 'Rangpur City', districtBn: 'রংপুর', division: 'rangpur', lat: 25.7439, lng: 89.2752, tier: 'metro' },
   { id: 'ran_modern', nameBn: 'মডার্ন মোড় / বেগম রোকেয়া বিশ্ববিদ্যালয়', nameEn: 'Rangpur Modern Mor', districtBn: 'রংপুর', division: 'rangpur', lat: 25.7166, lng: 89.2602, tier: 'metro' },
-  { id: 'din_sadar', nameBn: 'দিনাজপুর সদর (বাহাদুর বাজার)', nameEn: 'Dinajpur', districtBn: 'দিনাজপুর', division: 'rangpur', lat: 25.6217, lng: 88.6354, tier: 'district' },
-  { id: 'din_hstu', nameBn: 'হাবিপ্রবি (HSTU) / বাঁশেরহাট', nameEn: 'HSTU Dinajpur', districtBn: 'দিনাজপুর', division: 'rangpur', lat: 25.6967, lng: 88.6512, tier: 'upazila' },
-  { id: 'nil_sadar', nameBn: 'নীলফামারী সদর', nameEn: 'Nilphamari', districtBn: 'নীলফামারী', division: 'rangpur', lat: 25.9318, lng: 88.8561, tier: 'district' },
-  { id: 'nil_saidpur', nameBn: 'সৈয়দপুর (বিমানবন্দর / টার্মিনাল)', nameEn: 'Saidpur', districtBn: 'নীলফামারী', division: 'rangpur', lat: 25.7777, lng: 88.8917, tier: 'upazila' },
-  { id: 'kur_sadar', nameBn: 'কুড়িগ্রাম সদর (শাপলা চত্বর)', nameEn: 'Kurigram', districtBn: 'কুড়িগ্রাম', division: 'rangpur', lat: 25.8054, lng: 89.6362, tier: 'district' },
-  { id: 'gai_sadar', nameBn: 'গাইবান্ধা সদর (১নং ট্রাফিক মোড়)', nameEn: 'Gaibandha', districtBn: 'গাইবান্ধা', division: 'rangpur', lat: 25.3287, lng: 89.528, tier: 'district' },
-  { id: 'lal_sadar', nameBn: 'লালমনিরহাট সদর (মিশন মোড়)', nameEn: 'Lalmonirhat', districtBn: 'লালমনিরহাট', division: 'rangpur', lat: 25.9923, lng: 89.2847, tier: 'district' },
-  { id: 'tha_sadar', nameBn: 'ঠাকুরগাঁও সদর (চৌরাস্তা)', nameEn: 'Thakurgaon', districtBn: 'ঠাকুরগাঁও', division: 'rangpur', lat: 26.0337, lng: 88.4617, tier: 'district' },
-  { id: 'pan_sadar', nameBn: 'পঞ্চগড় সদর (চৌরঙ্গী মোড়)', nameEn: 'Panchagarh', districtBn: 'পঞ্চগড়', division: 'rangpur', lat: 26.3411, lng: 88.5542, tier: 'district' },
-  { id: 'pan_tetulia', nameBn: 'তেঁতুলিয়া / বাংলাবান্ধা', nameEn: 'Tetulia Panchagarh', districtBn: 'পঞ্চগড়', division: 'rangpur', lat: 26.4945, lng: 88.3489, tier: 'upazila' },
+  // দিনাজপুর ও বিরামপুর (স্থানীয় মোড়, মেইন রোড, বাজার, স্টেশন)
+  { id: 'din_sadar', nameBn: 'দিনাজপুর সদর (বাহাদুর বাজার)', nameEn: 'Dinajpur Bahadur Bazar', districtBn: 'দিনাজপুর', division: 'rangpur', lat: 25.6217, lng: 88.6354, tier: 'district', category: 'bazar' },
+  { id: 'din_station', nameBn: 'দিনাজপুর রেলওয়ে স্টেশন', nameEn: 'Dinajpur Railway Station', districtBn: 'দিনাজপুর', division: 'rangpur', lat: 25.6251, lng: 88.6382, tier: 'district', category: 'station' },
+  { id: 'din_lilir_mor', nameBn: 'লিলির মোড় (দিনাজপুর)', nameEn: 'Lilir Mor Dinajpur', districtBn: 'দিনাজপুর', division: 'rangpur', lat: 25.6279, lng: 88.6368, tier: 'district', category: 'mor' },
+  { id: 'din_hospital_mor', nameBn: 'হাসপাতাল মোড় (দিনাজপুর মেডিকেল)', nameEn: 'Dinajpur Medical Mor', districtBn: 'দিনাজপুর', division: 'rangpur', lat: 25.6416, lng: 88.6502, tier: 'district', category: 'hospital' },
+  { id: 'din_kalitola', nameBn: 'কালিতলা / বড়মাঠ (দিনাজপুর)', nameEn: 'Kalitola Dinajpur', districtBn: 'দিনাজপুর', division: 'rangpur', lat: 25.6203, lng: 88.6419, tier: 'district', category: 'area' },
+  { id: 'din_hstu', nameBn: 'হাবিপ্রবি (HSTU) / বাঁশেরহাট', nameEn: 'HSTU Dinajpur', districtBn: 'দিনাজপুর', division: 'rangpur', lat: 25.6967, lng: 88.6512, tier: 'upazila', category: 'campus' },
+  // বিরামপুর (উপজেলা ও লোকাল সব জায়গা)
+  { id: 'bir_dhaka_mor', nameBn: 'ঢাকা মোড় (বিরামপুর)', nameEn: 'Dhaka Mor Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3836, lng: 88.9936, tier: 'upazila', category: 'mor' },
+  { id: 'bir_college_bazar', nameBn: 'কলেজ বাজার (বিরামপুর)', nameEn: 'College Bazar Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3895, lng: 88.9912, tier: 'upazila', category: 'bazar' },
+  { id: 'bir_station', nameBn: 'বিরামপুর রেলওয়ে স্টেশন', nameEn: 'Birampur Railway Station', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3849, lng: 88.9838, tier: 'upazila', category: 'station' },
+  { id: 'bir_puratan_bazar', nameBn: 'পুরাতন বাজার / শালবাগান (বিরামপুর)', nameEn: 'Puratan Bazar Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3868, lng: 88.9869, tier: 'upazila', category: 'bazar' },
+  { id: 'bir_bus_stand', nameBn: 'বিরামপুর বাসস্ট্যান্ড / কলাবাগান মোড়', nameEn: 'Birampur Bus Stand Kalabagan', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3792, lng: 88.9942, tier: 'upazila', category: 'stand' },
+  { id: 'bir_govt_college', nameBn: 'বিরামপুর সরকারি কলেজ ও উপজেলা পরিষদ', nameEn: 'Birampur Govt College', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3924, lng: 88.9922, tier: 'upazila', category: 'campus' },
+  { id: 'bir_hospital', nameBn: 'বিরামপুর উপজেলা স্বাস্থ্য কমপ্লেক্স', nameEn: 'Birampur Upazila Hospital', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3885, lng: 88.9965, tier: 'upazila', category: 'hospital' },
+  { id: 'bir_notun_bazar', nameBn: 'নতুন বাজার / পাইলট স্কুল মোড় (বিরামপুর)', nameEn: 'Notun Bazar Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3821, lng: 88.9895, tier: 'upazila', category: 'bazar' },
+  { id: 'bir_doyel_mor', nameBn: 'দোয়েল মোড় / মদিনা মোড় (বিরামপুর)', nameEn: 'Doyel Mor Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3808, lng: 88.9915, tier: 'upazila', category: 'mor' },
+  { id: 'bir_ghoraghat_railgate', nameBn: 'ঘোড়াঘাট রেলগেট / দিনাজপুর মেইন রোড (বিরামপুর)', nameEn: 'Ghoraghat Railgate Birampur Main Road', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3965, lng: 88.9905, tier: 'upazila', category: 'road' },
+  { id: 'bir_hili_road', nameBn: 'হিলি মেইন রোড / চাঁদপুর মোড় (বিরামপুর)', nameEn: 'Hili Main Road Chandpur Mor Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3728, lng: 88.9965, tier: 'upazila', category: 'road' },
+  { id: 'bir_phulbari_road', nameBn: 'ফুলবাড়ী রোড / বেনীপুর মোড় (বিরামপুর)', nameEn: 'Phulbari Road Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.4055, lng: 88.9852, tier: 'upazila', category: 'road' },
+  { id: 'bir_nawabganj_road', nameBn: 'নবাবগঞ্জ মেইন রোড / বিরামপুর পূর্ব', nameEn: 'Nawabganj Road Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3845, lng: 89.0125, tier: 'upazila', category: 'road' },
+  { id: 'bir_katla', nameBn: 'কাটলা বাজার (বিরামপুর)', nameEn: 'Katla Bazar Birampur', districtBn: 'দিনাজপুর', upazilaBn: 'বিরামপুর', division: 'rangpur', lat: 25.3621, lng: 88.9585, tier: 'upazila', category: 'bazar' },
+  // দিনাজপুরের অন্যান্য উপজেলা ও আশেপাশে
+  { id: 'phl_nimnagar', nameBn: 'ফুলবাড়ী (নিমতলা মোড় / বাসস্ট্যান্ড)', nameEn: 'Phulbari Dinajpur', districtBn: 'দিনাজপুর', upazilaBn: 'ফুলবাড়ী', division: 'rangpur', lat: 25.4956, lng: 88.9541, tier: 'upazila', category: 'mor' },
+  { id: 'hil_bazar', nameBn: 'হিলি স্থলবন্দর / চারমাথা মোড়', nameEn: 'Hili Land Port Hakimpur', districtBn: 'দিনাজপুর', upazilaBn: 'হাকিমপুর', division: 'rangpur', lat: 25.2804, lng: 89.0172, tier: 'upazila', category: 'mor' },
+  { id: 'par_station', nameBn: 'পার্বতীপুর রেলওয়ে জংশন / বাস টার্মিনাল', nameEn: 'Parbatipur Junction', districtBn: 'দিনাজপুর', upazilaBn: 'পার্বতীপুর', division: 'rangpur', lat: 25.6612, lng: 88.9189, tier: 'upazila', category: 'station' },
+  { id: 'nil_sadar', nameBn: 'নীলফামারী সদর', nameEn: 'Nilphamari', districtBn: 'নীলফামারী', division: 'rangpur', lat: 25.9318, lng: 88.8561, tier: 'district', category: 'mor' },
+  { id: 'nil_saidpur', nameBn: 'সৈয়দপুর (বিমানবন্দর / টার্মিনাল / রেলস্টেশন)', nameEn: 'Saidpur', districtBn: 'নীলফামারী', upazilaBn: 'সৈয়দপুর', division: 'rangpur', lat: 25.7777, lng: 88.8917, tier: 'upazila', category: 'station' },
+  { id: 'kur_sadar', nameBn: 'কুড়িগ্রাম সদর (শাপলা চত্বর)', nameEn: 'Kurigram', districtBn: 'কুড়িগ্রাম', division: 'rangpur', lat: 25.8054, lng: 89.6362, tier: 'district', category: 'mor' },
+  { id: 'gai_sadar', nameBn: 'গাইবান্ধা সদর (১নং ট্রাফিক মোড়)', nameEn: 'Gaibandha', districtBn: 'গাইবান্ধা', division: 'rangpur', lat: 25.3287, lng: 89.528, tier: 'district', category: 'mor' },
+  { id: 'lal_sadar', nameBn: 'লালমনিরহাট সদর (মিশন মোড়)', nameEn: 'Lalmonirhat', districtBn: 'লালমনিরহাট', division: 'rangpur', lat: 25.9923, lng: 89.2847, tier: 'district', category: 'mor' },
+  { id: 'tha_sadar', nameBn: 'ঠাকুরগাঁও সদর (চৌরাস্তা)', nameEn: 'Thakurgaon', districtBn: 'ঠাকুরগাঁও', division: 'rangpur', lat: 26.0337, lng: 88.4617, tier: 'district', category: 'mor' },
+  { id: 'pan_sadar', nameBn: 'পঞ্চগড় সদর (চৌরঙ্গী মোড়)', nameEn: 'Panchagarh', districtBn: 'পঞ্চগড়', division: 'rangpur', lat: 26.3411, lng: 88.5542, tier: 'district', category: 'mor' },
+  { id: 'pan_tetulia', nameBn: 'তেঁতুলিয়া / বাংলাবান্ধা', nameEn: 'Tetulia Panchagarh', districtBn: 'পঞ্চগড়', upazilaBn: 'তেঁতুলিয়া', division: 'rangpur', lat: 26.4945, lng: 88.3489, tier: 'upazila', category: 'area' },
 
   // ======================== ময়মনসিংহ বিভাগ (৪ জেলা + গুরুত্বপূর্ণ এলাকা) ========================
   { id: 'mym_ganginar', nameBn: 'ময়মনসিংহ (গাঙ্গিনারপাড় / চরপাড়া)', nameEn: 'Mymensingh Town', districtBn: 'ময়মনসিংহ', division: 'mymensingh', lat: 24.7471, lng: 90.4203, tier: 'metro' },

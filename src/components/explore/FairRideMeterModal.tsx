@@ -23,12 +23,15 @@ import {
   Users,
   Sparkles,
   Globe,
+  Route,
+  ChevronRight,
 } from 'lucide-react';
 import {
   BANGLADESH_PLACES,
   BD_DIVISIONS,
   BangladeshPlace,
   DivisionId,
+  LocalPlaceCategory,
   PlaceTier,
 } from '../../data/bangladeshPlaces';
 
@@ -39,8 +42,40 @@ interface SelectedLocation {
   lat: number;
   lng: number;
   tier: PlaceTier;
+  category?: LocalPlaceCategory;
   isLiveSearch?: boolean;
 }
+
+interface OverpassElement {
+  id: number;
+  type: 'node' | 'way' | 'relation';
+  lat?: number;
+  lon?: number;
+  center?: { lat: number; lon: number };
+  tags?: Record<string, string>;
+}
+
+const CATEGORY_LABELS: Record<LocalPlaceCategory, string> = {
+  mor: 'মোড়',
+  road: 'মেইন রোড',
+  bazar: 'বাজার',
+  station: 'স্টেশন',
+  stand: 'বাসস্ট্যান্ড',
+  campus: 'কলেজ/স্কুল',
+  hospital: 'হাসপাতাল',
+  area: 'এলাকা',
+};
+
+const CATEGORY_COLORS: Record<LocalPlaceCategory, string> = {
+  mor: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300',
+  road: 'bg-blue-100 text-blue-700 dark:bg-blue-950/70 dark:text-blue-300',
+  bazar: 'bg-amber-100 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300',
+  station: 'bg-purple-100 text-purple-700 dark:bg-purple-950/70 dark:text-purple-300',
+  stand: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300',
+  campus: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950/70 dark:text-cyan-300',
+  hospital: 'bg-rose-100 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300',
+  area: 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200',
+};
 
 // Haversine straight-line formula (km)
 function calculateHaversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -59,13 +94,17 @@ function calculateHaversineKm(lat1: number, lng1: number, lat2: number, lng2: nu
 
 function toSelectedLocation(place: BangladeshPlace): SelectedLocation {
   const div = BD_DIVISIONS.find((d) => d.id === place.division);
+  const areaText = place.upazilaBn
+    ? `${place.upazilaBn}, ${place.districtBn}`
+    : `${place.districtBn} • ${div?.nameBn || ''}`;
   return {
     id: place.id,
     name: place.nameBn,
-    subtitle: `${place.districtBn} • ${div?.nameBn || ''}`,
+    subtitle: areaText,
     lat: place.lat,
     lng: place.lng,
     tier: place.tier,
+    category: place.category,
   };
 }
 
@@ -75,6 +114,25 @@ interface NominatimResult {
   lat: string;
   lon: string;
   type?: string;
+}
+
+// In-memory cache for Overpass local places/roads across Bangladesh
+const overpassLocalCache = new Map<string, SelectedLocation[]>();
+
+function inferOverpassCategory(tags: Record<string, string>): LocalPlaceCategory {
+  if (tags.railway === 'station' || tags.railway === 'halt') return 'station';
+  if (tags.amenity === 'bus_station' || tags.highway === 'bus_stop' || tags.public_transport === 'station')
+    return 'stand';
+  if (tags.amenity === 'marketplace') return 'bazar';
+  if (tags.amenity === 'hospital' || tags.amenity === 'clinic') return 'hospital';
+  if (tags.amenity === 'college' || tags.amenity === 'university' || tags.amenity === 'school')
+    return 'campus';
+  if (tags.highway === 'primary' || tags.highway === 'secondary' || tags.highway === 'tertiary' || tags.highway === 'trunk')
+    return 'road';
+  if (/mor|more|chowrasta|chattar|point|circle|gate|মোড়|চত্বর|গেট/i.test(tags.name || tags['name:bn'] || ''))
+    return 'mor';
+  if (/bazar|market|haat|বাজার|হাট/i.test(tags.name || tags['name:bn'] || '')) return 'bazar';
+  return 'area';
 }
 
 interface FairRideMeterModalProps {
@@ -100,6 +158,12 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
   const [pickerQuery, setPickerQuery] = useState('');
   const [remoteResults, setRemoteResults] = useState<SelectedLocation[]>([]);
   const [isSearchingRemote, setIsSearchingRemote] = useState(false);
+
+  // Auto-discovered nearby Main Roads & Local Places (Overpass API + local hubs)
+  const [nearbyOverpassPlaces, setNearbyOverpassPlaces] = useState<SelectedLocation[]>([]);
+  const [isLoadingNearby, setIsLoadingNearby] = useState(false);
+  const [nearbyFilter, setNearbyFilter] = useState<'all' | 'road' | 'mor_stand' | 'bazar' | 'station' | 'campus_hosp'>('all');
+  const [nearbySearchText, setNearbySearchText] = useState('');
 
   // GPS Locator state
   const [isLocatingGps, setIsLocatingGps] = useState(false);
@@ -128,7 +192,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
   const lastCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const timerRef = useRef<number | null>(null);
 
-  // Filtered built-in places across all 64 districts
+  // Filtered built-in places across all 64 districts & upazilas
   const filteredBuiltInPlaces = useMemo(() => {
     const q = pickerQuery.trim().toLowerCase();
     return BANGLADESH_PLACES.filter((p) => {
@@ -137,10 +201,89 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
       return (
         p.nameBn.toLowerCase().includes(q) ||
         p.nameEn.toLowerCase().includes(q) ||
-        p.districtBn.toLowerCase().includes(q)
+        p.districtBn.toLowerCase().includes(q) ||
+        (p.upazilaBn && p.upazilaBn.toLowerCase().includes(q))
       );
     });
   }, [pickerDivision, pickerQuery]);
+
+  // Auto-discover ALL local Main Roads, Mors, Bazars, Stations, Colleges & Hospitals around current Pickup via Overpass API
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const cacheKey = `${pickup.lat.toFixed(2)}_${pickup.lng.toFixed(2)}`;
+    const cached = overpassLocalCache.get(cacheKey);
+    if (cached) {
+      setNearbyOverpassPlaces(cached);
+      setIsLoadingNearby(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsLoadingNearby(true);
+
+    const overpassQuery = `
+      [out:json][timeout:10];
+      (
+        way["highway"~"trunk|primary|secondary|tertiary"]["name"](around:4000,${pickup.lat},${pickup.lng});
+        node["railway"~"station|halt"]["name"](around:6000,${pickup.lat},${pickup.lng});
+        node["amenity"~"bus_station|marketplace|hospital|college|university"]["name"](around:4500,${pickup.lat},${pickup.lng});
+        way["amenity"~"bus_station|marketplace|hospital|college|university"]["name"](around:4500,${pickup.lat},${pickup.lng});
+        node["highway"="bus_stop"]["name"](around:4000,${pickup.lat},${pickup.lng});
+        node["place"~"suburb|neighbourhood|quarter|village|hamlet|town"]["name"](around:5000,${pickup.lat},${pickup.lng});
+      );
+      out center 45;
+    `.trim();
+
+    fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: `data=${encodeURIComponent(overpassQuery)}`,
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Overpass error'))))
+      .then((data) => {
+        const elements: OverpassElement[] = data?.elements || [];
+        const seenNames = new Set<string>();
+        const discovered: SelectedLocation[] = [];
+
+        for (const el of elements) {
+          const tags = el.tags || {};
+          const rawName = (tags['name:bn'] || tags.name || '').trim();
+          if (!rawName) continue;
+          const normName = rawName.toLowerCase();
+          if (seenNames.has(normName)) continue;
+
+          const lat = el.lat ?? el.center?.lat;
+          const lng = el.lon ?? el.center?.lon;
+          if (typeof lat !== 'number' || typeof lng !== 'number') continue;
+
+          seenNames.add(normName);
+          const category = inferOverpassCategory(tags);
+          discovered.push({
+            id: `ov_${el.type}_${el.id}`,
+            name: rawName,
+            subtitle: `${CATEGORY_LABELS[category]} • লাইভ রোড ম্যাপ`,
+            lat,
+            lng,
+            tier: pickup.tier,
+            category,
+          });
+        }
+
+        overpassLocalCache.set(cacheKey, discovered);
+        setNearbyOverpassPlaces(discovered);
+      })
+      .catch(() => {
+        // Keep built-in local spots silently when offline or rate-limited
+        setNearbyOverpassPlaces([]);
+      })
+      .finally(() => {
+        setIsLoadingNearby(false);
+      });
+
+    return () => controller.abort();
+  }, [pickup.lat, pickup.lng, pickup.tier, isOpen]);
 
   // Live OpenStreetMap Nominatim search across ALL of Bangladesh
   useEffect(() => {
@@ -157,7 +300,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
 
     const timer = window.setTimeout(async () => {
       try {
-        const url = `https://nominatim.openstreetmap.org/search?format=json&countrycodes=bd&limit=8&accept-language=bn,en&q=${encodeURIComponent(
+        const url = `https://nominatim.openstreetmap.org/search?format=json&countrycodes=bd&limit=10&accept-language=bn,en&q=${encodeURIComponent(
           q
         )}`;
         const res = await fetch(url, { signal: controller.signal });
@@ -193,7 +336,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
       } finally {
         setIsSearchingRemote(false);
       }
-    }, 450);
+    }, 400);
 
     return () => {
       window.clearTimeout(timer);
@@ -222,7 +365,6 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
     const controller = new AbortController();
     setIsFetchingRoute(true);
 
-    // Immediate fallback estimate while waiting
     const fallbackKm = Number(Math.max(0.5, straightKm * 1.32).toFixed(1));
     setRoadDistanceKm(fallbackKm);
     setRoadDurationMins(Math.max(3, Math.round(fallbackKm * 3.5)));
@@ -293,7 +435,6 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
             latitude,
             longitude
           );
-          // Filter GPS drift noise (count movement >= 10 meters)
           if (deltaKm >= 0.01 && deltaKm < 2) {
             setMeterDistanceKm((prev) => Number((prev + deltaKm).toFixed(2)));
             lastCoordsRef.current = { lat: latitude, lng: longitude };
@@ -320,12 +461,163 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
     };
   }, [meterRunning]);
 
-  // Cleanup when modal closes
   useEffect(() => {
     if (!isOpen && meterRunning) {
       setMeterRunning(false);
     }
   }, [isOpen, meterRunning]);
+
+  // Determine regional pricing tier (Metro vs District vs Upazila/Rural)
+  const effectiveTier: PlaceTier =
+    pickup.tier === 'metro' || destination.tier === 'metro'
+      ? 'metro'
+      : pickup.tier === 'district' || destination.tier === 'district'
+      ? 'district'
+      : 'upazila';
+
+  // Helper to compute fare for any distance & tier
+  const computeFareForRoute = (distKm: number, tierToUse: PlaceTier) => {
+    const trafficMult =
+      trafficLevel === 'heavy' ? 1.25 : trafficLevel === 'moderate' ? 1.1 : 1.0;
+    const nightRainMult = isNightOrRain ? 1.15 : 1.0;
+    const combinedMult = trafficMult * nightRainMult;
+
+    const isIntercityLong = distKm > 25;
+
+    let minFare = 30;
+    let maxFare = 50;
+    let eta = Math.round(distKm * 4);
+    let formulaNote = '';
+
+    if (vehicle === 'rickshaw') {
+      const base = tierToUse === 'metro' ? 30 : tierToUse === 'district' ? 20 : 15;
+      const perKm = tierToUse === 'metro' ? 18 : tierToUse === 'district' ? 14 : 12;
+      const raw = base + Math.max(0, distKm - 0.8) * perKm;
+      minFare = Math.round(raw * nightRainMult * (trafficLevel === 'heavy' ? 1.15 : 1));
+      maxFare = Math.round(minFare * 1.25);
+      eta = Math.round(distKm * (trafficLevel === 'heavy' ? 7 : 5) + 3);
+      formulaNote =
+        tierToUse === 'metro'
+          ? 'মেট্রো রিকশা রেট: প্রথম ১ কিমি ৳৩০, পরবর্তী প্রতি কিমি ~৳১৮'
+          : tierToUse === 'district'
+          ? 'জেলা শহর রিকশা/ভ্যান: প্রথম ১ কিমি ৳২০, পরবর্তী প্রতি কিমি ~৳১৪'
+          : 'উপজেলা/মফস্বল রিকশা/ভ্যান: প্রথম ১ কিমি ৳১৫, পরবর্তী প্রতি কিমি ~৳১২';
+    } else if (vehicle === 'auto') {
+      if (rideSharingMode === 'shared') {
+        const perSeatBase = tierToUse === 'metro' ? 15 : 10;
+        const perSeatKm = tierToUse === 'metro' ? 4.5 : 3.5;
+        const raw = perSeatBase + Math.max(0, distKm - 1.5) * perSeatKm;
+        minFare = Math.max(10, Math.round(raw * nightRainMult));
+        maxFare = Math.round(minFare * 1.2 + 5);
+        formulaNote = 'লোকাল ইজিবাইক/অটো শেয়ার (জনপ্রতি সিট ভাড়া) অনুযায়ী হিসাব';
+      } else {
+        const base = tierToUse === 'metro' ? 50 : 40;
+        const perKm = tierToUse === 'metro' ? 18 : 15;
+        const raw = base + Math.max(0, distKm - 1.5) * perKm;
+        minFare = Math.round(raw * combinedMult);
+        maxFare = Math.round(minFare * 1.25);
+        formulaNote = 'সম্পূর্ণ অটো/ইজিবাইক রিজার্ভ ভাড়া হিসাব';
+      }
+      eta = Math.round(distKm * (trafficLevel === 'heavy' ? 4.8 : 3.2) + 4);
+    } else if (vehicle === 'cng') {
+      if (rideSharingMode === 'shared') {
+        const perSeatBase = tierToUse === 'metro' ? 20 : 15;
+        const perSeatKm = tierToUse === 'metro' ? 6 : 4.5;
+        const raw = perSeatBase + Math.max(0, distKm - 2) * perSeatKm;
+        minFare = Math.max(15, Math.round(raw * nightRainMult));
+        maxFare = Math.round(minFare * 1.2 + 5);
+        formulaNote = 'লোকাল শেয়ার সিএনজি (জনপ্রতি সিট) অনুযায়ী প্রচলিত রেট';
+      } else if (tierToUse === 'metro' && !isIntercityLong) {
+        const base = 40;
+        const addKm = Math.max(0, distKm - 2);
+        const waitMins =
+          trafficLevel === 'heavy'
+            ? Math.round(distKm * 4)
+            : trafficLevel === 'moderate'
+            ? Math.round(distKm * 2.2)
+            : Math.round(distKm * 1);
+        const officialMeter = base + addKm * 12 + waitMins * 2;
+        minFare = Math.round(officialMeter * nightRainMult);
+        maxFare = Math.round(officialMeter * 1.35 * nightRainMult);
+        formulaNote = `বিআরটিএ অফিসিয়াল মিটার: প্রথম ২ কিমি ৳৪০ + ৳১২/কিমি + ওয়েটিং ৳২/মিনিট`;
+      } else {
+        const base = 50;
+        const perKm = isIntercityLong ? 14 : 18;
+        const raw = base + Math.max(0, distKm - 2) * perKm;
+        minFare = Math.round(raw * combinedMult);
+        maxFare = Math.round(minFare * 1.25);
+        formulaNote = isIntercityLong
+          ? 'দূরপাল্লা/হাইওয়ে সিএনজি রিজার্ভ রেট (~৳১৪-৳১৮/কিমি)'
+          : 'জেলা ও মফস্বল সিএনজি রিজার্ভ রেট: ভিত্তি ৳৫০ + ৳১৮/কিমি';
+      }
+      eta = Math.round(distKm * (trafficLevel === 'heavy' ? 4.2 : 2.6) + 5);
+    } else {
+      const base = tierToUse === 'metro' ? 30 : 25;
+      const perKm = tierToUse === 'metro' ? 14 : 12;
+      const raw = base + distKm * perKm;
+      minFare = Math.max(25, Math.round(raw * (trafficLevel === 'heavy' ? 1.12 : 1) * nightRainMult));
+      maxFare = Math.round(minFare * 1.2);
+      eta = Math.round(distKm * 2.3 + 3);
+      formulaNote = 'বাইক রাইড রেট: বেস ৳২৫-৳৩০ + ৳১২-৳১৪/কিমি';
+    }
+
+    const roundTo5 = (n: number) => Math.max(10, Math.round(n / 5) * 5);
+    return {
+      min: roundTo5(minFare),
+      max: Math.max(roundTo5(minFare) + 5, roundTo5(maxFare)),
+      eta,
+      formulaNote,
+      isIntercityLong,
+    };
+  };
+
+  // Combined Auto-List of Nearby Main Roads & Local Places around selected Pickup
+  const autoLocalDestinations = useMemo(() => {
+    const combined: Array<{ loc: SelectedLocation; distKm: number }> = [];
+    const seen = new Set<string>();
+    const pickupNameNorm = pickup.name.trim().toLowerCase();
+
+    // 1. Built-in Bangladesh places within 20 km
+    for (const bp of BANGLADESH_PLACES) {
+      const loc = toSelectedLocation(bp);
+      if (loc.id === pickup.id || loc.name.trim().toLowerCase() === pickupNameNorm) continue;
+      const straight = calculateHaversineKm(pickup.lat, pickup.lng, loc.lat, loc.lng);
+      if (straight <= 20) {
+        const roadEst = Number(Math.max(0.4, straight * 1.32).toFixed(1));
+        seen.add(loc.name.trim().toLowerCase());
+        combined.push({ loc, distKm: roadEst });
+      }
+    }
+
+    // 2. Real Overpass discovered main roads, mors, stations, bazars, hospitals, schools
+    for (const ov of nearbyOverpassPlaces) {
+      const norm = ov.name.trim().toLowerCase();
+      if (norm === pickupNameNorm || seen.has(norm)) continue;
+      const straight = calculateHaversineKm(pickup.lat, pickup.lng, ov.lat, ov.lng);
+      if (straight < 0.08) continue;
+      const roadEst = Number(Math.max(0.4, straight * 1.32).toFixed(1));
+      seen.add(norm);
+      combined.push({ loc: ov, distKm: roadEst });
+    }
+
+    // Sort nearest first
+    combined.sort((a, b) => a.distKm - b.distKm);
+
+    // Filter by category chip & search text
+    const q = nearbySearchText.trim().toLowerCase();
+    return combined.filter(({ loc }) => {
+      const cat = loc.category || 'area';
+      if (nearbyFilter === 'road' && cat !== 'road') return false;
+      if (nearbyFilter === 'mor_stand' && cat !== 'mor' && cat !== 'stand') return false;
+      if (nearbyFilter === 'bazar' && cat !== 'bazar') return false;
+      if (nearbyFilter === 'station' && cat !== 'station') return false;
+      if (nearbyFilter === 'campus_hosp' && cat !== 'campus' && cat !== 'hospital') return false;
+      if (q && !loc.name.toLowerCase().includes(q) && !loc.subtitle.toLowerCase().includes(q)) {
+        return false;
+      }
+      return true;
+    });
+  }, [pickup, nearbyOverpassPlaces, nearbyFilter, nearbySearchText]);
 
   if (!isOpen) return null;
 
@@ -373,7 +665,6 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
             }
           }
         } catch {
-          // Fallback: find nearest built-in place in Bangladesh
           let nearest = BANGLADESH_PLACES[0];
           let minD = Infinity;
           for (const p of BANGLADESH_PLACES) {
@@ -417,131 +708,52 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
     );
   };
 
-  // Swap Pickup & Destination
+  // Quick Select Local Hub (e.g., ঢাকা মোড় বিরামপুর)
+  const handleSelectPickupPreset = (placeId: string) => {
+    const found = BANGLADESH_PLACES.find((p) => p.id === placeId);
+    if (!found) return;
+    const loc = toSelectedLocation(found);
+    setPickup(loc);
+
+    // Also auto-pick nearest neighbor as destination so user gets instant result
+    let nearestDest: BangladeshPlace | null = null;
+    let minD = Infinity;
+    for (const candidate of BANGLADESH_PLACES) {
+      if (candidate.id === found.id) continue;
+      const d = calculateHaversineKm(found.lat, found.lng, candidate.lat, candidate.lng);
+      if (d < minD) {
+        minD = d;
+        nearestDest = candidate;
+      }
+    }
+    if (nearestDest) {
+      setDestination(toSelectedLocation(nearestDest));
+    }
+  };
+
   const handleSwapLocations = () => {
     const temp = pickup;
     setPickup(destination);
     setDestination(temp);
   };
 
-  // Determine regional pricing tier (Metro vs District vs Upazila/Rural)
-  const effectiveTier: PlaceTier =
-    pickup.tier === 'metro' || destination.tier === 'metro'
-      ? 'metro'
-      : pickup.tier === 'district' || destination.tier === 'district'
-      ? 'district'
-      : 'upazila';
-
   const activeDistanceKm =
     activeMode === 'live_meter'
       ? Math.max(0.2, meterDistanceKm)
       : roadDistanceKm ?? 1.5;
 
-  // Calculate Fare Breakdown across all of Bangladesh
-  const computeFare = (distKm: number) => {
-    const trafficMult =
-      trafficLevel === 'heavy' ? 1.25 : trafficLevel === 'moderate' ? 1.1 : 1.0;
-    const nightRainMult = isNightOrRain ? 1.15 : 1.0;
-    const combinedMult = trafficMult * nightRainMult;
-
-    const isIntercityLong = distKm > 25;
-
-    let minFare = 30;
-    let maxFare = 50;
-    let eta = roadDurationMins || Math.round(distKm * 4);
-    let formulaNote = '';
-
-    if (vehicle === 'rickshaw') {
-      const base = effectiveTier === 'metro' ? 30 : effectiveTier === 'district' ? 20 : 15;
-      const perKm = effectiveTier === 'metro' ? 18 : effectiveTier === 'district' ? 14 : 12;
-      const raw = base + Math.max(0, distKm - 1) * perKm;
-      minFare = Math.round(raw * nightRainMult * (trafficLevel === 'heavy' ? 1.15 : 1));
-      maxFare = Math.round(minFare * 1.25);
-      eta = Math.round(distKm * (trafficLevel === 'heavy' ? 7 : 5) + 3);
-      formulaNote =
-        effectiveTier === 'metro'
-          ? 'মেট্রো রিকশা রেট: প্রথম ১ কিমি ৳৩০, পরবর্তী প্রতি কিমি ~৳১৮'
-          : effectiveTier === 'district'
-          ? 'জেলা শহর রিকশা/ভ্যান: প্রথম ১ কিমি ৳২০, পরবর্তী প্রতি কিমি ~৳১৪'
-          : 'উপজেলা/মফস্বল রিকশা/ভ্যান: প্রথম ১ কিমি ৳১৫, পরবর্তী প্রতি কিমি ~৳১২';
-    } else if (vehicle === 'auto') {
-      if (rideSharingMode === 'shared') {
-        // Shared Auto / Easybike per seat rate across Bangladesh districts
-        const perSeatBase = effectiveTier === 'metro' ? 15 : 10;
-        const perSeatKm = effectiveTier === 'metro' ? 4.5 : 3.5;
-        const raw = perSeatBase + Math.max(0, distKm - 1.5) * perSeatKm;
-        minFare = Math.max(10, Math.round(raw * nightRainMult));
-        maxFare = Math.round(minFare * 1.2 + 5);
-        formulaNote = 'লোকাল ইজিবাইক/অটো শেয়ার (জনপ্রতি সিট ভাড়া) অনুযায়ী হিসাব';
-      } else {
-        // Reserve Auto / Easybike
-        const base = effectiveTier === 'metro' ? 50 : 40;
-        const perKm = effectiveTier === 'metro' ? 18 : 15;
-        const raw = base + Math.max(0, distKm - 1.5) * perKm;
-        minFare = Math.round(raw * combinedMult);
-        maxFare = Math.round(minFare * 1.25);
-        formulaNote = 'সম্পূর্ণ অটো/ইজিবাইক রিজার্ভ ভাড়া হিসাব';
-      }
-      eta = Math.round(distKm * (trafficLevel === 'heavy' ? 4.8 : 3.2) + 4);
-    } else if (vehicle === 'cng') {
-      if (rideSharingMode === 'shared') {
-        const perSeatBase = effectiveTier === 'metro' ? 20 : 15;
-        const perSeatKm = effectiveTier === 'metro' ? 6 : 4.5;
-        const raw = perSeatBase + Math.max(0, distKm - 2) * perSeatKm;
-        minFare = Math.max(15, Math.round(raw * nightRainMult));
-        maxFare = Math.round(minFare * 1.2 + 5);
-        formulaNote = 'লোকাল শেয়ার সিএনজি (জনপ্রতি সিট) অনুযায়ী প্রচলিত রেট';
-      } else if (effectiveTier === 'metro' && !isIntercityLong) {
-        // Official BRTA CNG Meter formula (Base 40 for first 2km, 12/km, waiting 2/min)
-        const base = 40;
-        const addKm = Math.max(0, distKm - 2);
-        const waitMins =
-          trafficLevel === 'heavy'
-            ? Math.round(distKm * 4)
-            : trafficLevel === 'moderate'
-            ? Math.round(distKm * 2.2)
-            : Math.round(distKm * 1);
-        const officialMeter = base + addKm * 12 + waitMins * 2;
-        minFare = Math.round(officialMeter * nightRainMult);
-        maxFare = Math.round(officialMeter * 1.35 * nightRainMult);
-        formulaNote = `বিআরটিএ অফিসিয়াল মিটার: প্রথম ২ কিমি ৳৪০ + ৳১২/কিমি + ওয়েটিং ৳২/মিনিট (আনুমানিক মিটার: ৳${Math.round(
-          officialMeter
-        )})`;
-      } else {
-        // Outside Metro or Inter-district CNG Reserve
-        const base = 50;
-        const perKm = isIntercityLong ? 14 : 18;
-        const raw = base + Math.max(0, distKm - 2) * perKm;
-        minFare = Math.round(raw * combinedMult);
-        maxFare = Math.round(minFare * 1.25);
-        formulaNote = isIntercityLong
-          ? 'দূরপাল্লা/হাইওয়ে সিএনজি রিজার্ভ রেট (~৳১৪-৳১৮/কিমি)'
-          : 'জেলা ও মফস্বল সিএনজি রিজার্ভ রেট: ভিত্তি ৳৫০ + ৳১৮/কিমি';
-      }
-      eta = Math.round(distKm * (trafficLevel === 'heavy' ? 4.2 : 2.6) + 5);
-    } else {
-      // Bike ride-sharing / rent
-      const base = effectiveTier === 'metro' ? 30 : 25;
-      const perKm = effectiveTier === 'metro' ? 14 : 12;
-      const raw = base + distKm * perKm;
-      minFare = Math.max(30, Math.round(raw * (trafficLevel === 'heavy' ? 1.12 : 1) * nightRainMult));
-      maxFare = Math.round(minFare * 1.2);
-      eta = Math.round(distKm * 2.3 + 3);
-      formulaNote = 'বাইক রাইড রেট: বেস ৳২৫-৳৩০ + ৳১২-৳১৪/কিমি';
-    }
-
-    // Round to nearest 5 taka for realistic cash bargaining
-    const roundTo5 = (n: number) => Math.max(10, Math.round(n / 5) * 5);
-    return {
-      min: roundTo5(minFare),
-      max: Math.max(roundTo5(minFare) + 5, roundTo5(maxFare)),
-      eta,
-      formulaNote,
-      isIntercityLong,
-    };
-  };
-
-  const fareResult = computeFare(activeDistanceKm);
+  const fareResult = computeFareForRoute(activeDistanceKm, effectiveTier);
+  const finalEta =
+    activeMode === 'calculator' && roadDurationMins && routeSource === 'osrm'
+      ? Math.max(
+          2,
+          Math.round(
+            roadDurationMins *
+              (vehicle === 'rickshaw' ? 2.1 : vehicle === 'auto' ? 1.35 : vehicle === 'cng' ? 1.15 : 0.9) *
+              (trafficLevel === 'heavy' ? 1.35 : trafficLevel === 'moderate' ? 1.15 : 1)
+          )
+        )
+      : fareResult.eta;
 
   const vehicleLabel =
     vehicle === 'rickshaw'
@@ -559,7 +771,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
       `📏 দূরত্ব: ${activeDistanceKm} কিমি (${routeSource === 'osrm' ? 'OSRM রোড ম্যাপ' : 'GPS'})`,
       `🚕 বাহন: ${vehicleLabel}`,
       `💰 ন্যায্য ভাড়া: ৳${fareResult.min} - ৳${fareResult.max} টাকা`,
-      `⏱️ সম্ভাব্য সময়: ${fareResult.eta} মিনিট`,
+      `⏱️ সম্ভাব্য সময়: ${finalEta} মিনিট`,
     ].join('\n');
 
     if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
@@ -586,7 +798,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
-      <div className="w-full max-w-2xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col max-h-[93vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200 relative">
+      <div className="w-full max-w-2xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col max-h-[94vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200 relative">
         {/* Header */}
         <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-gradient-to-r from-emerald-500/10 via-teal-500/5 to-transparent">
           <div className="flex items-center gap-3">
@@ -594,14 +806,14 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
               <Navigation className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2 flex-wrap">
                 ন্যায্য ভাড়া ও ট্রাফিক মিটার
                 <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 rounded-full">
-                  সারা বাংলাদেশ (৬৪ জেলা)
+                  সারা বাংলাদেশ • মেইন রোড ও লোকাল
                 </span>
               </h2>
               <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">
-                দেশের যেকোনো গ্রাম, উপজেলা ও শহরের রিকশা, অটো, সিএনজি ও বাইক ভাড়া
+                দেশের যেকোনো শহর, উপজেলা, মোড়, বাজার ও মেইন রোডের অটো তালিকা ও ভাড়া
               </p>
             </div>
           </div>
@@ -625,8 +837,8 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
                 : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
-            <MapPin className="w-4 h-4" />
-            <span>যেকোনো স্থানের ভাড়া হিসাব</span>
+            <Route className="w-4 h-4" />
+            <span>মেইন রোড ও লোকাল ভাড়া</span>
           </button>
           <button
             type="button"
@@ -645,7 +857,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
           </button>
         </div>
 
-        {/* Body */}
+        {/* Scrollable Content */}
         <div className="p-4 sm:p-5 flex-1 min-h-0 overflow-y-auto space-y-4">
           {gpsError && (
             <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-2">
@@ -657,89 +869,120 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
           )}
 
           {activeMode === 'calculator' ? (
-            /* Route Pickup & Destination Card */
-            <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2.5 relative">
-              {/* Pickup */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
-                    কোথা থেকে রওনা হবেন:
+            <>
+              {/* Quick Local Area Shortcuts across Bangladesh */}
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                <span className="text-[10px] font-bold text-slate-400 shrink-0">জনপ্রিয় কেন্দ্র:</span>
+                {[
+                  { id: 'bir_dhaka_mor', label: 'বিরামপুর (ঢাকা মোড়)' },
+                  { id: 'dhk_farmgate', label: 'ঢাকা ফার্মগেট' },
+                  { id: 'din_sadar', label: 'দিনাজপুর সদর' },
+                  { id: 'ran_jahaj', label: 'রংপুর শহর' },
+                  { id: 'ctg_gec', label: 'চট্টগ্রাম জিইসি' },
+                  { id: 'syl_zindabazar', label: 'সিলেট জিন্দাবাজার' },
+                  { id: 'raj_saheb', label: 'রাজশাহী সাহেব বাজার' },
+                  { id: 'khl_shibbari', label: 'খুলনা শিববাড়ী' },
+                  { id: 'bar_sadar', label: 'বরিশাল সদর' },
+                ].map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => handleSelectPickupPreset(chip.id)}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap border transition ${
+                      pickup.id === chip.id
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-emerald-400'
+                    }`}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Pickup & Destination Card */}
+              <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2.5 relative">
+                {/* Pickup */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
+                      কোথা থেকে রওনা হবেন (মোড় / এলাকা / শহর):
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => handleDetectCurrentGps('pickup')}
+                      disabled={isLocatingGps}
+                      className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 disabled:opacity-50"
+                    >
+                      {isLocatingGps ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Compass className="w-3 h-3" />
+                      )}
+                      আমার বর্তমান GPS
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPickingFor('pickup');
+                      setPickerQuery('');
+                      setRemoteResults([]);
+                    }}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-emerald-500 text-left transition flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                        {pickup.name}
+                      </p>
+                      <p className="text-[11px] text-slate-400 truncate">{pickup.subtitle}</p>
+                    </div>
+                    <span className="text-[11px] font-bold text-emerald-600 shrink-0 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60">
+                      বদলান
+                    </span>
+                  </button>
+                </div>
+
+                {/* Swap Button */}
+                <div className="flex justify-center -my-1.5 relative z-10">
+                  <button
+                    type="button"
+                    onClick={handleSwapLocations}
+                    title="উৎস ও গন্তব্য অদলবদল করুন"
+                    className="w-8 h-8 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-center text-slate-600 dark:text-slate-300 hover:text-emerald-600 hover:border-emerald-400 transition active:scale-90"
+                  >
+                    <ArrowUpDown className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Destination */}
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5 mb-1">
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" />
+                    গন্তব্য স্থান (মেইন রোড, বাজার, স্টেশন বা যেকোনো স্থান):
                   </label>
                   <button
                     type="button"
-                    onClick={() => handleDetectCurrentGps('pickup')}
-                    disabled={isLocatingGps}
-                    className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 disabled:opacity-50"
+                    onClick={() => {
+                      setPickingFor('destination');
+                      setPickerQuery('');
+                      setRemoteResults([]);
+                    }}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-emerald-500 text-left transition flex items-center justify-between gap-2"
                   >
-                    {isLocatingGps ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Compass className="w-3 h-3" />
-                    )}
-                    আমার বর্তমান GPS অবস্থান
+                    <div className="min-w-0">
+                      <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                        {destination.name}
+                      </p>
+                      <p className="text-[11px] text-slate-400 truncate">{destination.subtitle}</p>
+                    </div>
+                    <span className="text-[11px] font-bold text-red-600 shrink-0 px-2 py-1 rounded-lg bg-red-50 dark:bg-red-950/60">
+                      গন্তব্য বাছুন
+                    </span>
                   </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPickingFor('pickup');
-                    setPickerQuery('');
-                    setRemoteResults([]);
-                  }}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-emerald-500 text-left transition flex items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
-                      {pickup.name}
-                    </p>
-                    <p className="text-[11px] text-slate-400 truncate">{pickup.subtitle}</p>
-                  </div>
-                  <span className="text-[11px] font-bold text-emerald-600 shrink-0 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60">
-                    বদলান
-                  </span>
-                </button>
               </div>
-
-              {/* Swap Button */}
-              <div className="flex justify-center -my-1.5 relative z-10">
-                <button
-                  type="button"
-                  onClick={handleSwapLocations}
-                  title="উৎস ও গন্তব্য অদলবদল করুন"
-                  className="w-8 h-8 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-center text-slate-600 dark:text-slate-300 hover:text-emerald-600 hover:border-emerald-400 transition active:scale-90"
-                >
-                  <ArrowUpDown className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Destination */}
-              <div>
-                <label className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5 mb-1">
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" />
-                  গন্তব্য স্থান (বাংলাদেশের যেকোনো স্থান):
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPickingFor('destination');
-                    setPickerQuery('');
-                    setRemoteResults([]);
-                  }}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-emerald-500 text-left transition flex items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
-                      {destination.name}
-                    </p>
-                    <p className="text-[11px] text-slate-400 truncate">{destination.subtitle}</p>
-                  </div>
-                  <span className="text-[11px] font-bold text-red-600 shrink-0 px-2 py-1 rounded-lg bg-red-50 dark:bg-red-950/60">
-                    গন্তব্য বাছুন
-                  </span>
-                </button>
-              </div>
-            </div>
+            </>
           ) : (
             /* Live GPS Trip Meter Controls */
             <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-3">
@@ -882,7 +1125,6 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
 
           {/* Ride & Traffic Options Row */}
           <div className="flex flex-wrap items-center gap-2">
-            {/* Traffic Switch */}
             <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-[11px] font-bold">
               {(['clear', 'moderate', 'heavy'] as const).map((lvl) => (
                 <button
@@ -900,7 +1142,6 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
               ))}
             </div>
 
-            {/* Night / Rain Toggle */}
             <button
               type="button"
               onClick={() => setIsNightOrRain(!isNightOrRain)}
@@ -915,7 +1156,6 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
               রাত/বৃষ্টি (+১৫%)
             </button>
 
-            {/* Reserve vs Shared Toggle for Auto & CNG */}
             {(vehicle === 'auto' || vehicle === 'cng') && (
               <div className="flex items-center gap-1 p-1 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-[11px] font-bold">
                 <button
@@ -980,7 +1220,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
 
             <div className="pt-2.5 border-t border-white/20 flex items-center justify-between text-xs text-emerald-50 flex-wrap gap-2">
               <span className="flex items-center gap-1">
-                <Clock className="w-3.5 h-3.5" /> সম্ভাব্য সময়: ~{fareResult.eta} মিনিট
+                <Clock className="w-3.5 h-3.5" /> সম্ভাব্য সময়: ~{finalEta} মিনিট
               </span>
               <span className="flex items-center gap-1 font-bold">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-300" />
@@ -992,6 +1232,150 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
               </span>
             </div>
           </div>
+
+          {/* AUTO NEARBY MAIN ROADS & LOCAL PLACES DIRECTORY (FROM SELECTED PICKUP) */}
+          {activeMode === 'calculator' && (
+            <div className="p-3.5 sm:p-4 rounded-3xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <h3 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <Route className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span className="truncate">
+                      {pickup.name} থেকে মেইন রোড ও সব জায়গার অটো তালিকা
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    যেকোনো জায়গায় ট্যাপ করলেই সাথে সাথে গন্তব্য ও ভাড়া সেট হয়ে যাবে
+                  </p>
+                </div>
+                {isLoadingNearby && (
+                  <span className="text-[11px] font-bold text-emerald-600 flex items-center gap-1">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    আশেপাশের রোড ও মোড় খুঁজছে...
+                  </span>
+                )}
+              </div>
+
+              {/* Filter Input + Category Chips */}
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={nearbySearchText}
+                    onChange={(e) => setNearbySearchText(e.target.value)}
+                    placeholder="এই এলাকার মধ্যে খুঁজুন (যেমন: কলেজ বাজার, স্টেশন, মেইন রোড)..."
+                    className="w-full pl-8 pr-7 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                  />
+                  {nearbySearchText && (
+                    <button
+                      type="button"
+                      onClick={() => setNearbySearchText('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+                  {[
+                    { id: 'all', label: 'সব জায়গা' },
+                    { id: 'road', label: 'মেইন রোড' },
+                    { id: 'mor_stand', label: 'মোড় ও বাসস্ট্যান্ড' },
+                    { id: 'bazar', label: 'বাজার' },
+                    { id: 'station', label: 'স্টেশন' },
+                    { id: 'campus_hosp', label: 'কলেজ ও হাসপাতাল' },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setNearbyFilter(tab.id as typeof nearbyFilter)}
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition ${
+                        nearbyFilter === tab.id
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Scrollable Auto-Route Cards */}
+              <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+                {autoLocalDestinations.length === 0 ? (
+                  <p className="text-xs text-slate-400 text-center py-5">
+                    {isLoadingNearby
+                      ? 'এই এলাকার মেইন রোড ও লোকাল স্থান লোড হচ্ছে...'
+                      : 'এই ক্যাটাগরিতে আশেপাশে কোনো স্থান পাওয়া যায়নি।'}
+                  </p>
+                ) : (
+                  autoLocalDestinations.map(({ loc, distKm }) => {
+                    const rowTier: PlaceTier =
+                      pickup.tier === 'metro' || loc.tier === 'metro'
+                        ? 'metro'
+                        : pickup.tier === 'district' || loc.tier === 'district'
+                        ? 'district'
+                        : 'upazila';
+                    const rowFare = computeFareForRoute(distKm, rowTier);
+                    const cat = loc.category || 'area';
+                    const isSelectedDest =
+                      destination.id === loc.id ||
+                      destination.name.trim().toLowerCase() === loc.name.trim().toLowerCase();
+
+                    return (
+                      <button
+                        key={loc.id}
+                        type="button"
+                        onClick={() => setDestination(loc)}
+                        className={`w-full p-2.5 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
+                          isSelectedDest
+                            ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-500 shadow-xs'
+                            : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-700 hover:border-emerald-400'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span
+                              className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold shrink-0 ${CATEGORY_COLORS[cat]}`}
+                            >
+                              {CATEGORY_LABELS[cat]}
+                            </span>
+                            <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                              {loc.name}
+                            </p>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">
+                            দূরত্ব ~{distKm} কি.মি. • ~{rowFare.eta} মি.
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <div className="text-right">
+                            <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 block">
+                              ৳{rowFare.min}-{rowFare.max}
+                            </span>
+                            <span className="text-[9px] text-slate-400 block">
+                              {vehicle === 'rickshaw'
+                                ? 'রিকশা/ভ্যান'
+                                : vehicle === 'auto'
+                                ? 'অটো'
+                                : vehicle === 'cng'
+                                ? 'সিএনজি'
+                                : 'বাইক'}
+                            </span>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-slate-400" />
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
 
           {fareResult.isIntercityLong && (
             <div className="p-3 rounded-2xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 flex items-start gap-2 text-xs text-blue-800 dark:text-blue-200">
@@ -1008,7 +1392,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
             <div className="space-y-1">
               <p className="font-bold">{fareResult.formulaNote}</p>
               <p className="text-[11px] opacity-90">
-                বিআরটিএ নীতিমালা এবং বাংলাদেশের ৬৪ জেলার বর্তমান গড় ভাড়ার ভিত্তিতে এই হিসাব তৈরি। চালক অতিরিক্ত ভাড়া চাইলে এই ন্যায্য হিসাব দেখিয়ে দরদাম করতে পারেন।
+                বিআরটিএ নীতিমালা এবং বাংলাদেশের ৬৪ জেলার মেইন রোড ও লোকাল এলাকার গড় ভাড়ার ভিত্তিতে হিসাব।
               </p>
             </div>
           </div>
@@ -1024,7 +1408,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
                   {pickingFor === 'pickup' ? 'রওনা হওয়ার স্থান বাছুন' : 'গন্তব্য স্থান বাছুন'}
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  বাংলাদেশের যেকোনো জেলা, উপজেলা, বাজার, রাস্তা বা এলাকার নাম লিখুন
+                  বাংলাদেশের যেকোনো জেলা, উপজেলা, মোড়, বাজার বা মেইন রোডের নাম লিখুন
                 </p>
               </div>
               <button
@@ -1045,7 +1429,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
                   autoFocus
                   value={pickerQuery}
                   onChange={(e) => setPickerQuery(e.target.value)}
-                  placeholder="যেমন: পাথরঘাটা, কক্সবাজার, মিরপুর ১০, কুমিল্লা, সিলেট..."
+                  placeholder="যেমন: বিরামপুর, ঢাকা মোড়, কলেজ বাজার, বগুড়া, সাভার..."
                   className="w-full pl-10 pr-9 py-2.5 text-xs sm:text-sm rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white border border-transparent focus:border-emerald-500 focus:outline-none"
                 />
                 {pickerQuery && (
@@ -1110,7 +1494,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
 
             {/* Results List */}
             <div className="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-3">
-              {/* Live Online Map Results (Any street/village/upazila in BD) */}
+              {/* Live Online Map Results */}
               {pickerQuery.trim().length >= 2 && (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between px-1">
@@ -1152,10 +1536,10 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
                 </div>
               )}
 
-              {/* Built-in 64 Districts & Major Hubs */}
+              {/* Built-in 64 Districts, Upazilas & Local Mors/Roads */}
               <div className="space-y-1.5">
                 <p className="text-[11px] font-bold text-slate-500 px-1">
-                  বাংলাদেশের জেলা, উপজেলা ও গুরুত্বপূর্ণ কেন্দ্র ({filteredBuiltInPlaces.length}টি)
+                  বাংলাদেশের জেলা, উপজেলা, মোড় ও মেইন রোড ({filteredBuiltInPlaces.length}টি)
                 </p>
 
                 {filteredBuiltInPlaces.length === 0 ? (
@@ -1166,6 +1550,7 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {filteredBuiltInPlaces.map((p) => {
                       const loc = toSelectedLocation(p);
+                      const cat = p.category;
                       return (
                         <button
                           key={p.id}
@@ -1179,10 +1564,19 @@ export const FairRideMeterModal: React.FC<FairRideMeterModalProps> = ({ isOpen, 
                         >
                           <MapPin className="w-4 h-4 text-emerald-600 shrink-0" />
                           <div className="min-w-0 flex-1">
-                            <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                              {loc.name}
-                            </p>
-                            <p className="text-[10px] text-slate-400 truncate">{loc.subtitle}</p>
+                            <div className="flex items-center gap-1.5">
+                              {cat && (
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${CATEGORY_COLORS[cat]}`}
+                                >
+                                  {CATEGORY_LABELS[cat]}
+                                </span>
+                              )}
+                              <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                {loc.name}
+                              </p>
+                            </div>
+                            <p className="text-[10px] text-slate-400 truncate mt-0.5">{loc.subtitle}</p>
                           </div>
                         </button>
                       );
