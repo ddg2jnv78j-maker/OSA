@@ -256,17 +256,20 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [forwardModalCalls, setForwardModalCalls] = useState<CallRecord[]>([]);
   const [forwardSelectedChatIds, setForwardSelectedChatIds] = useState<string[]>([]);
   const [forwardSearchQuery, setForwardSearchQuery] = useState('');
+  const [forwardNote, setForwardNote] = useState('');
   const [isForwarding, setIsForwarding] = useState(false);
   const [shareModalData, setShareModalData] = useState<{
     title: string;
     text: string;
     url?: string;
+    previewUrl?: string;
     fileName?: string;
     mimeType?: string;
     msgs?: Message[];
     calls?: CallRecord[];
   } | null>(null);
   const [shareCopiedToast, setShareCopiedToast] = useState(false);
+  const [actionToast, setActionToast] = useState<string | null>(null);
   const [swipingKey, setSwipingKey] = useState<string | null>(null);
   const [swipeOffsetX, setSwipeOffsetX] = useState(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -585,6 +588,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const lastBroadcastTypingRef = useRef<number>(0);
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef<boolean>(false);
+  const toastTimerRef = useRef<number | null>(null);
   const swipeTouchRef = useRef<{
     key: string;
     startX: number;
@@ -592,6 +596,49 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     active: boolean;
   } | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  const showToast = (message: string) => {
+    setActionToast(message);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setActionToast(null);
+      toastTimerRef.current = null;
+    }, 2600);
+  };
+
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (activeMenuMsgId || activeMenuCallId) {
+        setActiveMenuMsgId(null);
+        setActiveMenuCallId(null);
+        return;
+      }
+      if (deleteConfirmTarget) {
+        setDeleteConfirmTarget(null);
+        return;
+      }
+      if (shareModalData) {
+        setShareModalData(null);
+        return;
+      }
+      if (forwardModalMsgs.length > 0 || forwardModalCalls.length > 0) {
+        setForwardModalMsgs([]);
+        setForwardModalCalls([]);
+        setForwardSelectedChatIds([]);
+        setForwardNote('');
+        return;
+      }
+      if (replyTo || replyToCall) {
+        setReplyTo(null);
+        setReplyToCall(null);
+      }
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [activeMenuMsgId, activeMenuCallId, deleteConfirmTarget, shareModalData, forwardModalMsgs.length, forwardModalCalls.length, replyTo, replyToCall]);
 
   const isGroup = chat.type === 'group';
   const peer = chat.peer || null;
@@ -1722,6 +1769,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       : msg.content;
     await navigator.clipboard.writeText(copyValue);
     setActiveMenuMsgId(null);
+    showToast(currentUser.language === 'bn' ? 'মেসেজ কপি করা হয়েছে ✓' : 'Copied to clipboard ✓');
   };
 
   const handleCopySelected = async () => {
@@ -1733,6 +1781,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     ].filter(Boolean);
     if (lines.length > 0) {
       await navigator.clipboard.writeText(lines.join('\n'));
+      showToast(currentUser.language === 'bn' ? `${lines.length}টি আইটেম কপি করা হয়েছে ✓` : `Copied ${lines.length} item(s) ✓`);
     }
     clearSelection();
   };
@@ -1802,6 +1851,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       setLightboxMedia(null);
       clearSelection();
       onChatUpdated();
+      showToast(
+        currentUser.language === 'bn'
+          ? 'আপনার চ্যাট থেকে মুছে ফেলা হয়েছে ✓'
+          : 'Deleted for you ✓'
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not delete selected items.');
     } finally {
@@ -1829,6 +1883,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       setLightboxMedia(null);
       clearSelection();
       onChatUpdated();
+      showToast(
+        currentUser.language === 'bn'
+          ? 'সবার জন্য মুছে ফেলা হয়েছে ✓'
+          : 'Deleted for everyone ✓'
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not delete for everyone.');
     } finally {
@@ -1843,14 +1902,23 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     setForwardModalCalls(calls);
     setForwardSelectedChatIds([]);
     setForwardSearchQuery('');
+    setForwardNote('');
   };
 
   const handleConfirmForward = async (directChatIds?: string[]) => {
     const targetIds = directChatIds && directChatIds.length > 0 ? directChatIds : forwardSelectedChatIds;
     if (targetIds.length === 0 || isForwarding) return;
     setIsForwarding(true);
+    const trimmedNote = forwardNote.trim();
     try {
       for (const targetChatId of targetIds) {
+        if (trimmedNote) {
+          await sendTextMessage({
+            chatId: targetChatId,
+            senderId: currentUser.id,
+            content: trimmedNote,
+          });
+        }
         for (const msg of forwardModalMsgs) {
           await forwardMessageToChat({
             sourceMessage: msg,
@@ -1869,8 +1937,14 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       setForwardModalMsgs([]);
       setForwardModalCalls([]);
       setForwardSelectedChatIds([]);
+      setForwardNote('');
       clearSelection();
       onChatUpdated();
+      showToast(
+        currentUser.language === 'bn'
+          ? `${targetIds.length}টি চ্যাটে সফলভাবে পাঠানো হয়েছে ✓`
+          : `Forwarded to ${targetIds.length} chat(s) ✓`
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not forward message.');
     } finally {
@@ -1878,7 +1952,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     }
   };
 
-  const handleShareItems = async (msgs: Message[], calls: CallRecord[]) => {
+  const openRichShareModal = (msgs: Message[], calls: CallRecord[]) => {
     setActiveMenuMsgId(null);
     setActiveMenuCallId(null);
     const activeMsgs = msgs.filter((m) => !m.is_deleted_for_everyone);
@@ -1900,49 +1974,68 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     const combinedText = textParts.join('\n\n');
     const shareTitle = `${chatTitle} · OSA`;
 
-    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
-      try {
-        if (singleAtt) {
-          const resp = await fetch(singleAtt.file_url);
-          const blob = await resp.blob();
-          const file = new File([blob], singleAtt.file_name || 'osa-media', {
-            type: singleAtt.mime_type || blob.type || 'application/octet-stream',
-          });
-          if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
-            await navigator.share({
-              title: shareTitle,
-              text:
-                singleMsg?.content && singleMsg.content !== singleAtt.file_name
-                  ? singleMsg.content
-                  : undefined,
-              files: [file],
-            });
-            clearSelection();
-            return;
-          }
-        }
-        await navigator.share({
-          title: shareTitle,
-          text: combinedText,
-          url: singleAtt?.file_url,
-        });
-        clearSelection();
-        return;
-      } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') return;
-      }
-    }
-
     setShareCopiedToast(false);
     setShareModalData({
       title: shareTitle,
       text: combinedText,
       url: singleAtt?.file_url,
+      previewUrl: singleAtt?.file_type === 'image' ? singleAtt.file_url : undefined,
       fileName: singleAtt?.file_name,
       mimeType: singleAtt?.mime_type,
       msgs: activeMsgs,
       calls,
     });
+  };
+
+  const triggerNativeShare = async (
+    msgs: Message[],
+    calls: CallRecord[],
+    fallbackText?: string,
+    fallbackTitle?: string
+  ): Promise<boolean> => {
+    if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') {
+      return false;
+    }
+    const activeMsgs = msgs.filter((m) => !m.is_deleted_for_everyone);
+    const singleMsg = activeMsgs.length === 1 && calls.length === 0 ? activeMsgs[0] : null;
+    const singleAtt = singleMsg?.attachments?.[0];
+    const shareTitle = fallbackTitle || `${chatTitle} · OSA`;
+
+    try {
+      if (singleAtt) {
+        const resp = await fetch(singleAtt.file_url);
+        const blob = await resp.blob();
+        const file = new File([blob], singleAtt.file_name || 'osa-media', {
+          type: singleAtt.mime_type || blob.type || 'application/octet-stream',
+        });
+        if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: shareTitle,
+            text:
+              singleMsg?.content && singleMsg.content !== singleAtt.file_name
+                ? singleMsg.content
+                : undefined,
+            files: [file],
+          });
+          clearSelection();
+          return true;
+        }
+      }
+      await navigator.share({
+        title: shareTitle,
+        text: fallbackText || activeMsgs.map((m) => m.content).join('\n\n'),
+        url: singleAtt?.file_url,
+      });
+      clearSelection();
+      return true;
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return true;
+      return false;
+    }
+  };
+
+  const handleShareItems = async (msgs: Message[], calls: CallRecord[]) => {
+    openRichShareModal(msgs, calls);
   };
 
   const handleToggleMute = async () => {
@@ -3391,7 +3484,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         {/* WhatsApp-Style Multi-Select Action Bar */}
         {isSelectionMode && (
           <header className="flex items-center justify-between gap-2 px-3 sm:px-5 min-h-16 pt-safe bg-emerald-700 dark:bg-emerald-900 text-white shrink-0 w-full max-w-full relative z-30 shadow-sm animate-in fade-in duration-150">
-            <div className="flex items-center gap-3 min-w-0">
+            <div className="flex items-center gap-2.5 min-w-0">
               <button
                 type="button"
                 onClick={clearSelection}
@@ -3400,12 +3493,17 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               >
                 <ArrowLeft className="w-5 h-5 stroke-[2.5]" />
               </button>
-              <span className="text-base font-bold font-mono-num">
-                {totalSelectedCount}
-              </span>
+              <div className="min-w-0">
+                <span className="text-base font-bold font-mono-num">
+                  {totalSelectedCount}
+                </span>
+                <span className="ml-1.5 text-xs font-semibold text-emerald-100 hidden xs:inline">
+                  {currentUser.language === 'bn' ? 'নির্বাচিত' : 'selected'}
+                </span>
+              </div>
             </div>
 
-            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 shrink-0">
               {/* Reply (when 1 item selected & not deleted) */}
               {totalSelectedCount === 1 && (() => {
                 if (selectedMsgIds.length === 1) {
@@ -3415,10 +3513,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       <button
                         type="button"
                         onClick={() => handleReplyToMessage(targetMsg)}
-                        className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                        className="w-10 h-10 rounded-xl bg-emerald-800/80 border border-emerald-500/40 text-white hover:bg-emerald-900 flex items-center justify-center transition-colors active:scale-95"
                         title={t.reply}
                       >
-                        <CornerUpLeft className="w-5 h-5" />
+                        <CornerUpLeft className="w-4.5 h-4.5 stroke-[2.25]" />
                       </button>
                     );
                   }
@@ -3430,10 +3528,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       <button
                         type="button"
                         onClick={() => handleReplyToCallRecord(targetCall)}
-                        className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                        className="w-10 h-10 rounded-xl bg-emerald-800/80 border border-emerald-500/40 text-white hover:bg-emerald-900 flex items-center justify-center transition-colors active:scale-95"
                         title={t.reply}
                       >
-                        <CornerUpLeft className="w-5 h-5" />
+                        <CornerUpLeft className="w-4.5 h-4.5 stroke-[2.25]" />
                       </button>
                     );
                   }
@@ -3441,17 +3539,34 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 return null;
               })()}
 
+              {/* Select All Toggle */}
+              <button
+                type="button"
+                onClick={() => {
+                  const visibleIds = visibleMessages.map((m) => m.id);
+                  if (selectedMsgIds.length >= visibleIds.length && visibleIds.length > 0) {
+                    clearSelection();
+                  } else {
+                    setSelectedMsgIds(visibleIds);
+                  }
+                }}
+                className="w-10 h-10 rounded-xl bg-emerald-800/80 border border-emerald-500/40 text-white hover:bg-emerald-900 flex items-center justify-center transition-colors active:scale-95"
+                title={currentUser.language === 'bn' ? 'সব নির্বাচন করুন' : 'Select All'}
+              >
+                <CheckCircle2 className="w-4.5 h-4.5 stroke-[2.25]" />
+              </button>
+
               {/* Copy */}
               <button
                 type="button"
                 onClick={handleCopySelected}
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                className="w-10 h-10 rounded-xl bg-emerald-800/80 border border-emerald-500/40 text-white hover:bg-emerald-900 flex items-center justify-center transition-colors active:scale-95"
                 title={t.copy}
               >
-                <Copy className="w-4.5 h-4.5" />
+                <Copy className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
 
-              {/* Share (External / Social / File Share) */}
+              {/* Share (External / Social / File Share Hub) */}
               <button
                 type="button"
                 onClick={() => {
@@ -3459,10 +3574,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   const selCalls = chatCalls.filter((c) => selectedCallIds.includes(c.id));
                   handleShareItems(selMsgs, selCalls);
                 }}
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                className="w-10 h-10 rounded-xl bg-emerald-800/80 border border-emerald-500/40 text-white hover:bg-emerald-900 flex items-center justify-center transition-colors active:scale-95"
                 title={currentUser.language === 'bn' ? 'শেয়ার করুন' : 'Share'}
               >
-                <Share2 className="w-4.5 h-4.5" />
+                <Share2 className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
 
               {/* Delete (Opens WhatsApp Delete Modal) */}
@@ -3473,10 +3588,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   const selCalls = chatCalls.filter((c) => selectedCallIds.includes(c.id));
                   openDeleteModal(selMsgs, selCalls);
                 }}
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                className="w-10 h-10 rounded-xl bg-red-600/90 border border-red-400/50 text-white hover:bg-red-700 flex items-center justify-center transition-colors active:scale-95"
                 title={currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}
               >
-                <Trash2 className="w-4.5 h-4.5" />
+                <Trash2 className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
 
               {/* Forward (Multi-Chat Forward) */}
@@ -3487,10 +3602,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   const selCalls = chatCalls.filter((c) => selectedCallIds.includes(c.id));
                   openForwardModal(selMsgs, selCalls);
                 }}
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                className="w-10 h-10 rounded-xl bg-emerald-800/80 border border-emerald-500/40 text-white hover:bg-emerald-900 flex items-center justify-center transition-colors active:scale-95"
                 title={t.forward}
               >
-                <CornerUpRight className="w-5 h-5" />
+                <CornerUpRight className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
             </div>
           </header>
@@ -4173,10 +4288,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
                       {callSwipeX > 14 && (
                         <div
-                          style={{ opacity: Math.min(1, callSwipeX / 48) }}
-                          className="w-7 h-7 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm"
+                          style={{ opacity: Math.min(1, callSwipeX / 44) }}
+                          className="flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-600 text-white text-[10px] font-bold shrink-0 shadow-sm"
                         >
                           <CornerUpLeft className="w-3.5 h-3.5" />
+                          {callSwipeX >= 40 && <span>{currentUser.language === 'bn' ? 'রিপ্লাই' : 'Reply'}</span>}
                         </div>
                       )}
 
@@ -4186,7 +4302,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                             ? { transform: `translateX(${callSwipeX}px)` }
                             : undefined
                         }
-                        className={`relative flex items-center gap-2.5 sm:gap-3 rounded-2xl px-3.5 py-2.5 border shadow-xs max-w-[88%] sm:max-w-[70%] transition-transform ${
+                        className={`relative group flex items-center gap-2.5 sm:gap-3 rounded-2xl px-3.5 py-2.5 border shadow-xs max-w-[88%] sm:max-w-[70%] transition-transform ${
                           isOutgoing
                             ? 'bg-blue-600/10 dark:bg-blue-950/50 border-blue-500/25 text-slate-900 dark:text-white rounded-br-xs'
                             : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 text-slate-900 dark:text-white rounded-bl-xs'
@@ -4254,91 +4370,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                               setActiveMenuMsgId(null);
                               setActiveMenuCallId((prev) => (prev === c.id ? null : c.id));
                             }}
-                            className="p-1 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-slate-400 shrink-0"
+                            className="w-8 h-8 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-slate-500 dark:text-slate-400 flex items-center justify-center shrink-0 transition-colors"
                             aria-label="Call actions"
                           >
                             <MoreVertical className="w-4 h-4" />
                           </button>
-                        )}
-
-                        {activeMenuCallId === c.id && (
-                          <div
-                            onClick={(e) => e.stopPropagation()}
-                            className={`absolute z-30 top-full mt-1 w-48 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl py-1.5 text-xs text-slate-700 dark:text-slate-200 ${
-                              isOutgoing ? 'right-0' : 'left-0'
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => handleReplyToCallRecord(c)}
-                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                            >
-                              <CornerUpLeft className="w-4 h-4 text-slate-400" />
-                              <span>{t.reply}</span>
-                            </button>
-
-                            {!isGroup && peer && !blockState.anyBlock && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setActiveMenuCallId(null);
-                                  onStartCall(peer, c.call_type, chat.id);
-                                }}
-                                className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                              >
-                                <PhoneCall className="w-4 h-4 text-emerald-500" />
-                                <span>{currentUser.language === 'bn' ? 'আবার কল করুন' : 'Call Back'}</span>
-                              </button>
-                            )}
-
-                            <button
-                              type="button"
-                              onClick={() => openForwardModal([], [c])}
-                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                            >
-                              <CornerUpRight className="w-4 h-4 text-slate-400" />
-                              <span>{t.forward}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleShareItems([], [c])}
-                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                            >
-                              <Share2 className="w-4 h-4 text-slate-400" />
-                              <span>{currentUser.language === 'bn' ? 'শেয়ার' : 'Share'}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await navigator.clipboard.writeText(`📞 ${formatCallSummaryText(c)}`);
-                                setActiveMenuCallId(null);
-                              }}
-                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                            >
-                              <Copy className="w-4 h-4 text-slate-400" />
-                              <span>{t.copy}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => toggleCallSelection(c.id)}
-                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                            >
-                              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                              <span>{currentUser.language === 'bn' ? 'নির্বাচন করুন' : 'Select'}</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => openDeleteModal([], [c])}
-                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-red-600 dark:text-red-400 font-semibold"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                              <span>{currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}</span>
-                            </button>
-                          </div>
                         )}
                       </div>
                     </div>
@@ -4408,10 +4444,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
                     {msgSwipeX > 14 && !msg.is_deleted_for_everyone && (
                       <div
-                        style={{ opacity: Math.min(1, msgSwipeX / 48) }}
-                        className="w-7 h-7 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm"
+                        style={{ opacity: Math.min(1, msgSwipeX / 44) }}
+                        className="flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-600 text-white text-[10px] font-bold shrink-0 shadow-sm"
                       >
                         <CornerUpLeft className="w-3.5 h-3.5" />
+                        {msgSwipeX >= 40 && <span>{currentUser.language === 'bn' ? 'রিপ্লাই' : 'Reply'}</span>}
                       </div>
                     )}
 
@@ -4422,20 +4459,25 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       ? { transform: `translateX(${msgSwipeX}px)` }
                       : undefined
                   }
+                  onDoubleClick={(e) => {
+                    if (isSelectionMode || msg.is_deleted_for_everyone) return;
+                    e.stopPropagation();
+                    handleReplyToMessage(msg);
+                  }}
                   className={`relative group w-full rounded-2xl px-3.5 py-2.5 shadow-xs transition-transform ${
                     isMine
                       ? 'bg-blue-600 text-white rounded-br-xs'
                       : 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-slate-800 rounded-bl-xs'
                   }`}
                 >
-                  {/* Floating Quick Reaction Bar on hover */}
+                  {/* Floating Quick Reaction + Reply/Share/Delete Dock on hover */}
                   {!msg.is_deleted_for_everyone && !isSelectionMode && (
                     <div
-                      className={`absolute z-20 -top-8 ${
-                        isMine ? 'right-2' : 'left-2'
-                      } hidden group-hover:flex items-center gap-1 px-2 py-1 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-md animate-in fade-in duration-100`}
+                      className={`absolute z-20 -top-9 ${
+                        isMine ? 'right-1' : 'left-1'
+                      } hidden group-hover:flex items-center gap-0.5 px-1.5 py-1 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-lg animate-in fade-in duration-100`}
                     >
-                      {REACTION_EMOJIS.map((emoji) => (
+                      {REACTION_EMOJIS.slice(0, 4).map((emoji) => (
                         <button
                           key={emoji}
                           type="button"
@@ -4448,6 +4490,51 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                           {emoji}
                         </button>
                       ))}
+                      <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-1" />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReplyToMessage(msg);
+                        }}
+                        className="w-6 h-6 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/60 transition-colors"
+                        title={t.reply}
+                      >
+                        <CornerUpLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openForwardModal([msg], []);
+                        }}
+                        className="w-6 h-6 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 transition-colors"
+                        title={t.forward}
+                      >
+                        <CornerUpRight className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleShareItems([msg], []);
+                        }}
+                        className="w-6 h-6 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 transition-colors"
+                        title={currentUser.language === 'bn' ? 'শেয়ার' : 'Share'}
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDeleteModal([msg], []);
+                        }}
+                        className="w-6 h-6 rounded-full flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/60 transition-colors"
+                        title={currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   )}
                   {/* Group sender name */}
@@ -4465,15 +4552,20 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       }`}
                     >
                       <CornerUpRight className="w-3 h-3" />
-                      <span>Forwarded</span>
+                      <span>{currentUser.language === 'bn' ? 'ফরোয়ার্ড করা' : 'Forwarded'}</span>
                     </p>
                   )}
 
-                  {/* Quoted Reply Preview */}
+                  {/* Rich Quoted Reply Preview (Images, Video, Audio/Voice, Document, Text) */}
                   {msg.reply_to && !msg.is_deleted_for_everyone && (() => {
-                    const rThumb =
+                    const rImg =
                       msg.reply_to.attachments?.find((a) => a.file_type === 'image')?.file_url ||
                       null;
+                    const rVid = msg.reply_to.attachments?.find((a) => a.file_type === 'video');
+                    const rAud =
+                      msg.reply_to.attachments?.find((a) => a.file_type === 'audio') ||
+                      msg.reply_to.content.startsWith('🎤');
+                    const rDoc = msg.reply_to.attachments?.find((a) => a.file_type === 'document');
                     return (
                       <button
                         type="button"
@@ -4483,34 +4575,46 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                           const targetEl = document.getElementById(`msg-${msg.reply_to?.id}`);
                           if (targetEl) {
                             targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            targetEl.classList.add('ring-2', 'ring-emerald-400');
-                            setTimeout(() => targetEl.classList.remove('ring-2', 'ring-emerald-400'), 1500);
+                            targetEl.classList.add('ring-2', 'ring-emerald-400', 'bg-emerald-500/15');
+                            setTimeout(() => targetEl.classList.remove('ring-2', 'ring-emerald-400', 'bg-emerald-500/15'), 1600);
                           }
                         }}
-                        className={`mb-2 w-full text-left rounded-xl px-2.5 py-1.5 text-xs border-l-3 flex items-center justify-between gap-2 ${
+                        className={`mb-2 w-full text-left rounded-xl px-2.5 py-2 text-xs border flex items-center justify-between gap-2.5 transition-colors ${
                           isMine
-                            ? 'bg-blue-700/60 border-white/70 text-blue-50'
-                            : 'bg-slate-100 dark:bg-slate-800 border-blue-600 text-slate-600 dark:text-slate-300'
+                            ? 'bg-blue-700/75 hover:bg-blue-700 border-white/25 text-blue-50'
+                            : 'bg-slate-100 hover:bg-slate-200/70 dark:bg-slate-800 dark:hover:bg-slate-700/80 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
                         }`}
                       >
                         <div className="min-w-0 flex-1">
-                          <p className="font-semibold text-[11px] truncate">
+                          <p className={`font-bold text-[11px] truncate ${isMine ? 'text-emerald-200' : 'text-emerald-600 dark:text-emerald-400'}`}>
                             {msg.reply_to.sender_id === currentUser.id
-                              ? 'You'
+                              ? currentUser.language === 'bn' ? 'আপনি' : 'You'
                               : msg.reply_to.sender?.full_name || chatTitle}
                           </p>
-                          <p className="truncate opacity-90">
+                          <p className="truncate opacity-90 mt-0.5">
                             {getMessageSummaryLabel(msg.reply_to)}
                           </p>
                         </div>
-                        {rThumb && (
+                        {rImg ? (
                           <img
-                            src={rThumb}
+                            src={rImg}
                             alt="Reply thumbnail"
                             referrerPolicy="no-referrer"
-                            className="w-9 h-9 rounded-lg object-cover shrink-0"
+                            className="w-10 h-10 rounded-lg object-cover shrink-0 border border-white/20"
                           />
-                        )}
+                        ) : rVid ? (
+                          <div className="w-10 h-10 rounded-lg bg-slate-900/80 text-white flex items-center justify-center shrink-0">
+                            <Film className="w-4.5 h-4.5" />
+                          </div>
+                        ) : rAud ? (
+                          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isMine ? 'bg-white/15 text-white' : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'}`}>
+                            <Mic className="w-4 h-4" />
+                          </div>
+                        ) : rDoc ? (
+                          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isMine ? 'bg-white/15 text-white' : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'}`}>
+                            <FileText className="w-4 h-4" />
+                          </div>
+                        ) : null}
                       </button>
                     );
                   })()}
@@ -6208,8 +6312,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                           setActiveMenuCallId(null);
                           setActiveMenuMsgId((prev) => (prev === msg.id ? null : msg.id));
                         }}
-                        className={`p-0.5 rounded hover:bg-black/10 ${
-                          isMine ? 'text-blue-100' : 'text-slate-400'
+                        className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+                          isMine
+                            ? 'text-blue-100 hover:bg-white/15'
+                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                         }`}
                         aria-label="Message actions"
                       >
@@ -6217,143 +6323,6 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       </button>
                     )}
                   </div>
-
-                  {/* Real Message Action Menu */}
-                  {activeMenuMsgId === msg.id && (
-                    <div
-                      onClick={(e) => e.stopPropagation()}
-                      className={`absolute z-30 top-full mt-1 w-52 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl py-1.5 text-xs text-slate-700 dark:text-slate-200 ${
-                        isMine ? 'right-0' : 'left-0'
-                      }`}
-                    >
-                      {!msg.is_deleted_for_everyone && (
-                        <>
-                          {/* Emoji reaction picker inside menu */}
-                          <div className="px-2.5 py-1.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
-                            {REACTION_EMOJIS.map((emoji) => (
-                              <button
-                                key={emoji}
-                                type="button"
-                                onClick={() => {
-                                  handleToggleReaction(msg.id, emoji);
-                                  setActiveMenuMsgId(null);
-                                }}
-                                className="w-6 h-6 rounded-full flex items-center justify-center text-sm hover:scale-125 transition-transform"
-                              >
-                                {emoji}
-                              </button>
-                            ))}
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => handleReplyToMessage(msg)}
-                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                          >
-                            <CornerUpLeft className="w-4 h-4 text-slate-400" />
-                            <span>{t.reply}</span>
-                          </button>
-
-                          {isMine && attachments.length === 0 && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingMsg(msg);
-                                setReplyTo(null);
-                                setReplyToCall(null);
-                                setText(msg.content);
-                                setActiveMenuMsgId(null);
-                              }}
-                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                            >
-                              <Pencil className="w-4 h-4 text-slate-400" />
-                              <span>{currentUser.language === 'bn' ? 'এডিট করুন' : 'Edit'}</span>
-                            </button>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => handleCopyMessage(msg)}
-                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                          >
-                            <Copy className="w-4 h-4 text-slate-400" />
-                            <span>{t.copy}</span>
-                          </button>
-
-                          {attachments[0] && (
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadAttachment(attachments[0])}
-                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                            >
-                              <Download className="w-4 h-4 text-slate-400" />
-                              <span>{currentUser.language === 'bn' ? 'ডাউনলোড' : 'Download'}</span>
-                            </button>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => openForwardModal([msg], [])}
-                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                          >
-                            <CornerUpRight className="w-4 h-4 text-slate-400" />
-                            <span>{t.forward}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleShareItems([msg], [])}
-                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                          >
-                            <Share2 className="w-4 h-4 text-slate-400" />
-                            <span>{currentUser.language === 'bn' ? 'শেয়ার' : 'Share'}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => toggleMsgSelection(msg.id)}
-                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                          >
-                            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                            <span>{currentUser.language === 'bn' ? 'নির্বাচন করুন' : 'Select'}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (pinnedMessageId === msg.id) {
-                                handleUnpinMessage();
-                              } else {
-                                handlePinMessage(msg.id);
-                              }
-                            }}
-                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-slate-700 dark:text-slate-200"
-                          >
-                            {pinnedMessageId === msg.id ? (
-                              <>
-                                <PinOff className="w-4 h-4 text-amber-500" />
-                                <span>{currentUser.language === 'bn' ? 'আনপিন করুন' : 'Unpin Message'}</span>
-                              </>
-                            ) : (
-                              <>
-                                <Pin className="w-4 h-4 text-indigo-500" />
-                                <span>{currentUser.language === 'bn' ? 'পিন করুন' : 'Pin Message'}</span>
-                              </>
-                            )}
-                          </button>
-                        </>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => openDeleteModal([msg], [])}
-                        className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-red-600 dark:text-red-400 font-semibold"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        <span>{currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}</span>
-                      </button>
-                    </div>
-                  )}
                 </div>
 
                 {/* Reaction Pill Badges beneath bubble */}
@@ -6403,8 +6372,17 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Fixed Bottom Composer Zone (Upload Progress, Edit/Reply Previews, Emoji Bar, Composer Form) */}
-      <div className="osa-chat-composer-zone bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+      {/* Fixed Bottom Composer Zone (Action Toast, Upload Progress, Edit/Reply Previews, Emoji Bar, Composer Form) */}
+      <div className="osa-chat-composer-zone relative bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+        {/* Crisp Action Confirmation Toast */}
+        {actionToast && (
+          <div className="pointer-events-none absolute -top-12 inset-x-0 flex justify-center z-40 px-4 animate-in fade-in slide-in-from-bottom-2 duration-150">
+            <div className="px-4 py-2 rounded-full bg-slate-900 dark:bg-slate-800 text-white text-xs font-semibold shadow-xl border border-slate-700 flex items-center gap-2">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>{actionToast}</span>
+            </div>
+          </div>
+        )}
         {/* Upload Progress Indicator */}
         {uploadProgress !== null && (
           <div className="shrink-0 px-4 py-2 bg-blue-50 dark:bg-blue-950/60 border-b border-blue-200 dark:border-blue-800 flex items-center gap-3">
@@ -6425,7 +6403,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           <div className="shrink-0 px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2">
             <div className="min-w-0 flex-1 border-l-3 border-amber-500 pl-2.5">
               <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
-                Editing Message
+                {currentUser.language === 'bn' ? 'মেসেজ এডিট করছেন' : 'Editing Message'}
               </p>
               <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
                 {editingMsg.content}
@@ -6437,10 +6415,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 setEditingMsg(null);
                 setText('');
               }}
-              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 shrink-0"
+              className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-900/50 border border-amber-200 dark:border-amber-800 flex items-center justify-center text-slate-800 dark:text-white shrink-0"
               aria-label="Cancel editing"
             >
-              <X className="w-4 h-4" />
+              <X className="w-4 h-4 stroke-[2.25]" />
             </button>
           </div>
         )}
@@ -6470,51 +6448,80 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           </div>
         )}
 
-        {/* Reply Banner (Supports Messages, Photos, Videos, Audio, Documents & Calls) */}
-        {(replyTo || replyToCall) && (
-          <div className="shrink-0 px-4 py-2 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2.5 animate-in fade-in slide-in-from-bottom-1 duration-150">
-            <div className="min-w-0 flex-1 border-l-3 border-emerald-600 pl-2.5">
-              <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-                {currentUser.language === 'bn' ? 'রিপ্লাই দিচ্ছেন: ' : 'Replying to '}
-                {replyTo
-                  ? replyTo.sender_id === currentUser.id
-                    ? currentUser.language === 'bn'
-                      ? 'আপনার মেসেজ'
-                      : 'yourself'
-                    : replyTo.sender?.full_name || chatTitle
-                  : currentUser.language === 'bn'
-                  ? 'কল লগ'
-                  : 'Call'}
-              </p>
-              <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
-                {replyTo
-                  ? getMessageSummaryLabel(replyTo)
-                  : replyToCall
-                  ? `${replyToCall.call_type === 'video' ? '📹' : '📞'} ${formatCallSummaryText(replyToCall)}`
-                  : ''}
-              </p>
+        {/* Rich Reply Banner (Supports Messages, Photos, Videos, Audio, Documents & Calls) */}
+        {(replyTo || replyToCall) && (() => {
+          const rImg = replyTo?.attachments?.find((a) => a.file_type === 'image')?.file_url;
+          const rVid = replyTo?.attachments?.find((a) => a.file_type === 'video');
+          const rAud =
+            replyTo?.attachments?.find((a) => a.file_type === 'audio') ||
+            replyTo?.content.startsWith('🎤');
+          const rDoc = replyTo?.attachments?.find((a) => a.file_type === 'document');
+          return (
+            <div className="shrink-0 px-3 sm:px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700/80 flex items-center justify-between gap-2.5 animate-in fade-in slide-in-from-bottom-1 duration-150">
+              <div className="min-w-0 flex-1 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3 py-2 flex items-center gap-2.5 shadow-2xs">
+                <div className="w-8 h-8 rounded-lg bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <CornerUpLeft className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400 truncate">
+                    {currentUser.language === 'bn' ? 'রিপ্লাই দিচ্ছেন: ' : 'Replying to '}
+                    {replyTo
+                      ? replyTo.sender_id === currentUser.id
+                        ? currentUser.language === 'bn'
+                          ? 'আপনার মেসেজ'
+                          : 'yourself'
+                        : replyTo.sender?.full_name || chatTitle
+                      : currentUser.language === 'bn'
+                      ? 'কল লগ'
+                      : 'Call'}
+                  </p>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 truncate mt-0.5">
+                    {replyTo
+                      ? getMessageSummaryLabel(replyTo)
+                      : replyToCall
+                      ? `${replyToCall.call_type === 'video' ? '📹' : '📞'} ${formatCallSummaryText(replyToCall)}`
+                      : ''}
+                  </p>
+                </div>
+                {rImg ? (
+                  <img
+                    src={rImg}
+                    alt="Reply preview"
+                    referrerPolicy="no-referrer"
+                    className="w-10 h-10 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                  />
+                ) : rVid ? (
+                  <div className="w-10 h-10 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
+                    <Film className="w-4.5 h-4.5" />
+                  </div>
+                ) : rAud ? (
+                  <div className="w-10 h-10 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                    <Mic className="w-4.5 h-4.5" />
+                  </div>
+                ) : rDoc ? (
+                  <div className="w-10 h-10 rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                    <FileText className="w-4.5 h-4.5" />
+                  </div>
+                ) : replyToCall ? (
+                  <div className="w-10 h-10 rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                    {replyToCall.call_type === 'video' ? <Video className="w-4.5 h-4.5" /> : <Phone className="w-4.5 h-4.5" />}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setReplyTo(null);
+                  setReplyToCall(null);
+                }}
+                className="w-9 h-9 rounded-xl bg-slate-200/80 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-800 dark:text-white hover:bg-slate-300 dark:hover:bg-slate-700 shrink-0 active:scale-95 transition-all"
+                aria-label="Cancel reply"
+              >
+                <X className="w-4 h-4 stroke-[2.25]" />
+              </button>
             </div>
-            {replyTo?.attachments?.find((a) => a.file_type === 'image')?.file_url && (
-              <img
-                src={replyTo.attachments.find((a) => a.file_type === 'image')!.file_url}
-                alt="Reply preview"
-                referrerPolicy="no-referrer"
-                className="w-10 h-10 rounded-lg object-cover shrink-0 border border-slate-300 dark:border-slate-700"
-              />
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setReplyTo(null);
-                setReplyToCall(null);
-              }}
-              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 shrink-0"
-              aria-label="Cancel reply"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Emoji Bar */}
         {showEmojiPicker && (
@@ -6853,57 +6860,324 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         )}
       </div>
 
-      {/* WhatsApp-Style Multi-Chat Forward Modal (Preserves Text, Photos, Videos, Audio, Docs & Calls) */}
-      {(forwardModalMsgs.length > 0 || forwardModalCalls.length > 0) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl max-h-dvh-modal flex flex-col overflow-hidden">
-            <div className="shrink-0 flex items-center justify-between mb-3">
-              <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  {currentUser.language === 'bn' ? 'ফরোয়ার্ড করুন...' : 'Forward to...'}
-                </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[230px]">
-                  {forwardModalMsgs.length + forwardModalCalls.length === 1
-                    ? forwardModalMsgs[0]
-                      ? getMessageSummaryLabel(forwardModalMsgs[0])
-                      : `📞 ${formatCallSummaryText(forwardModalCalls[0])}`
-                    : currentUser.language === 'bn'
-                    ? `${forwardModalMsgs.length + forwardModalCalls.length}টি আইটেম নির্বাচিত`
-                    : `${forwardModalMsgs.length + forwardModalCalls.length} items selected`}
-                </p>
+      {/* Viewport-Safe WhatsApp-Style Message / Call Action Sheet */}
+      {(activeMenuMsgId || activeMenuCallId) && (() => {
+        const isBn = currentUser.language === 'bn';
+        const targetMsg = activeMenuMsgId ? messages.find((m) => m.id === activeMenuMsgId) : null;
+        const targetCall = activeMenuCallId ? chatCalls.find((c) => c.id === activeMenuCallId) : null;
+        if (!targetMsg && !targetCall) return null;
+        const isMineMsg = targetMsg ? targetMsg.sender_id === currentUser.id : false;
+        const targetAtts = targetMsg?.attachments || [];
+        const canEditMsg = Boolean(targetMsg && isMineMsg && !targetMsg.is_deleted_for_everyone && targetAtts.length === 0);
+
+        return (
+          <div
+            onClick={() => {
+              setActiveMenuMsgId(null);
+              setActiveMenuCallId(null);
+            }}
+            className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-150"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl bg-white dark:bg-slate-900 border-t sm:border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-150"
+            >
+              <div className="w-10 h-1.5 rounded-full bg-slate-300 dark:bg-slate-700 mx-auto mt-2.5 sm:hidden" />
+
+              {/* Item Snippet Preview */}
+              <div className="px-4 pt-3.5 pb-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 truncate">
+                    {targetMsg
+                      ? targetMsg.sender_id === currentUser.id
+                        ? isBn ? 'আপনি' : 'You'
+                        : targetMsg.sender?.full_name || chatTitle
+                      : isBn ? 'কল রেকর্ড' : 'Call Record'}
+                  </p>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 truncate mt-0.5">
+                    {targetMsg
+                      ? getMessageSummaryLabel(targetMsg)
+                      : targetCall
+                      ? `📞 ${formatCallSummaryText(targetCall)}`
+                      : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveMenuMsgId(null);
+                    setActiveMenuCallId(null);
+                  }}
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white flex items-center justify-center shrink-0"
+                  aria-label="Close actions"
+                >
+                  <X className="w-4 h-4 stroke-[2.25]" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setForwardModalMsgs([]);
-                  setForwardModalCalls([]);
-                  setForwardSelectedChatIds([]);
-                }}
-                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
 
-            <div className="shrink-0 relative mb-3">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={forwardSearchQuery}
-                onChange={(e) => setForwardSearchQuery(e.target.value)}
-                placeholder={currentUser.language === 'bn' ? 'চ্যাট খুঁজুন...' : 'Search chats...'}
-                className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
-              />
-            </div>
+              {/* Quick Emoji Reactions (only for active messages) */}
+              {targetMsg && !targetMsg.is_deleted_for_everyone && (
+                <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
+                  {REACTION_EMOJIS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => {
+                        handleToggleReaction(targetMsg.id, emoji);
+                        setActiveMenuMsgId(null);
+                      }}
+                      className="w-10 h-10 rounded-full flex items-center justify-center text-xl hover:bg-slate-100 dark:hover:bg-slate-800 hover:scale-115 active:scale-95 transition-all"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
 
-            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
-              {allChats
-                .filter((c) => {
-                  if (!forwardSearchQuery.trim()) return true;
-                  const name = c.type === 'group' ? c.group?.name || 'Group' : c.peer?.full_name || 'User';
-                  return name.toLowerCase().includes(forwardSearchQuery.trim().toLowerCase());
-                })
-                .map((c) => {
+              {/* 3 Tactile Hero Actions: Reply · Share · Delete */}
+              <div className="p-3.5 pb-2 grid grid-cols-3 gap-2">
+                {((targetMsg && !targetMsg.is_deleted_for_everyone) || targetCall) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (targetMsg) handleReplyToMessage(targetMsg);
+                      else if (targetCall) handleReplyToCallRecord(targetCall);
+                    }}
+                    className="flex flex-col items-center justify-center gap-1.5 py-3 px-2 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200/80 dark:border-emerald-800/70 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 active:scale-95 transition-all"
+                  >
+                    <CornerUpLeft className="w-5 h-5" />
+                    <span className="text-xs font-bold">{t.reply}</span>
+                  </button>
+                )}
+
+                {((targetMsg && !targetMsg.is_deleted_for_everyone) || targetCall) && (
+                  <button
+                    type="button"
+                    onClick={() => openRichShareModal(targetMsg ? [targetMsg] : [], targetCall ? [targetCall] : [])}
+                    className="flex flex-col items-center justify-center gap-1.5 py-3 px-2 rounded-2xl bg-blue-50 dark:bg-blue-950/50 border border-blue-200/80 dark:border-blue-800/70 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/60 active:scale-95 transition-all"
+                  >
+                    <Share2 className="w-5 h-5" />
+                    <span className="text-xs font-bold">{isBn ? 'শেয়ার' : 'Share'}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => openDeleteModal(targetMsg ? [targetMsg] : [], targetCall ? [targetCall] : [])}
+                  className={`flex flex-col items-center justify-center gap-1.5 py-3 px-2 rounded-2xl bg-red-50 dark:bg-red-950/50 border border-red-200/80 dark:border-red-800/70 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/60 active:scale-95 transition-all ${
+                    targetMsg?.is_deleted_for_everyone ? 'col-span-3' : ''
+                  }`}
+                >
+                  <Trash2 className="w-5 h-5" />
+                  <span className="text-xs font-bold">{isBn ? 'মুছুন' : 'Delete'}</span>
+                </button>
+              </div>
+
+              {/* Additional Actions */}
+              <div className="px-3.5 pb-4 pt-1 space-y-1 text-sm text-slate-800 dark:text-slate-100">
+                {((targetMsg && !targetMsg.is_deleted_for_everyone) || targetCall) && (
+                  <button
+                    type="button"
+                    onClick={() => openForwardModal(targetMsg ? [targetMsg] : [], targetCall ? [targetCall] : [])}
+                    className="w-full min-h-[44px] flex items-center gap-3 px-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left font-medium transition-colors"
+                  >
+                    <CornerUpRight className="w-4.5 h-4.5 text-blue-600 dark:text-blue-400" />
+                    <span>{isBn ? 'অন্য চ্যাটে ফরোয়ার্ড করুন' : 'Forward to OSA Chat'}</span>
+                  </button>
+                )}
+
+                {targetCall && !isGroup && peer && !blockState.anyBlock && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveMenuCallId(null);
+                      onStartCall(peer, targetCall.call_type, chat.id);
+                    }}
+                    className="w-full min-h-[44px] flex items-center gap-3 px-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left font-medium transition-colors"
+                  >
+                    <PhoneCall className="w-4.5 h-4.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>{isBn ? 'আবার কল করুন' : 'Call Back'}</span>
+                  </button>
+                )}
+
+                {canEditMsg && targetMsg && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingMsg(targetMsg);
+                      setReplyTo(null);
+                      setReplyToCall(null);
+                      setText(targetMsg.content);
+                      setActiveMenuMsgId(null);
+                    }}
+                    className="w-full min-h-[44px] flex items-center gap-3 px-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left font-medium transition-colors"
+                  >
+                    <Pencil className="w-4.5 h-4.5 text-amber-600 dark:text-amber-400" />
+                    <span>{isBn ? 'মেসেজ এডিট করুন' : 'Edit Message'}</span>
+                  </button>
+                )}
+
+                {((targetMsg && !targetMsg.is_deleted_for_everyone) || targetCall) && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (targetMsg) {
+                        await handleCopyMessage(targetMsg);
+                      } else if (targetCall) {
+                        await navigator.clipboard.writeText(`📞 ${formatCallSummaryText(targetCall)}`);
+                        setActiveMenuCallId(null);
+                        showToast(isBn ? 'কল তথ্য কপি হয়েছে ✓' : 'Copied to clipboard ✓');
+                      }
+                    }}
+                    className="w-full min-h-[44px] flex items-center gap-3 px-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left font-medium transition-colors"
+                  >
+                    <Copy className="w-4.5 h-4.5 text-slate-500 dark:text-slate-400" />
+                    <span>{t.copy}</span>
+                  </button>
+                )}
+
+                {targetMsg && !targetMsg.is_deleted_for_everyone && targetAtts[0] && (
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadAttachment(targetAtts[0])}
+                    className="w-full min-h-[44px] flex items-center gap-3 px-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left font-medium transition-colors"
+                  >
+                    <Download className="w-4.5 h-4.5 text-indigo-600 dark:text-indigo-400" />
+                    <span>{isBn ? 'ডিভাইসে ডাউনলোড করুন' : 'Download Media'}</span>
+                  </button>
+                )}
+
+                {targetMsg && !targetMsg.is_deleted_for_everyone && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (pinnedMessageId === targetMsg.id) {
+                        handleUnpinMessage();
+                      } else {
+                        handlePinMessage(targetMsg.id);
+                      }
+                      setActiveMenuMsgId(null);
+                    }}
+                    className="w-full min-h-[44px] flex items-center gap-3 px-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left font-medium transition-colors"
+                  >
+                    {pinnedMessageId === targetMsg.id ? (
+                      <>
+                        <PinOff className="w-4.5 h-4.5 text-amber-500" />
+                        <span>{isBn ? 'আনপিন করুন' : 'Unpin Message'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Pin className="w-4.5 h-4.5 text-indigo-500" />
+                        <span>{isBn ? 'পিন করুন' : 'Pin Message'}</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (targetMsg) toggleMsgSelection(targetMsg.id);
+                    else if (targetCall) toggleCallSelection(targetCall.id);
+                  }}
+                  className="w-full min-h-[44px] flex items-center gap-3 px-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left font-medium transition-colors"
+                >
+                  <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>{isBn ? 'একাধিক মেসেজ নির্বাচন করুন' : 'Select Multiple'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Upgraded WhatsApp-Style Multi-Chat Forward Modal (Preserves Text, Photos, Videos, Audio, Docs & Calls + Optional Note) */}
+      {(forwardModalMsgs.length > 0 || forwardModalCalls.length > 0) && (() => {
+        const isBn = currentUser.language === 'bn';
+        const filteredChats = allChats.filter((c) => {
+          if (!forwardSearchQuery.trim()) return true;
+          const name = c.type === 'group' ? c.group?.name || 'Group' : c.peer?.full_name || 'User';
+          return name.toLowerCase().includes(forwardSearchQuery.trim().toLowerCase());
+        });
+        const firstImg = forwardModalMsgs[0]?.attachments?.find((a) => a.file_type === 'image')?.file_url;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
+            <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl bg-white dark:bg-slate-900 border-t sm:border border-slate-200 dark:border-slate-800 p-5 shadow-2xl max-h-[88vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom-3 duration-150">
+              <div className="shrink-0 flex items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {firstImg ? (
+                    <img
+                      src={firstImg}
+                      alt="Forward preview"
+                      referrerPolicy="no-referrer"
+                      className="w-10 h-10 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                      <CornerUpRight className="w-5 h-5" />
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white truncate">
+                      {isBn ? 'ফরোয়ার্ড করুন...' : 'Forward to...'}
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                      {forwardModalMsgs.length + forwardModalCalls.length === 1
+                        ? forwardModalMsgs[0]
+                          ? getMessageSummaryLabel(forwardModalMsgs[0])
+                          : `📞 ${formatCallSummaryText(forwardModalCalls[0])}`
+                        : isBn
+                        ? `${forwardModalMsgs.length + forwardModalCalls.length}টি আইটেম নির্বাচিত`
+                        : `${forwardModalMsgs.length + forwardModalCalls.length} items selected`}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForwardModalMsgs([]);
+                    setForwardModalCalls([]);
+                    setForwardSelectedChatIds([]);
+                    setForwardNote('');
+                  }}
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white flex items-center justify-center shrink-0"
+                >
+                  <X className="w-4 h-4 stroke-[2.25]" />
+                </button>
+              </div>
+
+              <div className="shrink-0 flex items-center gap-2 mb-3">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={forwardSearchQuery}
+                    onChange={(e) => setForwardSearchQuery(e.target.value)}
+                    placeholder={isBn ? 'চ্যাট বা গ্রুপ খুঁজুন...' : 'Search chats or groups...'}
+                    className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const filteredIds = filteredChats.map((c) => c.id);
+                    if (forwardSelectedChatIds.length >= filteredIds.length && filteredIds.length > 0) {
+                      setForwardSelectedChatIds([]);
+                    } else {
+                      setForwardSelectedChatIds(filteredIds);
+                    }
+                  }}
+                  className="px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 shrink-0"
+                >
+                  {forwardSelectedChatIds.length >= filteredChats.length && filteredChats.length > 0
+                    ? isBn ? 'খালি করুন' : 'Clear'
+                    : isBn ? 'সব সিলেক্ট' : 'All'}
+                </button>
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+                {filteredChats.map((c) => {
                   const name = c.type === 'group' ? c.group?.name || 'Group' : c.peer?.full_name || 'User';
                   const avatar = c.type === 'group' ? c.group?.avatar_url : c.peer?.avatar_url;
                   const isChecked = forwardSelectedChatIds.includes(c.id);
@@ -6916,15 +7190,22 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                           prev.includes(c.id) ? prev.filter((id) => id !== c.id) : [...prev, c.id]
                         )
                       }
-                      className={`w-full flex items-center justify-between gap-3 py-2.5 px-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-left rounded-xl transition-colors ${
-                        isChecked ? 'bg-emerald-50 dark:bg-emerald-950/30' : ''
+                      className={`w-full min-h-[52px] flex items-center justify-between gap-3 py-2.5 px-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-left rounded-xl transition-colors ${
+                        isChecked ? 'bg-emerald-50 dark:bg-emerald-950/35' : ''
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <OSAAvatar name={name} avatarUrl={avatar} size="sm" isGroup={c.type === 'group'} />
-                        <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                          {name}
-                        </span>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                            {name}
+                          </p>
+                          <p className="text-[11px] text-slate-400 truncate">
+                            {c.type === 'group'
+                              ? isBn ? 'গ্রুপ চ্যাট' : 'Group'
+                              : isBn ? 'ব্যক্তিগত চ্যাট' : 'Direct chat'}
+                          </p>
+                        </div>
                       </div>
                       <div
                         className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
@@ -6938,37 +7219,43 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                     </button>
                   );
                 })}
-            </div>
-
-            {forwardSelectedChatIds.length > 0 && (
-              <div className="shrink-0 pt-3 mt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 truncate">
-                  {forwardSelectedChatIds.length} {currentUser.language === 'bn' ? 'টি চ্যাট নির্বাচিত' : 'selected'}
-                </span>
-                <button
-                  type="button"
-                  disabled={isForwarding}
-                  onClick={() => handleConfirmForward()}
-                  className="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-md"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>
-                    {isForwarding
-                      ? currentUser.language === 'bn'
-                        ? 'পাঠানো হচ্ছে...'
-                        : 'Sending...'
-                      : currentUser.language === 'bn'
-                      ? 'ফরোয়ার্ড করুন'
-                      : 'Forward'}
-                  </span>
-                </button>
               </div>
-            )}
-          </div>
-        </div>
-      )}
 
-      {/* WhatsApp-Style Delete Confirmation Dialog */}
+              {forwardSelectedChatIds.length > 0 && (
+                <div className="shrink-0 pt-3 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+                  <input
+                    type="text"
+                    value={forwardNote}
+                    onChange={(e) => setForwardNote(e.target.value)}
+                    placeholder={isBn ? 'ঐচ্ছিক নোট বা ক্যাপশন লিখুন...' : 'Add an optional note or caption...'}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400 truncate">
+                      {forwardSelectedChatIds.length} {isBn ? 'টি চ্যাট নির্বাচিত' : 'selected'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={isForwarding}
+                      onClick={() => handleConfirmForward()}
+                      className="px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center gap-2 shadow-md active:scale-95 transition-all"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>
+                        {isForwarding
+                          ? isBn ? 'পাঠানো হচ্ছে...' : 'Sending...'
+                          : isBn ? `পাঠান (${forwardSelectedChatIds.length})` : `Forward (${forwardSelectedChatIds.length})`}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Upgraded WhatsApp-Style Delete Confirmation Dialog */}
       {deleteConfirmTarget && (() => {
         const { msgs, calls } = deleteConfirmTarget;
         const totalItems = msgs.length + calls.length;
@@ -6977,28 +7264,51 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           msgs.length > 0 &&
           msgs.every((m) => m.sender_id === currentUser.id && !m.is_deleted_for_everyone);
         const isBn = currentUser.language === 'bn';
+        const previewSnippet =
+          totalItems === 1
+            ? msgs[0]
+              ? getMessageSummaryLabel(msgs[0])
+              : calls[0]
+              ? formatCallSummaryText(calls[0])
+              : ''
+            : isBn
+            ? `${totalItems}টি মেসেজ/আইটেম নির্বাচিত`
+            : `${totalItems} items selected`;
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-            <div className="w-full max-w-xs rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl animate-in zoom-in-95 duration-150">
-              <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1.5">
-                {totalItems === 1
-                  ? calls.length === 1
-                    ? isBn ? 'কল রেকর্ড মুছবেন?' : 'Delete call log?'
-                    : isBn ? 'মেসেজ মুছবেন?' : 'Delete message?'
-                  : isBn
-                  ? `${totalItems}টি আইটেম মুছবেন?`
-                  : `Delete ${totalItems} items?`}
-              </h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-5 leading-relaxed">
-                {canDeleteAllForEveryone
-                  ? isBn
-                    ? 'আপনি এটি কেবল আপনার চ্যাট থেকে নাকি সবার চ্যাট থেকেই মুছতে চান?'
-                    : 'Delete for everyone removes this from all participants, or delete just for yourself.'
-                  : isBn
-                  ? 'এটি কেবল আপনার ডিভাইস ও চ্যাট বক্স থেকে মুছে যাবে।'
-                  : 'This will remove the selected item(s) from your chat view.'}
-              </p>
+            <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl animate-in zoom-in-95 duration-150">
+              <div className="flex items-start gap-3 mb-3">
+                <div className="w-10 h-10 rounded-2xl bg-red-50 dark:bg-red-950/60 border border-red-200/80 dark:border-red-800/70 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    {totalItems === 1
+                      ? calls.length === 1
+                        ? isBn ? 'কল রেকর্ড মুছবেন?' : 'Delete call log?'
+                        : isBn ? 'মেসেজ মুছবেন?' : 'Delete message?'
+                      : isBn
+                      ? `${totalItems}টি আইটেম মুছবেন?`
+                      : `Delete ${totalItems} items?`}
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                    {canDeleteAllForEveryone
+                      ? isBn
+                        ? 'আপনি এটি কেবল আপনার চ্যাট থেকে নাকি সবার চ্যাট থেকেই মুছতে চান?'
+                        : 'Delete for everyone removes this for all participants, or remove just for yourself.'
+                      : isBn
+                      ? 'এটি কেবল আপনার ডিভাইস ও চ্যাট বক্স থেকে মুছে যাবে।'
+                      : 'This will remove the selected item(s) from your chat view.'}
+                  </p>
+                </div>
+              </div>
+
+              {previewSnippet && (
+                <div className="mb-4 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/70 text-xs text-slate-600 dark:text-slate-300 truncate">
+                  {previewSnippet}
+                </div>
+              )}
 
               <div className="flex flex-col gap-2">
                 {canDeleteAllForEveryone && (
@@ -7006,9 +7316,12 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                     type="button"
                     disabled={isDeletingAction}
                     onClick={confirmDeleteForEveryone}
-                    className="w-full py-2.5 px-4 rounded-2xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold text-center transition-colors"
+                    className="w-full min-h-[46px] py-2.5 px-4 rounded-2xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-between gap-2 transition-colors shadow-sm"
                   >
-                    {t.deleteForEveryone}
+                    <span>{t.deleteForEveryone}</span>
+                    <span className="text-[10px] font-medium text-red-100">
+                      {isBn ? 'সবার চ্যাট থেকে' : 'All participants'}
+                    </span>
                   </button>
                 )}
 
@@ -7016,16 +7329,19 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   type="button"
                   disabled={isDeletingAction}
                   onClick={confirmDeleteForMe}
-                  className="w-full py-2.5 px-4 rounded-2xl bg-red-50 dark:bg-red-950/50 hover:bg-red-100 dark:hover:bg-red-950 text-red-600 dark:text-red-400 text-xs font-bold text-center transition-colors border border-red-200/70 dark:border-red-900/60"
+                  className="w-full min-h-[46px] py-2.5 px-4 rounded-2xl bg-red-50 dark:bg-red-950/50 hover:bg-red-100 dark:hover:bg-red-950 text-red-600 dark:text-red-400 text-xs font-bold flex items-center justify-between gap-2 transition-colors border border-red-200/80 dark:border-red-900/60"
                 >
-                  {t.deleteForMe}
+                  <span>{t.deleteForMe}</span>
+                  <span className="text-[10px] font-medium opacity-80">
+                    {isBn ? 'শুধু আপনার ডিভাইসে' : 'Only your view'}
+                  </span>
                 </button>
 
                 <button
                   type="button"
                   disabled={isDeletingAction}
                   onClick={() => setDeleteConfirmTarget(null)}
-                  className="w-full py-2.5 px-4 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold text-center transition-colors"
+                  className="w-full min-h-[44px] py-2.5 px-4 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold text-center transition-colors"
                 >
                   {t.cancel}
                 </button>
@@ -7035,115 +7351,158 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         );
       })()}
 
-      {/* External & Social Share Modal Fallback */}
-      {shareModalData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <Share2 className="w-4 h-4 text-emerald-600" />
-                <span>{currentUser.language === 'bn' ? 'শেয়ার করুন' : 'Share'}</span>
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShareModalData(null)}
-                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
-              >
-                <X className="w-4 h-4" />
-              </button>
+      {/* Upgraded External & Social Share Hub */}
+      {shareModalData && (() => {
+        const isBn = currentUser.language === 'bn';
+        const hasNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+        return (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
+            <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl bg-white dark:bg-slate-900 border-t sm:border border-slate-200 dark:border-slate-800 p-5 shadow-2xl animate-in slide-in-from-bottom-3 duration-150">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                    <Share2 className="w-4 h-4" />
+                  </div>
+                  <span>{isBn ? 'মেসেজ ও মিডিয়া শেয়ার করুন' : 'Share Message & Media'}</span>
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShareModalData(null)}
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white flex items-center justify-center shrink-0"
+                >
+                  <X className="w-4 h-4 stroke-[2.25]" />
+                </button>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700/70 mb-4 flex items-start gap-3">
+                {shareModalData.previewUrl && (
+                  <img
+                    src={shareModalData.previewUrl}
+                    alt="Share preview"
+                    referrerPolicy="no-referrer"
+                    className="w-12 h-12 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                  />
+                )}
+                <div className="text-xs text-slate-600 dark:text-slate-300 max-h-24 overflow-y-auto whitespace-pre-wrap break-words flex-1">
+                  {shareModalData.text || shareModalData.url || shareModalData.fileName}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const msgsToFwd = shareModalData.msgs || [];
+                    const callsToFwd = shareModalData.calls || [];
+                    setShareModalData(null);
+                    openForwardModal(msgsToFwd, callsToFwd);
+                  }}
+                  className="min-h-[44px] flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs active:scale-95 transition-all"
+                >
+                  <CornerUpRight className="w-4 h-4" />
+                  <span>{isBn ? 'OSA চ্যাটে পাঠান' : 'OSA Chat'}</span>
+                </button>
+
+                {hasNativeShare && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const ok = await triggerNativeShare(
+                        shareModalData.msgs || [],
+                        shareModalData.calls || [],
+                        shareModalData.text,
+                        shareModalData.title
+                      );
+                      if (ok) setShareModalData(null);
+                    }}
+                    className="min-h-[44px] flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs active:scale-95 transition-all"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span>{isBn ? 'সব অ্যাপে শেয়ার' : 'More Apps'}</span>
+                  </button>
+                )}
+
+                <a
+                  href={`https://wa.me/?text=${encodeURIComponent(shareModalData.text || shareModalData.url || '')}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setShareModalData(null)}
+                  className="min-h-[44px] flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs active:scale-95 transition-all"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>WhatsApp</span>
+                </a>
+
+                <a
+                  href={`https://t.me/share/url?url=${encodeURIComponent(shareModalData.url || '')}&text=${encodeURIComponent(shareModalData.text || '')}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setShareModalData(null)}
+                  className="min-h-[44px] flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-xs active:scale-95 transition-all"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Telegram</span>
+                </a>
+
+                <a
+                  href={`https://www.facebook.com/sharer/sharer.php?quote=${encodeURIComponent(shareModalData.text || '')}${shareModalData.url ? `&u=${encodeURIComponent(shareModalData.url)}` : ''}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setShareModalData(null)}
+                  className="min-h-[44px] flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-[#1877F2] hover:bg-[#166fe5] text-white text-xs font-bold shadow-xs active:scale-95 transition-all"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Facebook</span>
+                </a>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(shareModalData.text || shareModalData.url || '');
+                    setShareCopiedToast(true);
+                    showToast(isBn ? 'শেয়ার লিংক/টেক্সট কপি হয়েছে ✓' : 'Copied to clipboard ✓');
+                    setTimeout(() => setShareCopiedToast(false), 1800);
+                  }}
+                  className="min-h-[44px] flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-white text-xs font-bold active:scale-95 transition-all"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>
+                    {shareCopiedToast
+                      ? isBn ? 'কপি হয়েছে!' : 'Copied!'
+                      : isBn ? 'কপি করুন' : 'Copy'}
+                  </span>
+                </button>
+              </div>
+
+              {shareModalData.url && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await handleDownloadAttachment({
+                      id: 'share-dl',
+                      message_id: '',
+                      chat_id: chat.id,
+                      uploader_id: currentUser.id,
+                      file_name: shareModalData.fileName || 'osa-media',
+                      file_url: shareModalData.url || '',
+                      storage_path: '',
+                      file_type: 'document',
+                      mime_type: shareModalData.mimeType || 'application/octet-stream',
+                      file_size: 0,
+                      created_at: new Date().toISOString(),
+                    });
+                    setShareModalData(null);
+                  }}
+                  className="mt-2.5 w-full min-h-[44px] flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>{isBn ? 'ফাইল ডাউনলোড করুন' : 'Download Media'}</span>
+                </button>
+              )}
             </div>
-
-            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/70 text-xs text-slate-600 dark:text-slate-300 max-h-28 overflow-y-auto mb-4 whitespace-pre-wrap break-words">
-              {shareModalData.text || shareModalData.url || shareModalData.fileName}
-            </div>
-
-            <div className="grid grid-cols-2 gap-2.5">
-              <a
-                href={`https://wa.me/?text=${encodeURIComponent(shareModalData.text || shareModalData.url || '')}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => setShareModalData(null)}
-                className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>WhatsApp</span>
-              </a>
-
-              <a
-                href={`https://t.me/share/url?url=${encodeURIComponent(shareModalData.url || '')}&text=${encodeURIComponent(shareModalData.text || '')}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => setShareModalData(null)}
-                className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Telegram</span>
-              </a>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const msgsToFwd = shareModalData.msgs || [];
-                  const callsToFwd = shareModalData.calls || [];
-                  setShareModalData(null);
-                  openForwardModal(msgsToFwd, callsToFwd);
-                }}
-                className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
-              >
-                <CornerUpRight className="w-3.5 h-3.5" />
-                <span>{currentUser.language === 'bn' ? 'OSA চ্যাটে পাঠান' : 'OSA Chat'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={async () => {
-                  await navigator.clipboard.writeText(shareModalData.text || shareModalData.url || '');
-                  setShareCopiedToast(true);
-                  setTimeout(() => setShareCopiedToast(false), 1800);
-                }}
-                className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-white text-xs font-bold"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                <span>
-                  {shareCopiedToast
-                    ? currentUser.language === 'bn'
-                      ? 'কপি হয়েছে!'
-                      : 'Copied!'
-                    : currentUser.language === 'bn'
-                    ? 'কপি করুন'
-                    : 'Copy'}
-                </span>
-              </button>
-            </div>
-
-            {shareModalData.url && (
-              <button
-                type="button"
-                onClick={async () => {
-                  await handleDownloadAttachment({
-                    id: 'share-dl',
-                    message_id: '',
-                    chat_id: chat.id,
-                    uploader_id: currentUser.id,
-                    file_name: shareModalData.fileName || 'osa-media',
-                    file_url: shareModalData.url || '',
-                    storage_path: '',
-                    file_type: 'document',
-                    mime_type: shareModalData.mimeType || 'application/octet-stream',
-                    file_size: 0,
-                    created_at: new Date().toISOString(),
-                  });
-                  setShareModalData(null);
-                }}
-                className="mt-2.5 w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold"
-              >
-                <Download className="w-4 h-4" />
-                <span>{currentUser.language === 'bn' ? 'ফাইল ডাউনলোড করুন' : 'Download Media'}</span>
-              </button>
-            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Upgraded WhatsApp-Style Fullscreen Media Viewer Lightbox */}
       {lightboxMedia && (
@@ -7186,10 +7545,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   setLightboxMedia(null);
                   handleReplyToMessage(target);
                 }}
-                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+                className="w-10 h-10 rounded-xl bg-slate-900 border border-white/25 text-white hover:bg-slate-800 flex items-center justify-center active:scale-95 transition-all"
                 title={t.reply}
               >
-                <CornerUpLeft className="w-4.5 h-4.5" />
+                <CornerUpLeft className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
               <button
                 type="button"
@@ -7198,34 +7557,34 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   setLightboxMedia(null);
                   openForwardModal([target], []);
                 }}
-                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+                className="w-10 h-10 rounded-xl bg-slate-900 border border-white/25 text-white hover:bg-slate-800 flex items-center justify-center active:scale-95 transition-all"
                 title={t.forward}
               >
-                <CornerUpRight className="w-4.5 h-4.5" />
+                <CornerUpRight className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
               <button
                 type="button"
                 onClick={() => handleShareItems([lightboxMedia.msg], [])}
-                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+                className="w-10 h-10 rounded-xl bg-slate-900 border border-white/25 text-white hover:bg-slate-800 flex items-center justify-center active:scale-95 transition-all"
                 title={currentUser.language === 'bn' ? 'শেয়ার' : 'Share'}
               >
-                <Share2 className="w-4.5 h-4.5" />
+                <Share2 className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
               <button
                 type="button"
                 onClick={() => handleDownloadAttachment(lightboxMedia.att)}
-                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+                className="w-10 h-10 rounded-xl bg-slate-900 border border-white/25 text-white hover:bg-slate-800 flex items-center justify-center active:scale-95 transition-all"
                 title={currentUser.language === 'bn' ? 'ডাউনলোড' : 'Download'}
               >
-                <Download className="w-4.5 h-4.5" />
+                <Download className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
               <button
                 type="button"
                 onClick={() => openDeleteModal([lightboxMedia.msg], [])}
-                className="w-9 h-9 rounded-full bg-red-500/20 hover:bg-red-500/40 text-red-300 flex items-center justify-center"
+                className="w-10 h-10 rounded-xl bg-red-600/85 border border-red-400/50 text-white hover:bg-red-700 flex items-center justify-center active:scale-95 transition-all"
                 title={currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}
               >
-                <Trash2 className="w-4.5 h-4.5" />
+                <Trash2 className="w-4.5 h-4.5 stroke-[2.25]" />
               </button>
             </div>
           </div>
