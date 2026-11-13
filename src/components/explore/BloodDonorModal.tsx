@@ -244,6 +244,9 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
   const [isLoadingCenters, setIsLoadingCenters] = useState(false);
   const [centersError, setCentersError] = useState<string>('');
   const [centersSearchedDistrict, setCentersSearchedDistrict] = useState<string>('');
+  const [centerSearchInput, setCenterSearchInput] = useState<string>('');
+  const [centerTypeFilter, setCenterTypeFilter] = useState<'all' | 'blood_bank' | 'hospital' | 'clinic'>('all');
+  const [hasLoadedCenters, setHasLoadedCenters] = useState(false);
 
   // Form states for posting a blood request
   const [reqPatientName, setReqPatientName] = useState('');
@@ -358,37 +361,88 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
     setTimeout(() => setToastMessage(null), 2800);
   };
 
-  // Load nearby blood banks & hospitals using Overpass API
-  const handleLoadNearbyCenters = async (overrideDistrict?: string) => {
+  // Load nearby blood banks & hospitals using Overpass mirrors + Nominatim Search
+  const handleLoadNearbyCenters = async (opts?: {
+    overrideDistrict?: string;
+    overrideCoords?: { lat: number; lng: number };
+    customQuery?: string;
+  }) => {
     const targetDist =
-      overrideDistrict || (selectedDistrict !== 'সব জেলা' ? selectedDistrict : 'ঢাকা');
+      opts?.overrideDistrict ||
+      (selectedDistrict !== 'সব জেলা' ? selectedDistrict : 'ঢাকা');
     const coords =
-      !overrideDistrict && userCoords
+      opts?.overrideCoords ||
+      (!opts?.overrideDistrict && userCoords
         ? userCoords
-        : getDistrictCoordinates(targetDist);
+        : getDistrictCoordinates(targetDist));
+
+    const queryText =
+      opts?.customQuery !== undefined ? opts.customQuery : centerSearchInput;
 
     setIsLoadingCenters(true);
     setCentersError('');
+    setHasLoadedCenters(true);
     setCentersSearchedDistrict(
-      !overrideDistrict && userCoords ? 'আপনার বর্তমান জিপিএস লোকেশন' : targetDist
+      queryText.trim()
+        ? `"${queryText.trim()}" (${targetDist})`
+        : opts?.overrideCoords || (!opts?.overrideDistrict && userCoords)
+          ? `আপনার বর্তমান জিপিএস লোকেশন (${targetDist})`
+          : targetDist
     );
 
     try {
-      const results = await fetchNearbyMedicalCenters(coords.lat, coords.lng);
+      const results = await fetchNearbyMedicalCenters(coords.lat, coords.lng, {
+        districtBn: targetDist,
+        customQuery: queryText,
+      });
       setNearbyCenters(results);
       if (results.length === 0) {
-        setCentersError('এই মুহূর্তে ওপেনস্ট্রিটম্যাপে নিকটস্থ তথ্য পাওয়া যায়নি। নিচে Google Maps-এ সরাসরি খুঁজুন।');
+        setCentersError(
+          'নির্বাচিত এলাকায় ওপেনস্ট্রিটম্যাপ ডাটাবেজে কোনো কেন্দ্র পাওয়া যায়নি। নিচের বাটন থেকে সরাসরি Google Maps-এ খুঁজুন বা অন্য নাম দিয়ে চেষ্টা করুন।'
+        );
       }
     } catch {
-      setCentersError('নেটওয়ার্কের কারণে কেন্দ্রের তালিকা লোড করা যায়নি। Google Maps বাটনে ক্লিক করে সরাসরি খুঁজুন।');
+      setCentersError(
+        'নেটওয়ার্কের কারণে কেন্দ্রের তালিকা লোড করা যায়নি। নিচের বাটনে ক্লিক করে Google Maps-এ সরাসরি খুঁজুন।'
+      );
     } finally {
       setIsLoadingCenters(false);
     }
   };
 
+  // Detect GPS and immediately load nearby hospitals & blood banks
+  const handleGpsLoadNearbyCenters = () => {
+    if (!('geolocation' in navigator)) {
+      showToast('আপনার ব্রাউজারে জিপিএস লোকেশন সাপোর্ট করে না');
+      return;
+    }
+    setIsGpsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserCoords(coords);
+        const { place, distanceKm } = findNearestBangladeshPlace(coords.lat, coords.lng);
+        setSelectedDivision(place.division);
+        setSelectedDistrict(place.districtBn);
+        setGpsStatusNote(`শনাক্ত: ${place.districtBn} (${place.nameBn}, ~${distanceKm} কি.মি.)`);
+        setIsGpsLocating(false);
+        void handleLoadNearbyCenters({
+          overrideDistrict: place.districtBn,
+          overrideCoords: coords,
+          customQuery: '',
+        });
+      },
+      () => {
+        setIsGpsLocating(false);
+        showToast('লোকেশন অনুমতি মেলেনি — জেলা নির্বাচন করে খুঁজুন');
+      },
+      { timeout: 8000, enableHighAccuracy: false }
+    );
+  };
+
   // Auto-load medical centers when user opens the 'banks' tab first time
   useEffect(() => {
-    if (isOpen && activeTab === 'banks' && nearbyCenters.length === 0 && !isLoadingCenters) {
+    if (isOpen && activeTab === 'banks' && !hasLoadedCenters && !isLoadingCenters) {
       void handleLoadNearbyCenters();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1852,7 +1906,7 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
                     </div>
                   </section>
 
-                  {/* Live Nearby Hospitals & Blood Banks via OpenStreetMap Overpass */}
+                  {/* Live Nearby Hospitals & Blood Banks via OpenStreetMap Overpass + Nominatim */}
                   <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 space-y-4">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
@@ -1862,122 +1916,276 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
                         </h3>
                         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                           {centersSearchedDistrict
-                            ? `অবস্থান: ${centersSearchedDistrict}`
-                            : 'জিপিএস বা জেলার মাধ্যমে নিকটস্থ চিকিৎসা কেন্দ্র খুঁজুন'}
+                            ? `ফলাফল দেখানো হচ্ছে: ${centersSearchedDistrict}`
+                            : 'জিপিএস, জেলা বা এলাকার নাম দিয়ে নিকটস্থ হাসপাতাল ও ব্লাড ব্যাংক খুঁজুন'}
                         </p>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                        <select
-                          aria-label="ব্লাড ব্যাংক খোঁজার জেলা"
-                          value={selectedDistrict === 'সব জেলা' ? 'ঢাকা' : selectedDistrict}
-                          onChange={(e) => {
-                            setSelectedDistrict(e.target.value);
-                            void handleLoadNearbyCenters(e.target.value);
-                          }}
-                          className="min-h-[40px] px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100"
-                        >
-                          {ALL_BD_DISTRICTS.map((d) => (
-                            <option key={d.districtBn} value={d.districtBn}>
-                              {d.districtBn}
-                            </option>
-                          ))}
-                        </select>
-
-                        <button
-                          type="button"
-                          onClick={() => void handleLoadNearbyCenters()}
-                          disabled={isLoadingCenters}
-                          className="min-h-[40px] px-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
-                        >
-                          <RefreshCw
-                            className={`w-3.5 h-3.5 ${
-                              isLoadingCenters ? 'animate-spin' : ''
-                            }`}
-                          />
-                          খুঁজুন
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={handleGpsLoadNearbyCenters}
+                        disabled={isGpsLocating || isLoadingCenters}
+                        className="min-h-[40px] px-3.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                      >
+                        <Compass
+                          className={`w-4 h-4 text-red-600 ${
+                            isGpsLocating ? 'animate-spin' : ''
+                          }`}
+                        />
+                        আমার লোকেশন (GPS)
+                      </button>
                     </div>
 
-                    {isLoadingCenters ? (
-                      <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400">
-                        নিকটস্থ হাসপাতাল ও ব্লাড ব্যাংকের তথ্য সংগ্রহ করা হচ্ছে...
+                    {/* Search Bar + 64 District Selector */}
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                      <div className="relative sm:col-span-6">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          placeholder="এলাকা, হাসপাতাল বা ব্লাড ব্যাংকের নাম (যেমন: বিরামপুর, সন্ধানী)..."
+                          value={centerSearchInput}
+                          onChange={(e) => setCenterSearchInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              void handleLoadNearbyCenters({ customQuery: centerSearchInput });
+                            }
+                          }}
+                          className="w-full min-h-[42px] pl-9 pr-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 focus:border-red-500 focus:outline-none"
+                        />
                       </div>
-                    ) : centersError ? (
-                      <div className="p-5 rounded-xl bg-slate-50 dark:bg-slate-800/70 text-center space-y-3">
-                        <p className="text-xs text-slate-600 dark:text-slate-300">
-                          {centersError}
-                        </p>
-                        <a
-                          href={getGoogleMapsSearchUrl(
-                            `blood bank and hospital near ${
-                              selectedDistrict === 'সব জেলা' ? 'Bangladesh' : selectedDistrict
-                            }`
-                          )}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="min-h-[40px] px-4 rounded-xl bg-red-600 text-white text-xs font-bold inline-flex items-center gap-1.5"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          Google Maps-এ সরাসরি দেখুন
-                        </a>
-                      </div>
-                    ) : (
-                      <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {nearbyCenters.map((center) => (
-                          <div
-                            key={center.id}
-                            className="py-3 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
-                          >
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span
-                                  className={`text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0 ${
-                                    center.type === 'blood_bank'
-                                      ? 'bg-red-600 text-white'
-                                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-                                  }`}
-                                >
-                                  {center.type === 'blood_bank'
-                                    ? 'ব্লাড ব্যাংক'
-                                    : center.type === 'hospital'
-                                      ? 'হাসপাতাল'
-                                      : 'ক্লিনিক'}
-                                </span>
-                                <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
-                                  {center.name}
-                                </h4>
-                              </div>
-                              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 tabular-nums">
-                                দূরত্ব ~{center.distanceKm} কি.মি.
-                                {center.address ? ` · ${center.address}` : ''}
-                              </p>
-                            </div>
 
-                            <div className="flex items-center gap-2 shrink-0">
-                              {center.phone && (
-                                <a
-                                  href={`tel:${center.phone}`}
-                                  className="min-h-[38px] px-3 rounded-xl bg-emerald-600 text-white text-xs font-bold inline-flex items-center gap-1"
-                                >
-                                  <Phone className="w-3.5 h-3.5" />
-                                  কল
-                                </a>
-                              )}
-                              <a
-                                href={`https://www.google.com/maps/search/?api=1&query=${center.lat},${center.lng}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="min-h-[38px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5"
-                              >
-                                <MapPin className="w-3.5 h-3.5 text-red-600" />
-                                পথ দেখুন
-                              </a>
-                            </div>
-                          </div>
+                      <select
+                        aria-label="ব্লাড ব্যাংক খোঁজার জেলা"
+                        value={selectedDistrict === 'সব জেলা' ? 'ঢাকা' : selectedDistrict}
+                        onChange={(e) => {
+                          setSelectedDistrict(e.target.value);
+                          setCenterSearchInput('');
+                          void handleLoadNearbyCenters({
+                            overrideDistrict: e.target.value,
+                            customQuery: '',
+                          });
+                        }}
+                        className="sm:col-span-4 min-h-[42px] px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 focus:border-red-500 focus:outline-none"
+                      >
+                        {ALL_BD_DISTRICTS.map((d) => (
+                          <option key={d.districtBn} value={d.districtBn}>
+                            {d.districtBn}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleLoadNearbyCenters({ customQuery: centerSearchInput })
+                        }
+                        disabled={isLoadingCenters}
+                        className="sm:col-span-2 min-h-[42px] px-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 ${
+                            isLoadingCenters ? 'animate-spin' : ''
+                          }`}
+                        />
+                        খুঁজুন
+                      </button>
+                    </div>
+
+                    {/* Category Filter Chips */}
+                    {nearbyCenters.length > 0 && (
+                      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                        {(
+                          [
+                            {
+                              id: 'all',
+                              label: 'সবগুলো',
+                              count: nearbyCenters.length,
+                            },
+                            {
+                              id: 'blood_bank',
+                              label: 'ব্লাড ব্যাংক',
+                              count: nearbyCenters.filter((c) => c.type === 'blood_bank').length,
+                            },
+                            {
+                              id: 'hospital',
+                              label: 'হাসপাতাল',
+                              count: nearbyCenters.filter((c) => c.type === 'hospital').length,
+                            },
+                            {
+                              id: 'clinic',
+                              label: 'ক্লিনিক ও ডক্টর',
+                              count: nearbyCenters.filter((c) => c.type === 'clinic').length,
+                            },
+                          ] as const
+                        ).map((cat) => (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => setCenterTypeFilter(cat.id)}
+                            className={`min-h-[34px] px-3 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition tabular-nums ${
+                              centerTypeFilter === cat.id
+                                ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                            }`}
+                          >
+                            <span>{cat.label}</span>
+                            <span className="opacity-75">({cat.count})</span>
+                          </button>
                         ))}
                       </div>
+                    )}
+
+                    {isLoadingCenters ? (
+                      <div className="py-10 text-center space-y-2">
+                        <RefreshCw className="w-6 h-6 text-red-600 animate-spin mx-auto" />
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          নিকটস্থ হাসপাতাল ও ব্লাড ব্যাংকের তথ্য সংগ্রহ করা হচ্ছে...
+                        </p>
+                      </div>
+                    ) : centersError && nearbyCenters.length === 0 ? (
+                      <div className="p-5 rounded-xl bg-slate-50 dark:bg-slate-800/70 text-center space-y-3">
+                        <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                          {centersError}
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          <a
+                            href={getGoogleMapsSearchUrl(
+                              `blood bank near ${
+                                centerSearchInput.trim() ||
+                                (selectedDistrict === 'সব জেলা' ? 'Bangladesh' : selectedDistrict)
+                              }`
+                            )}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="min-h-[40px] px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            ব্লাড ব্যাংক (Google Maps)
+                          </a>
+                          <a
+                            href={getGoogleMapsSearchUrl(
+                              `hospital near ${
+                                centerSearchInput.trim() ||
+                                (selectedDistrict === 'সব জেলা' ? 'Bangladesh' : selectedDistrict)
+                              }`
+                            )}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="min-h-[40px] px-4 rounded-xl bg-slate-900 dark:bg-slate-700 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            হাসপাতাল (Google Maps)
+                          </a>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {nearbyCenters
+                            .filter(
+                              (c) => centerTypeFilter === 'all' || c.type === centerTypeFilter
+                            )
+                            .map((center) => (
+                              <div
+                                key={center.id}
+                                className="py-3.5 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                              >
+                                <div className="min-w-0 space-y-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span
+                                      className={`text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0 ${
+                                        center.type === 'blood_bank'
+                                          ? 'bg-red-600 text-white'
+                                          : center.type === 'hospital'
+                                            ? 'bg-slate-900 dark:bg-slate-700 text-white'
+                                            : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                                      }`}
+                                    >
+                                      {center.type === 'blood_bank'
+                                        ? 'ব্লাড ব্যাংক'
+                                        : center.type === 'hospital'
+                                          ? 'হাসপাতাল'
+                                          : 'ক্লিনিক'}
+                                    </span>
+                                    <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white leading-snug">
+                                      {center.name}
+                                    </h4>
+                                    {center.hasEmergency && (
+                                      <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
+                                        · জরুরি বিভাগ
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                                    দূরত্ব ~{center.distanceKm} কি.মি.
+                                    {center.address ? ` · ${center.address}` : ''}
+                                    {center.openingHours ? ` · সময়: ${center.openingHours}` : ''}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-2 shrink-0">
+                                  {center.phone && (
+                                    <a
+                                      href={`tel:${center.phone}`}
+                                      className="min-h-[38px] px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap"
+                                    >
+                                      <Phone className="w-3.5 h-3.5" />
+                                      কল
+                                    </a>
+                                  )}
+                                  <a
+                                    href={`https://www.google.com/maps/dir/?api=1&destination=${center.lat},${center.lng}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="min-h-[38px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                                  >
+                                    <MapPin className="w-3.5 h-3.5 text-red-600" />
+                                    পথ দেখুন
+                                  </a>
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+
+                        {/* Quick Google Maps Deep Links */}
+                        <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                            আরও বিস্তারিত লাইভ ম্যাপ দেখতে:
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            <a
+                              href={getGoogleMapsSearchUrl(
+                                `blood bank near ${
+                                  centerSearchInput.trim() ||
+                                  (selectedDistrict === 'সব জেলা' ? 'Bangladesh' : selectedDistrict)
+                                }`
+                              )}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="min-h-[34px] px-3 rounded-lg bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-[11px] font-bold inline-flex items-center gap-1 hover:underline"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              Google Maps-এ ব্লাড ব্যাংক
+                            </a>
+                            <a
+                              href={getGoogleMapsSearchUrl(
+                                `hospital near ${
+                                  centerSearchInput.trim() ||
+                                  (selectedDistrict === 'সব জেলা' ? 'Bangladesh' : selectedDistrict)
+                                }`
+                              )}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="min-h-[34px] px-3 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[11px] font-bold inline-flex items-center gap-1 hover:underline"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              Google Maps-এ হাসপাতাল
+                            </a>
+                          </div>
+                        </div>
+                      </>
                     )}
                   </section>
                 </div>

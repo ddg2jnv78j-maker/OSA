@@ -227,86 +227,316 @@ export interface NearbyMedicalCenter {
   distanceKm: number;
   phone?: string;
   address?: string;
+  openingHours?: string;
+  hasEmergency?: boolean;
+}
+
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
+
+function classifyCenterType(
+  name: string,
+  tagsOrCategory?: {
+    healthcare?: string;
+    amenity?: string;
+    type?: string;
+  }
+): 'blood_bank' | 'hospital' | 'clinic' {
+  const hc = (tagsOrCategory?.healthcare || '').toLowerCase();
+  const am = (tagsOrCategory?.amenity || '').toLowerCase();
+  const tp = (tagsOrCategory?.type || '').toLowerCase();
+
+  if (
+    hc === 'blood_bank' ||
+    hc === 'blood_donation' ||
+    tp === 'blood_bank' ||
+    tp === 'blood_donation' ||
+    /blood|রক্ত|সন্ধানী|sandhani|badhan|বাঁধন|quantum|কোয়ান্টাম|red crescent|রেড ক্রিসেন্ট|transfusion/i.test(
+      name
+    )
+  ) {
+    return 'blood_bank';
+  }
+
+  if (
+    am === 'hospital' ||
+    hc === 'hospital' ||
+    tp === 'hospital' ||
+    /hospital|হাসপাতাল|medical college|মেডিকেল|স্বাস্থ্য কমপ্লেক্স|health complex|sadar/i.test(
+      name
+    )
+  ) {
+    return 'hospital';
+  }
+
+  return 'clinic';
+}
+
+async function queryOverpassMirrors(
+  lat: number,
+  lng: number
+): Promise<NearbyMedicalCenter[]> {
+  const radiusHospital = 25000;
+  const radiusBlood = 35000;
+  const radiusClinic = 12000;
+  const query = `
+    [out:json][timeout:10];
+    (
+      nwr["healthcare"="blood_donation"](around:${radiusBlood},${lat},${lng});
+      nwr["healthcare"="blood_bank"](around:${radiusBlood},${lat},${lng});
+      nwr["amenity"="hospital"](around:${radiusHospital},${lat},${lng});
+      nwr["healthcare"="hospital"](around:${radiusHospital},${lat},${lng});
+      nwr["amenity"="clinic"](around:${radiusClinic},${lat},${lng});
+      nwr["name"~"blood|রক্ত|সন্ধানী|sandhani|badhan|বাঁধন|quantum|কোয়ান্টাম|red crescent",i](around:${radiusBlood},${lat},${lng});
+    );
+    out center 40;
+  `;
+
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7500);
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) continue;
+
+      const data = (await response.json()) as {
+        elements?: Array<{
+          id: number;
+          type: string;
+          lat?: number;
+          lon?: number;
+          center?: { lat: number; lon: number };
+          tags?: Record<string, string>;
+        }>;
+      };
+
+      const items: NearbyMedicalCenter[] = [];
+      for (const el of data.elements || []) {
+        const tags = el.tags || {};
+        const name = (tags['name:bn'] || tags.name || '').trim();
+        if (!name) continue;
+        const itemLat = el.lat ?? el.center?.lat;
+        const itemLng = el.lon ?? el.center?.lon;
+        if (typeof itemLat !== 'number' || typeof itemLng !== 'number') continue;
+
+        const addrParts = [
+          tags['addr:street'],
+          tags['addr:suburb'] || tags['addr:area'],
+          tags['addr:city'] || tags['addr:district'],
+        ].filter(Boolean);
+
+        items.push({
+          id: `osm_${el.type}_${el.id}`,
+          name,
+          type: classifyCenterType(name, {
+            healthcare: tags.healthcare,
+            amenity: tags.amenity,
+          }),
+          lat: itemLat,
+          lng: itemLng,
+          distanceKm: Math.round(haversineDistanceKm(lat, lng, itemLat, itemLng) * 10) / 10,
+          phone: tags.phone || tags['contact:phone'] || tags['phone:BD'],
+          address: tags['addr:full'] || addrParts.join(', ') || undefined,
+          openingHours: tags.opening_hours,
+          hasEmergency: tags.emergency === 'yes',
+        });
+      }
+      if (items.length > 0) return items;
+    } catch {
+      clearTimeout(timer);
+      // Try next mirror
+    }
+  }
+  return [];
+}
+
+interface NominatimItem {
+  place_id: number;
+  lat: string;
+  lon: string;
+  category?: string;
+  type?: string;
+  name?: string;
+  display_name?: string;
+  extratags?: Record<string, string>;
+  address?: Record<string, string>;
+}
+
+async function queryNominatimSearch(
+  url: string,
+  originLat: number,
+  originLng: number
+): Promise<NearbyMedicalCenter[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 7500);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return [];
+    const data = (await res.json()) as NominatimItem[];
+
+    const allowedCategories = new Set(['amenity', 'healthcare']);
+    const allowedTypes = new Set([
+      'hospital',
+      'clinic',
+      'doctors',
+      'blood_bank',
+      'blood_donation',
+      'pharmacy',
+    ]);
+
+    const items: NearbyMedicalCenter[] = [];
+    for (const item of data) {
+      const cat = (item.category || '').toLowerCase();
+      const tp = (item.type || '').toLowerCase();
+      if (!allowedCategories.has(cat) && !allowedTypes.has(tp)) continue;
+
+      const latNum = Number(item.lat);
+      const lngNum = Number(item.lon);
+      if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) continue;
+
+      const name = (item.name || item.display_name?.split(',')[0] || '').trim();
+      if (!name) continue;
+
+      const addr = item.address || {};
+      const conciseAddress = [
+        addr.road,
+        addr.suburb || addr.neighbourhood || addr.town,
+        addr.county || addr.city || addr.state_district,
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+      const tags = item.extratags || {};
+      items.push({
+        id: `nom_${item.place_id}`,
+        name,
+        type: classifyCenterType(name, { type: tp, healthcare: tp, amenity: tp }),
+        lat: latNum,
+        lng: lngNum,
+        distanceKm: Math.round(haversineDistanceKm(originLat, originLng, latNum, lngNum) * 10) / 10,
+        phone: tags.phone || tags['contact:phone'] || tags['phone:BD'],
+        address: conciseAddress || item.display_name?.split(',').slice(1, 4).join(',').trim(),
+        openingHours: tags.opening_hours,
+        hasEmergency: tags.emergency === 'yes',
+      });
+    }
+    return items;
+  } catch {
+    clearTimeout(timer);
+    return [];
+  }
 }
 
 export async function fetchNearbyMedicalCenters(
   lat: number,
-  lng: number
+  lng: number,
+  options?: {
+    districtBn?: string;
+    customQuery?: string;
+  }
 ): Promise<NearbyMedicalCenter[]> {
-  const radiusMeters = 12000;
-  const query = `
-    [out:json][timeout:12];
-    (
-      node["amenity"="hospital"](around:${radiusMeters},${lat},${lng});
-      way["amenity"="hospital"](around:${radiusMeters},${lat},${lng});
-      node["healthcare"="blood_bank"](around:${radiusMeters},${lat},${lng});
-      way["healthcare"="blood_bank"](around:${radiusMeters},${lat},${lng});
-      node["amenity"="clinic"](around:6000,${lat},${lng});
+  const custom = options?.customQuery?.trim();
+  const district = options?.districtBn?.trim();
+
+  // Bounding box ~35km around target coordinates
+  const deltaLng = 0.35;
+  const deltaLat = 0.32;
+  const viewbox = `${(lng - deltaLng).toFixed(4)},${(lat + deltaLat).toFixed(4)},${(lng + deltaLng).toFixed(4)},${(lat - deltaLat).toFixed(4)}`;
+
+  const tasks: Array<Promise<NearbyMedicalCenter[]>> = [];
+
+  if (custom) {
+    tasks.push(
+      queryNominatimSearch(
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
+          `${custom} ${district && district !== 'সব জেলা' ? district : ''} Bangladesh`
+        )}&countrycodes=bd&addressdetails=1&extratags=1&limit=18`,
+        lat,
+        lng
+      ),
+      queryNominatimSearch(
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
+          custom
+        )}&viewbox=${viewbox}&bounded=1&countrycodes=bd&addressdetails=1&extratags=1&limit=15`,
+        lat,
+        lng
+      )
     );
-    out center 25;
-  `;
-
-  const response = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `data=${encodeURIComponent(query)}`,
-  });
-
-  if (!response.ok) {
-    throw new Error('Failed to load nearby centers');
+  } else {
+    tasks.push(
+      queryOverpassMirrors(lat, lng),
+      queryNominatimSearch(
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&q=hospital&viewbox=${viewbox}&bounded=1&countrycodes=bd&addressdetails=1&extratags=1&limit=18`,
+        lat,
+        lng
+      ),
+      queryNominatimSearch(
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
+          district && district !== 'সব জেলা'
+            ? `blood bank ${district} Bangladesh`
+            : 'blood bank Bangladesh'
+        )}&countrycodes=bd&addressdetails=1&extratags=1&limit=10`,
+        lat,
+        lng
+      )
+    );
   }
 
-  const data = (await response.json()) as {
-    elements?: Array<{
-      id: number;
-      type: string;
-      lat?: number;
-      lon?: number;
-      center?: { lat: number; lon: number };
-      tags?: Record<string, string>;
-    }>;
-  };
-
-  const results: NearbyMedicalCenter[] = [];
-  const seenNames = new Set<string>();
-
-  for (const el of data.elements || []) {
-    const tags = el.tags || {};
-    const name = tags['name:bn'] || tags.name || '';
-    if (!name || seenNames.has(name.toLowerCase())) continue;
-
-    const itemLat = el.lat ?? el.center?.lat;
-    const itemLng = el.lon ?? el.center?.lon;
-    if (typeof itemLat !== 'number' || typeof itemLng !== 'number') continue;
-
-    seenNames.add(name.toLowerCase());
-    const isBloodBank =
-      tags.healthcare === 'blood_bank' ||
-      /blood|রক্ত|সন্ধানী|sandhani|badhan|বাঁধন|quantum|কোয়ান্টাম|red crescent/i.test(name);
-
-    results.push({
-      id: `${el.type}_${el.id}`,
-      name,
-      type: isBloodBank
-        ? 'blood_bank'
-        : tags.amenity === 'hospital'
-          ? 'hospital'
-          : 'clinic',
-      lat: itemLat,
-      lng: itemLng,
-      distanceKm: Math.round(haversineDistanceKm(lat, lng, itemLat, itemLng) * 10) / 10,
-      phone: tags.phone || tags['contact:phone'],
-      address: tags['addr:full'] || tags['addr:street'] || tags['addr:city'],
-    });
+  const settled = await Promise.allSettled(tasks);
+  const rawList: NearbyMedicalCenter[] = [];
+  for (const res of settled) {
+    if (res.status === 'fulfilled') {
+      rawList.push(...res.value);
+    }
   }
 
-  results.sort((a, b) => {
-    if (a.type === 'blood_bank' && b.type !== 'blood_bank') return -1;
-    if (a.type !== 'blood_bank' && b.type === 'blood_bank') return 1;
+  // Deduplicate by normalized name or very close coordinates
+  const merged = new Map<string, NearbyMedicalCenter>();
+  for (const item of rawList) {
+    const norm = item.name.toLowerCase().replace(/[^a-z0-9\u0980-\u09ff]/g, '');
+    const existing = merged.get(norm);
+    if (!existing) {
+      merged.set(norm, item);
+    } else {
+      merged.set(norm, {
+        ...existing,
+        phone: existing.phone || item.phone,
+        address:
+          (existing.address?.length || 0) >= (item.address?.length || 0)
+            ? existing.address
+            : item.address,
+        openingHours: existing.openingHours || item.openingHours,
+        hasEmergency: existing.hasEmergency || item.hasEmergency,
+        type:
+          existing.type === 'blood_bank' || item.type === 'blood_bank'
+            ? 'blood_bank'
+            : existing.type,
+      });
+    }
+  }
+
+  const finalResults = Array.from(merged.values());
+  finalResults.sort((a, b) => {
+    if (a.type === 'blood_bank' && b.type !== 'blood_bank') {
+      if (a.distanceKm <= 40) return -1;
+    }
+    if (b.type === 'blood_bank' && a.type !== 'blood_bank') {
+      if (b.distanceKm <= 40) return 1;
+    }
     return a.distanceKm - b.distanceKm;
   });
 
-  return results.slice(0, 18);
+  return finalResults.slice(0, 30);
 }
 
 function drawRoundedRect(
