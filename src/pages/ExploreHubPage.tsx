@@ -69,10 +69,10 @@ export const ExploreHubPage: React.FC<ExploreHubPageProps> = ({ currentUser, onO
   const HUB_ITEMS = [
     {
       id: 'blood_donor',
-      title: 'জরুরি রক্তদাতা নেটওয়ার্ক',
-      subtitle: 'বিভাগ ও জেলা অনুযায়ী ব্লাড গ্রুপের ডোনার খুঁজুন বা স্বেচ্ছায় যুক্ত হন',
+      title: 'OSA জরুরি রক্তদান ও রক্তদাতা নেটওয়ার্ক',
+      subtitle: '৬৪ জেলায় ডোনার, ম্যাচিং গাইড, ব্লাড ব্যাংক, ডিজিটাল কার্ড ও ৯৯৯ সহায়তা',
       icon: Heart,
-      badge: 'Emergency SOS',
+      badge: '64 Districts',
       category: 'safety',
       gradient: 'from-red-500 to-rose-600',
       action: () => setShowBloodDonor(true),

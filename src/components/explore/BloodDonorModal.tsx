@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Heart,
   Search,
@@ -8,9 +8,7 @@ import {
   PlusCircle,
   X,
   CheckCircle2,
-  AlertTriangle,
   UserCheck,
-  Filter,
   Compass,
   Share2,
   MessageSquare,
@@ -25,10 +23,38 @@ import {
   Droplet,
   ShieldCheck,
   AlertCircle,
+  Download,
+  Trash2,
+  Award,
+  Activity,
+  PhoneCall,
+  RefreshCw,
+  Stethoscope,
+  Sparkles,
+  IdCard,
+  ArrowRight,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Profile } from '../../types/osa';
 import { OSAAvatar } from '../OSAAvatar';
+import { BD_DIVISIONS, DivisionId } from '../../data/bangladeshPlaces';
+import {
+  BLOOD_GROUP_LIST,
+  BLOOD_COMPATIBILITY,
+  BloodGroupType,
+  BloodComponentType,
+  UrgencyLevel,
+  ALL_BD_DISTRICTS,
+  getDistrictsByDivision,
+  getDistrictCoordinates,
+  findNearestBangladeshPlace,
+  calculateDonorReadiness,
+  formatRelativeTimeBn,
+  fetchNearbyMedicalCenters,
+  NearbyMedicalCenter,
+  generateBloodAppealPosterDataUrl,
+  generateDonorIdCardDataUrl,
+} from './bloodNetworkUtils';
 
 export interface BloodComment {
   id: string;
@@ -44,7 +70,11 @@ export interface BloodRequest {
   patientName: string;
   bloodGroup: string;
   bagsNeeded: number;
+  bloodComponent?: BloodComponentType;
+  urgencyLevel?: UrgencyLevel;
   hospital: string;
+  wardInfo?: string;
+  division?: DivisionId;
   district: string;
   area: string;
   neededTime: string;
@@ -64,34 +94,35 @@ export interface Donor {
   name: string;
   avatarUrl?: string | null;
   bloodGroup: string;
+  division?: DivisionId;
   district: string;
   area: string;
   phone: string;
   lastDonated: string;
+  lastDonatedDate?: string;
   isAvailable: boolean;
   totalDonations: number;
   registeredAt: string;
 }
 
-const BLOOD_GROUPS = ['ALL', 'A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
-const DISTRICTS = [
-  'সব জেলা',
-  'ঢাকা',
-  'চট্টগ্রাম',
-  'সিলেট',
-  'রাজশাহী',
-  'খুলনা',
-  'বরিশাল',
-  'রংপুর',
-  'ময়মনসিংহ',
-  'কুমিল্লা',
-  'বগুড়া',
-  'গাজীপুর',
-  'নারায়ণগঞ্জ',
+type ActiveTab = 'requests' | 'donors' | 'guide' | 'banks';
+
+const BLOOD_GROUPS_FILTER = ['ALL', ...BLOOD_GROUP_LIST];
+const BLOOD_COMPONENTS: BloodComponentType[] = [
+  'Whole Blood',
+  'Platelets',
+  'Plasma',
+  'Red Cells',
 ];
 
-const INITIAL_REQUESTS: BloodRequest[] = [];
-const INITIAL_DONORS: Donor[] = [];
+const ELIGIBILITY_QUESTIONS = [
+  { id: 'age', label: 'আপনার বয়স কি ১৮ থেকে ৬০ বছরের মধ্যে?' },
+  { id: 'weight', label: 'আপনার ওজন কি কমপক্ষে ৪৮ কেজি বা তার বেশি?' },
+  { id: 'cooldown', label: 'শেষ রক্তদানের পর কি অন্তত ১২০ দিন (৪ মাস) পার হয়েছে (বা প্রথমবার দিচ্ছেন)?' },
+  { id: 'healthy', label: 'গত ১৪ দিনে কি আপনার কোনো জ্বর, সর্দি-কাশি বা বড় সংক্রমণ ছিল না?' },
+  { id: 'pressure', label: 'আপনার রক্তচাপ ও হিমোগ্লোবিন কি বর্তমানে স্বাভাবিক আছে?' },
+  { id: 'surgery', label: 'গত ৬ মাসে কোনো বড় অপারেশন, ট্যাটু বা রক্তগ্রহণ করেননি?' },
+];
 
 interface BloodDonorModalProps {
   isOpen: boolean;
@@ -108,14 +139,13 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
   currentUserName = 'User',
   onOpenDirectChat,
 }) => {
-  const effectiveUserId = currentUser?.id || 'guest_user_' + Date.now();
+  const effectiveUserId = currentUser?.id || 'guest_user_local';
   const effectiveUserName = currentUser?.full_name || currentUserName;
   const effectiveAvatar = currentUser?.avatar_url || null;
 
-  // Active view tab: 'requests' (Emergency blood requests) | 'donors' (Registered donors list)
-  const [activeTab, setActiveTab] = useState<'requests' | 'donors'>('requests');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('requests');
 
-  // Blood Requests List (saved in localStorage)
+  // Persisted Requests
   const [requests, setRequests] = useState<BloodRequest[]>(() => {
     try {
       const saved = localStorage.getItem('osa_blood_requests_v3');
@@ -137,7 +167,7 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
     }
   });
 
-  // Donors List (saved in localStorage)
+  // Persisted Donors
   const [donors, setDonors] = useState<Donor[]>(() => {
     try {
       const saved = localStorage.getItem('osa_verified_blood_donors_v3');
@@ -162,37 +192,81 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
     }
   });
 
+  // User's saved own blood group for smart compatibility matching
+  const [myBloodGroup, setMyBloodGroup] = useState<BloodGroupType | ''>(() => {
+    try {
+      const saved = localStorage.getItem('osa_my_blood_group_v1');
+      if (saved && BLOOD_GROUP_LIST.includes(saved as BloodGroupType)) {
+        return saved as BloodGroupType;
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  });
+
   // Filters
   const [selectedGroup, setSelectedGroup] = useState('ALL');
+  const [selectedDivision, setSelectedDivision] = useState<DivisionId | 'all'>('all');
   const [selectedDistrict, setSelectedDistrict] = useState('সব জেলা');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'urgent' | 'managed'>('all');
+  const [onlyMyCompatible, setOnlyMyCompatible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isGpsLocating, setIsGpsLocating] = useState(false);
+  const [gpsStatusNote, setGpsStatusNote] = useState<string>('');
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
 
-  // Modals & sub-views
+  // Modals & Interactive States
   const [showPostRequestModal, setShowPostRequestModal] = useState(false);
   const [showRegisterDonorModal, setShowRegisterDonorModal] = useState(false);
   const [shareTargetRequest, setShareTargetRequest] = useState<BloodRequest | null>(null);
+  const [sharePosterUrl, setSharePosterUrl] = useState<string>('');
+  const [donorIdCardTarget, setDonorIdCardTarget] = useState<Donor | null>(null);
+  const [donorIdCardUrl, setDonorIdCardUrl] = useState<string>('');
   const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [copySuccess, setCopySuccess] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Compatibility Matrix & Eligibility Self-Check
+  const [matrixGroup, setMatrixGroup] = useState<BloodGroupType>('O+');
+  const [eligibilityAnswers, setEligibilityAnswers] = useState<Record<string, boolean>>({
+    age: true,
+    weight: true,
+    cooldown: true,
+    healthy: true,
+    pressure: true,
+    surgery: true,
+  });
+
+  // Nearby Medical Centers / Blood Banks State
+  const [nearbyCenters, setNearbyCenters] = useState<NearbyMedicalCenter[]>([]);
+  const [isLoadingCenters, setIsLoadingCenters] = useState(false);
+  const [centersError, setCentersError] = useState<string>('');
+  const [centersSearchedDistrict, setCentersSearchedDistrict] = useState<string>('');
 
   // Form states for posting a blood request
   const [reqPatientName, setReqPatientName] = useState('');
-  const [reqBloodGroup, setReqBloodGroup] = useState('O+');
+  const [reqBloodGroup, setReqBloodGroup] = useState<BloodGroupType>('O+');
+  const [reqBloodComponent, setReqBloodComponent] = useState<BloodComponentType>('Whole Blood');
+  const [reqUrgency, setReqUrgency] = useState<UrgencyLevel>('critical');
   const [reqBags, setReqBags] = useState(1);
   const [reqHospital, setReqHospital] = useState('');
+  const [reqWardInfo, setReqWardInfo] = useState('');
   const [reqDistrict, setReqDistrict] = useState('ঢাকা');
   const [reqArea, setReqArea] = useState('');
-  const [reqNeededTime, setReqNeededTime] = useState('আজ বিকাল ৪:০০ টার মধ্যে');
+  const [reqNeededTime, setReqNeededTime] = useState('জরুরি — আজকের মধ্যেই');
   const [reqPhone, setReqPhone] = useState(currentUser?.phone || '+8801');
   const [reqNotes, setReqNotes] = useState('');
 
   // Form states for donor registration
   const [regName, setRegName] = useState(effectiveUserName);
-  const [regGroup, setRegGroup] = useState('O+');
+  const [regGroup, setRegGroup] = useState<BloodGroupType>('O+');
   const [regDistrict, setRegDistrict] = useState('ঢাকা');
   const [regArea, setRegArea] = useState('');
   const [regPhone, setRegPhone] = useState(currentUser?.phone || '+8801');
+  const [regLastDonatedDate, setRegLastDonatedDate] = useState('');
+  const [regTotalDonations, setRegTotalDonations] = useState(0);
   const [regSuccess, setRegSuccess] = useState(false);
 
   // Sync to localStorage
@@ -208,79 +282,250 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
     } catch {}
   }, [donors]);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    try {
+      if (myBloodGroup) {
+        localStorage.setItem('osa_my_blood_group_v1', myBloodGroup);
+      } else {
+        localStorage.removeItem('osa_my_blood_group_v1');
+      }
+    } catch {}
+  }, [myBloodGroup]);
 
-  // Real GPS District Detection
-  const handleDetectGpsDistrict = () => {
-    if ('geolocation' in navigator) {
-      setIsGpsLocating(true);
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
+  // Districts dropdown options based on selected Division
+  const availableDistrictOptions = useMemo(
+    () => getDistrictsByDivision(selectedDivision),
+    [selectedDivision]
+  );
 
-          if (lat >= 23.6 && lat <= 24.1 && lng >= 90.2 && lng <= 90.6) {
-            setSelectedDistrict('ঢাকা');
-          } else if (lat >= 22.1 && lat <= 22.6 && lng >= 91.6 && lng <= 92.1) {
-            setSelectedDistrict('চট্টগ্রাম');
-          } else if (lat >= 24.7 && lat <= 25.1 && lng >= 91.7 && lng <= 92.0) {
-            setSelectedDistrict('সিলেট');
-          } else if (lat >= 24.2 && lat <= 24.6 && lng >= 88.4 && lng <= 88.8) {
-            setSelectedDistrict('রাজশাহী');
-          } else {
-            setSelectedDistrict('ঢাকা');
-          }
-          setIsGpsLocating(false);
-        },
-        () => {
-          setIsGpsLocating(false);
-          setSelectedDistrict('ঢাকা');
-        },
-        { timeout: 6000 }
-      );
+  // Reset selectedDistrict if division narrows it out
+  useEffect(() => {
+    if (
+      selectedDistrict !== 'সব জেলা' &&
+      !availableDistrictOptions.some((d) => d.districtBn === selectedDistrict)
+    ) {
+      setSelectedDistrict('সব জেলা');
+    }
+  }, [selectedDivision, availableDistrictOptions, selectedDistrict]);
+
+  // Generate Poster PNG whenever shareTargetRequest changes
+  useEffect(() => {
+    if (!shareTargetRequest) {
+      setSharePosterUrl('');
+      return;
+    }
+    const url = generateBloodAppealPosterDataUrl({
+      bloodGroup: shareTargetRequest.bloodGroup,
+      bagsNeeded: shareTargetRequest.bagsNeeded,
+      patientName: shareTargetRequest.patientName,
+      hospital: shareTargetRequest.hospital,
+      area: shareTargetRequest.area,
+      district: shareTargetRequest.district,
+      neededTime: shareTargetRequest.neededTime,
+      contactPhone: shareTargetRequest.contactPhone,
+      notes: shareTargetRequest.notes,
+      posterName: shareTargetRequest.posterName,
+      component: shareTargetRequest.bloodComponent,
+    });
+    setSharePosterUrl(url);
+  }, [shareTargetRequest]);
+
+  // Generate Donor ID Card PNG whenever donorIdCardTarget changes
+  useEffect(() => {
+    if (!donorIdCardTarget) {
+      setDonorIdCardUrl('');
+      return;
+    }
+    const readiness = calculateDonorReadiness(donorIdCardTarget.lastDonatedDate);
+    const url = generateDonorIdCardDataUrl({
+      name: donorIdCardTarget.name,
+      bloodGroup: donorIdCardTarget.bloodGroup,
+      district: donorIdCardTarget.district,
+      area: donorIdCardTarget.area,
+      phone: donorIdCardTarget.phone,
+      totalDonations: donorIdCardTarget.totalDonations,
+      readinessLabel: donorIdCardTarget.isAvailable
+        ? readiness.isReady
+          ? 'রক্তদানে প্রস্তুত'
+          : `বিশ্রামে (${readiness.daysRemaining} দিন বাকি)`
+        : 'সাময়িক বিরতিতে',
+    });
+    setDonorIdCardUrl(url);
+  }, [donorIdCardTarget]);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 2800);
+  };
+
+  // Load nearby blood banks & hospitals using Overpass API
+  const handleLoadNearbyCenters = async (overrideDistrict?: string) => {
+    const targetDist =
+      overrideDistrict || (selectedDistrict !== 'সব জেলা' ? selectedDistrict : 'ঢাকা');
+    const coords =
+      !overrideDistrict && userCoords
+        ? userCoords
+        : getDistrictCoordinates(targetDist);
+
+    setIsLoadingCenters(true);
+    setCentersError('');
+    setCentersSearchedDistrict(
+      !overrideDistrict && userCoords ? 'আপনার বর্তমান জিপিএস লোকেশন' : targetDist
+    );
+
+    try {
+      const results = await fetchNearbyMedicalCenters(coords.lat, coords.lng);
+      setNearbyCenters(results);
+      if (results.length === 0) {
+        setCentersError('এই মুহূর্তে ওপেনস্ট্রিটম্যাপে নিকটস্থ তথ্য পাওয়া যায়নি। নিচে Google Maps-এ সরাসরি খুঁজুন।');
+      }
+    } catch {
+      setCentersError('নেটওয়ার্কের কারণে কেন্দ্রের তালিকা লোড করা যায়নি। Google Maps বাটনে ক্লিক করে সরাসরি খুঁজুন।');
+    } finally {
+      setIsLoadingCenters(false);
     }
   };
 
-  // Filter requests
+  // Auto-load medical centers when user opens the 'banks' tab first time
+  useEffect(() => {
+    if (isOpen && activeTab === 'banks' && nearbyCenters.length === 0 && !isLoadingCenters) {
+      void handleLoadNearbyCenters();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, activeTab]);
+
+  if (!isOpen) return null;
+
+  // Real Haversine GPS District Detection across ALL 64 Districts
+  const handleDetectGpsDistrict = () => {
+    if (!('geolocation' in navigator)) {
+      showToast('আপনার ব্রাউজারে জিপিএস লোকেশন সাপোর্ট করে না');
+      return;
+    }
+
+    setIsGpsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        setUserCoords({ lat, lng });
+
+        const { place, distanceKm } = findNearestBangladeshPlace(lat, lng);
+        setSelectedDivision(place.division);
+        setSelectedDistrict(place.districtBn);
+        setReqDistrict(place.districtBn);
+        setRegDistrict(place.districtBn);
+        setGpsStatusNote(`শনাক্ত: ${place.districtBn} (${place.nameBn}, ~${distanceKm} কি.মি.)`);
+        setIsGpsLocating(false);
+        showToast(`আপনার জেলা শনাক্ত হয়েছে: ${place.districtBn}`);
+      },
+      () => {
+        setIsGpsLocating(false);
+        showToast('লোকেশন অনুমতি মেলেনি — ম্যানুয়ালি জেলা নির্বাচন করুন');
+      },
+      { timeout: 8000, enableHighAccuracy: false }
+    );
+  };
+
+  // Compatibility helper for "myBloodGroup"
+  const myCompatibleTargets = myBloodGroup
+    ? BLOOD_COMPATIBILITY[myBloodGroup].canDonateTo
+    : [];
+
+  // Metrics
+  const activeUrgentCount = requests.filter((r) => r.status === 'urgent').length;
+  const managedCount = requests.filter((r) => r.status === 'managed').length;
+  const availableDonorsCount = donors.filter(
+    (d) => d.isAvailable && calculateDonorReadiness(d.lastDonatedDate).isReady
+  ).length;
+  const compatibleUrgentMatchesCount = myBloodGroup
+    ? requests.filter(
+        (r) =>
+          r.status === 'urgent' &&
+          myCompatibleTargets.includes(r.bloodGroup as BloodGroupType)
+      ).length
+    : 0;
+
+  const myDonorListing = donors.find(
+    (d) => d.userId === effectiveUserId || (currentUser?.phone && d.phone === currentUser.phone)
+  );
+
+  // Filtered Requests
   const filteredRequests = requests.filter((r) => {
-    const matchGroup = selectedGroup === 'ALL' || r.bloodGroup === selectedGroup;
+    const districtObj = ALL_BD_DISTRICTS.find((d) => d.districtBn === r.district);
+    const matchDivision =
+      selectedDivision === 'all' ||
+      r.division === selectedDivision ||
+      districtObj?.division === selectedDivision;
     const matchDistrict = selectedDistrict === 'সব জেলা' || r.district === selectedDistrict;
+    const matchGroup = selectedGroup === 'ALL' || r.bloodGroup === selectedGroup;
+    const matchStatus = statusFilter === 'all' || r.status === statusFilter;
+    const matchCompatible =
+      !onlyMyCompatible ||
+      !myBloodGroup ||
+      myCompatibleTargets.includes(r.bloodGroup as BloodGroupType);
+
+    const q = searchQuery.trim().toLowerCase();
     const matchQuery =
-      r.patientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.hospital.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.area.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.district.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.notes.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchGroup && matchDistrict && matchQuery;
+      !q ||
+      r.patientName.toLowerCase().includes(q) ||
+      r.hospital.toLowerCase().includes(q) ||
+      r.area.toLowerCase().includes(q) ||
+      r.district.toLowerCase().includes(q) ||
+      r.notes.toLowerCase().includes(q);
+
+    return (
+      matchDivision &&
+      matchDistrict &&
+      matchGroup &&
+      matchStatus &&
+      matchCompatible &&
+      matchQuery
+    );
   });
 
-  // Filter donors
+  // Filtered Donors
   const filteredDonors = donors.filter((d) => {
-    const matchGroup = selectedGroup === 'ALL' || d.bloodGroup === selectedGroup;
+    const districtObj = ALL_BD_DISTRICTS.find((dist) => dist.districtBn === d.district);
+    const matchDivision =
+      selectedDivision === 'all' ||
+      d.division === selectedDivision ||
+      districtObj?.division === selectedDivision;
     const matchDistrict = selectedDistrict === 'সব জেলা' || d.district === selectedDistrict;
+    const matchGroup = selectedGroup === 'ALL' || d.bloodGroup === selectedGroup;
+
+    const q = searchQuery.trim().toLowerCase();
     const matchQuery =
-      d.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      d.area.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      d.district.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchGroup && matchDistrict && matchQuery;
+      !q ||
+      d.name.toLowerCase().includes(q) ||
+      d.area.toLowerCase().includes(q) ||
+      d.district.toLowerCase().includes(q);
+
+    return matchDivision && matchDistrict && matchGroup && matchQuery;
   });
 
-  // Submit Blood Request
+  // Post New Blood Request
   const handlePostBloodRequest = (e: React.FormEvent) => {
     e.preventDefault();
     if (!reqPatientName.trim() || !reqHospital.trim() || !reqPhone.trim()) return;
+
+    const matchedDistrict = ALL_BD_DISTRICTS.find((d) => d.districtBn === reqDistrict);
 
     const newRequest: BloodRequest = {
       id: 'req_' + Date.now(),
       patientName: reqPatientName.trim(),
       bloodGroup: reqBloodGroup,
       bagsNeeded: Number(reqBags) || 1,
+      bloodComponent: reqBloodComponent,
+      urgencyLevel: reqUrgency,
       hospital: reqHospital.trim(),
+      wardInfo: reqWardInfo.trim() || undefined,
+      division: matchedDistrict?.division,
       district: reqDistrict,
       area: reqArea.trim() || reqDistrict,
       neededTime: reqNeededTime.trim() || 'জরুরি প্রয়োজন',
       contactPhone: reqPhone.trim(),
-      notes: reqNotes.trim() || 'জরুরি রক্তের প্রয়োজন। সাহায্য করুন।',
+      notes: reqNotes.trim() || 'জরুরি রক্তের প্রয়োজন। দয়া করে দ্রুত যোগাযোগ করুন।',
       posterId: effectiveUserId,
       posterName: effectiveUserName,
       posterAvatar: effectiveAvatar,
@@ -294,16 +539,17 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
       confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
     } catch {}
 
-    // Reset form
     setReqPatientName('');
     setReqHospital('');
+    setReqWardInfo('');
     setReqArea('');
     setReqNotes('');
     setShowPostRequestModal(false);
     setActiveTab('requests');
+    showToast('রক্তের জরুরি আবেদন সফলভাবে প্রকাশিত হয়েছে');
   };
 
-  // Toggle Request status (Urgent <-> Managed)
+  // Toggle Request Status
   const handleToggleRequestStatus = (requestId: string) => {
     setRequests((prev) =>
       prev.map((r) => {
@@ -313,6 +559,9 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
             try {
               confetti({ particleCount: 70, spread: 80, origin: { y: 0.7 } });
             } catch {}
+            showToast('আলহামদুলিল্লাহ! আবেদনটি ম্যানেজ হয়েছে হিসেবে চিহ্নিত করা হয়েছে');
+          } else {
+            showToast('আবেদনটি পুনরায় জরুরি তালিকায় চালু করা হয়েছে');
           }
           return { ...r, status: nextStatus };
         }
@@ -321,9 +570,15 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
     );
   };
 
-  // Add Comment to Request
-  const handleAddComment = (requestId: string) => {
-    const text = (commentInputs[requestId] || '').trim();
+  // Delete Own Request
+  const handleDeleteRequest = (requestId: string) => {
+    setRequests((prev) => prev.filter((r) => r.id !== requestId));
+    showToast('রক্তের আবেদনটি মুছে ফেলা হয়েছে');
+  };
+
+  // Add Comment
+  const handleAddComment = (requestId: string, overrideText?: string) => {
+    const text = (overrideText ?? commentInputs[requestId] ?? '').trim();
     if (!text) return;
 
     const newComment: BloodComment = {
@@ -341,14 +596,19 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
       )
     );
 
-    setCommentInputs((prev) => ({ ...prev, [requestId]: '' }));
+    if (!overrideText) {
+      setCommentInputs((prev) => ({ ...prev, [requestId]: '' }));
+    }
     setExpandedComments((prev) => ({ ...prev, [requestId]: true }));
   };
 
-  // Register as Donor
+  // Register as Voluntary Donor
   const handleRegisterDonor = (e: React.FormEvent) => {
     e.preventDefault();
     if (!regName.trim() || !regPhone.trim() || !regArea.trim()) return;
+
+    const matchedDistrict = ALL_BD_DISTRICTS.find((d) => d.districtBn === regDistrict);
+    const readiness = calculateDonorReadiness(regLastDonatedDate || undefined);
 
     const newDonor: Donor = {
       id: 'donor_' + Date.now(),
@@ -356,16 +616,25 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
       name: regName.trim(),
       avatarUrl: effectiveAvatar,
       bloodGroup: regGroup,
+      division: matchedDistrict?.division,
       district: regDistrict,
       area: regArea.trim(),
       phone: regPhone.trim(),
-      lastDonated: 'এখনো দেননি (নতুন ডোনার)',
-      isAvailable: true,
-      totalDonations: 1,
+      lastDonated: regLastDonatedDate
+        ? new Date(`${regLastDonatedDate}T00:00:00`).toLocaleDateString('bn-BD', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          })
+        : 'নতুন / প্রথমবার রক্তদাতা',
+      lastDonatedDate: regLastDonatedDate || undefined,
+      isAvailable: readiness.isReady,
+      totalDonations: Math.max(0, Number(regTotalDonations) || 0),
       registeredAt: new Date().toISOString(),
     };
 
     setDonors([newDonor, ...donors]);
+    setMyBloodGroup(regGroup);
     setRegSuccess(true);
     try {
       confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
@@ -374,39 +643,104 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
       setRegSuccess(false);
       setShowRegisterDonorModal(false);
       setActiveTab('donors');
-    }, 1200);
+      showToast('রক্তদাতা হিসেবে আপনার নাম সফলভাবে যুক্ত হয়েছে');
+    }, 900);
   };
 
-  // Format share message
+  // Donor Own Listing Actions
+  const handleToggleDonorAvailability = (donorId: string) => {
+    setDonors((prev) =>
+      prev.map((d) => (d.id === donorId ? { ...d, isAvailable: !d.isAvailable } : d))
+    );
+  };
+
+  const handleRecordDonationToday = (donorId: string) => {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    setDonors((prev) =>
+      prev.map((d) =>
+        d.id === donorId
+          ? {
+              ...d,
+              totalDonations: d.totalDonations + 1,
+              lastDonatedDate: todayIso,
+              lastDonated: new Date().toLocaleDateString('bn-BD', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              }),
+              isAvailable: false,
+            }
+          : d
+      )
+    );
+    try {
+      confetti({ particleCount: 70, spread: 75, origin: { y: 0.65 } });
+    } catch {}
+    showToast('অভিনন্দন! আপনার আজকের রক্তদান রেকর্ড করা হয়েছে ও ১২০ দিনের বিশ্রাম সক্রিয় হয়েছে');
+  };
+
+  const handleDeleteDonor = (donorId: string) => {
+    setDonors((prev) => prev.filter((d) => d.id !== donorId));
+    showToast('রক্তদাতার তালিকা থেকে প্রোফাইল সরানো হয়েছে');
+  };
+
+  // Share Helpers
   const getFormattedShareText = (req: BloodRequest) => {
     return [
-      `🚨 জরুরি রক্তের প্রয়োজন! 🚨`,
-      `🩸 রক্তের গ্রুপ: ${req.bloodGroup} (${req.bagsNeeded} ব্যাগ)`,
-      `👤 রোগী: ${req.patientName}`,
-      `🏥 হাসপাতাল: ${req.hospital}, ${req.area}, ${req.district}`,
-      `⏰ প্রয়োজন: ${req.neededTime}`,
-      `📞 যোগাযোগ: ${req.contactPhone}`,
-      `📝 বিবরণ: ${req.notes}`,
-      `পোস্টদাতা: ${req.posterName} (OSA ব্লাড নেটওয়ার্ক)`,
+      `জরুরি রক্তের প্রয়োজন!`,
+      `রক্তের গ্রুপ: ${req.bloodGroup} (${req.bagsNeeded} ব্যাগ · ${req.bloodComponent || 'Whole Blood'})`,
+      `রোগী: ${req.patientName}`,
+      `হাসপাতাল: ${req.hospital}${req.wardInfo ? ` (${req.wardInfo})` : ''}, ${req.area}, ${req.district}`,
+      `সময়: ${req.neededTime}`,
+      `যোগাযোগ: ${req.contactPhone}`,
+      `বিবরণ: ${req.notes}`,
+      `পোস্টদাতা: ${req.posterName} — OSA জরুরি ব্লাড নেটওয়ার্ক`,
     ].join('\n');
   };
 
-  // Real Share Handler
   const handleShareEverywhere = async (req: BloodRequest) => {
+    setShareTargetRequest(req);
+  };
+
+  const handleNativeShareWithPoster = async (req: BloodRequest) => {
     const text = getFormattedShareText(req);
     if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
       try {
+        if (sharePosterUrl && typeof fetch === 'function') {
+          const res = await fetch(sharePosterUrl);
+          const blob = await res.blob();
+          const file = new File([blob], `osa-blood-${req.bloodGroup}.png`, {
+            type: 'image/png',
+          });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              title: `জরুরি ${req.bloodGroup} রক্তের প্রয়োজন`,
+              text,
+              files: [file],
+            });
+            return;
+          }
+        }
         await navigator.share({
-          title: `জরুরি রক্তের প্রয়োজন (${req.bloodGroup})`,
-          text: text,
+          title: `জরুরি ${req.bloodGroup} রক্তের প্রয়োজন`,
+          text,
           url: window.location.href,
         });
-        return;
       } catch {
-        // Fallback to share modal
+        // User cancelled or share unsupported
       }
     }
-    setShareTargetRequest(req);
+  };
+
+  const handleDownloadDataUrl = (dataUrl: string, filename: string) => {
+    if (!dataUrl) return;
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('ছবিটি ডাউনলোড করা হয়েছে');
   };
 
   const handleCopyShareText = (req: BloodRequest) => {
@@ -416,683 +750,1667 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
     setTimeout(() => setCopySuccess(false), 2000);
   };
 
-  // Start Chat on OSA
   const handleStartOsaChat = (targetUserId: string, targetName: string, subject: string) => {
-    const message = `আসসালামু আলাইকুম ${targetName}, OSA জরুরি ব্লাড নেটওয়ার্কে আপনার "${subject}" পোস্ট দেখে যোগাযোগ করছি।`;
-    if (onOpenDirectChat && targetUserId) {
+    const message = `আসসালামু আলাইকুম ${targetName}, OSA জরুরি ব্লাড নেটওয়ার্কে আপনার "${subject}" বিষয়টি দেখে যোগাযোগ করছি।`;
+    if (onOpenDirectChat && targetUserId && targetUserId !== effectiveUserId) {
       onClose();
       onOpenDirectChat(targetUserId, message);
+    } else if (targetUserId === effectiveUserId) {
+      showToast('এটি আপনার নিজের পোস্ট করা তথ্য');
     } else {
-      // Fallback: prompt to connect or dial
       window.location.href = `tel:${subject.match(/\+?[0-9]{10,14}/)?.[0] || ''}`;
     }
   };
 
+  const getGoogleMapsSearchUrl = (query: string) =>
+    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+
+  // Eligibility Score
+  const passedQuestionsCount = Object.values(eligibilityAnswers).filter(Boolean).length;
+  const isEligibleToday = passedQuestionsCount === ELIGIBILITY_QUESTIONS.length;
+
+  const matrixInfo = BLOOD_COMPATIBILITY[matrixGroup];
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
-      <div className="w-full max-w-3xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col max-h-[94vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-        {/* Header */}
-        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-gradient-to-r from-red-600/10 via-rose-500/5 to-transparent">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-500 text-white flex items-center justify-center shadow-lg shadow-red-500/25 shrink-0">
-              <Heart className="w-6 h-6 fill-white" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 backdrop-blur-sm sm:p-4">
+      <div className="w-full max-w-6xl h-full sm:h-[92vh] sm:rounded-3xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col overflow-hidden relative">
+        {/* Top Toast */}
+        {toastMessage && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold shadow-xl flex items-center gap-2 whitespace-nowrap">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 dark:text-emerald-600 shrink-0" />
+            <span>{toastMessage}</span>
+          </div>
+        )}
+
+        {/* Header Bar */}
+        <header className="px-4 sm:px-6 py-3.5 sm:py-4 bg-white dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-2xl bg-red-600 text-white flex items-center justify-center shadow-sm shadow-red-600/20 shrink-0">
+              <Droplet className="w-6 h-6 fill-white" />
             </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <div className="min-w-0">
+              <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white tracking-tight truncate">
                 OSA জরুরি রক্তদান ও রক্তদাতা নেটওয়ার্ক
-                <span className="px-2 py-0.5 text-[10px] font-bold bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400 rounded-full flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-ping" /> লাইভ SOS
-                </span>
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                রক্তের আবেদন পোস্ট করুন, ডোনার খুঁজুন, কল ও চ্যাট করুন সরাসরি
+              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                বাংলাদেশের ৬৪ জেলা · রক্তের আবেদন, যাচাইকৃত ডোনার, ম্যাচিং গাইড ও ব্লাড ব্যাংক
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
 
-        {/* Action Bar: Post Request or Register */}
-        <div className="px-4 py-3 bg-red-50/70 dark:bg-red-950/30 border-b border-red-100 dark:border-red-900/40 flex flex-wrap items-center justify-between gap-2.5">
-          {/* Tabs */}
-          <div className="flex items-center bg-white dark:bg-slate-800 p-1 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xs">
-            <button
-              type="button"
-              onClick={() => setActiveTab('requests')}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
-                activeTab === 'requests'
-                  ? 'bg-red-600 text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-red-600'
-              }`}
-            >
-              <Droplet className="w-3.5 h-3.5" />
-              জরুরি রক্তের আবেদন ({requests.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('donors')}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
-                activeTab === 'donors'
-                  ? 'bg-red-600 text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-red-600'
-              }`}
-            >
-              <UserCheck className="w-3.5 h-3.5" />
-              রক্তদাতা তালিকা ({donors.length})
-            </button>
-          </div>
-
-          {/* Action CTAs */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setShowPostRequestModal(true)}
-              className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-red-500/25 active:scale-95 transition"
-            >
-              <PlusCircle className="w-4 h-4" />
-              রক্তের আবেদন পোস্ট করুন
-            </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Desktop Quick Primary CTAs */}
             <button
               type="button"
               onClick={() => setShowRegisterDonorModal(true)}
-              className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 font-bold text-xs flex items-center gap-1 active:scale-95 transition"
+              className="hidden md:inline-flex items-center gap-1.5 min-h-[44px] px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs font-bold whitespace-nowrap shrink-0 transition"
             >
-              <Heart className="w-3.5 h-3.5 fill-red-500 text-red-500" />
+              <Heart className="w-4 h-4 text-red-600" />
               ডোনার নিবন্ধন
             </button>
+            <button
+              type="button"
+              onClick={() => setShowPostRequestModal(true)}
+              className="hidden sm:inline-flex items-center gap-1.5 min-h-[44px] px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm whitespace-nowrap shrink-0 transition active:scale-[0.98]"
+            >
+              <PlusCircle className="w-4 h-4" />
+              রক্তের আবেদন পোস্ট
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="বন্ধ করুন"
+              className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition shrink-0"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
-        </div>
+        </header>
 
-        {/* Filters strip */}
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 space-y-2.5">
-          {/* Blood Group Pills */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-            <span className="text-xs font-bold text-slate-500 shrink-0 mr-1">গ্রুপ:</span>
-            {BLOOD_GROUPS.map((grp) => {
-              const isSelected = selectedGroup === grp;
+        {/* Navigation Tabs Strip */}
+        <nav className="px-4 sm:px-6 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-3 overflow-x-auto no-scrollbar shrink-0">
+          <div className="flex items-center gap-1.5">
+            {(
+              [
+                {
+                  id: 'requests',
+                  label: 'জরুরি আবেদন',
+                  count: requests.length,
+                  icon: Droplet,
+                },
+                {
+                  id: 'donors',
+                  label: 'রক্তদাতা তালিকা',
+                  count: donors.length,
+                  icon: UserCheck,
+                },
+                {
+                  id: 'guide',
+                  label: 'ম্যাচিং ও যোগ্যতা',
+                  count: null,
+                  icon: Stethoscope,
+                },
+                {
+                  id: 'banks',
+                  label: 'ব্লাড ব্যাংক ও হটলাইন',
+                  count: null,
+                  icon: Building2,
+                },
+              ] as Array<{
+                id: ActiveTab;
+                label: string;
+                count: number | null;
+                icon: React.ComponentType<{ className?: string }>;
+              }>
+            ).map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
               return (
                 <button
-                  key={grp}
+                  key={tab.id}
                   type="button"
-                  onClick={() => setSelectedGroup(grp)}
-                  className={`px-3 py-1 rounded-xl text-xs font-black tracking-wide transition-all shrink-0 ${
-                    isSelected
-                      ? 'bg-red-600 text-white shadow-md shadow-red-600/30 scale-105'
-                      : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${
+                    isActive
+                      ? 'bg-red-600 text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                   }`}
                 >
-                  {grp}
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  <span>{tab.label}</span>
+                  {tab.count !== null && (
+                    <span
+                      className={`tabular-nums text-[11px] font-bold px-1.5 py-0.5 rounded-md ${
+                        isActive
+                          ? 'bg-red-700/80 text-white'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
           </div>
 
-          {/* Search + District + GPS */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <div className="relative sm:col-span-2">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder={
-                  activeTab === 'requests'
-                    ? 'হাসপাতাল, রোগীর নাম বা এলাকা...'
-                    : 'এলাকা বা ডোনারের নাম...'
-                }
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 focus:border-red-500 focus:outline-none"
-              />
-            </div>
-            <div className="flex gap-1.5">
-              <div className="relative flex-1">
-                <Filter className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <div className="hidden lg:flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 shrink-0 tabular-nums">
+            <span>সক্রিয় জরুরি: <strong className="text-red-600 dark:text-red-400">{activeUrgentCount}</strong></span>
+            <span>·</span>
+            <span>সক্ষম ডোনার: <strong className="text-emerald-600 dark:text-emerald-400">{availableDonorsCount}</strong></span>
+            <span>·</span>
+            <span>ম্যানেজ হয়েছে: <strong className="text-slate-800 dark:text-slate-200">{managedCount}</strong></span>
+          </div>
+        </nav>
+
+        {/* Main Workspace Body */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-6xl mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-5 pb-24 sm:pb-8">
+            {/* LEFT / MAIN WORKSPACE (8 Cols) */}
+            <div className="lg:col-span-8 space-y-4">
+              {/* Mobile Quick "My Blood Group" & Stats Strip */}
+              <div className="lg:hidden bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-3.5 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                    আমার রক্তের গ্রুপ (স্মার্ট ম্যাচিং)
+                  </p>
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate mt-0.5">
+                    {myBloodGroup
+                      ? `${myBloodGroup} — আপনার গ্রুপে ${compatibleUrgentMatchesCount}টি জরুরি আবেদন ম্যাচ করে`
+                      : 'আপনার গ্রুপ সেট করে ম্যাচিং দেখুন'}
+                  </p>
+                </div>
                 <select
-                  value={selectedDistrict}
-                  onChange={(e) => setSelectedDistrict(e.target.value)}
-                  className="w-full pl-8 pr-2 py-2 text-xs rounded-xl bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 focus:border-red-500 focus:outline-none"
+                  aria-label="আমার রক্তের গ্রুপ"
+                  value={myBloodGroup}
+                  onChange={(e) => setMyBloodGroup(e.target.value as BloodGroupType | '')}
+                  className="min-h-[40px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-red-600 dark:text-red-400 focus:outline-none focus:border-red-500 shrink-0"
                 >
-                  {DISTRICTS.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
+                  <option value="">বাছাই করুন</option>
+                  {BLOOD_GROUP_LIST.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
                     </option>
                   ))}
                 </select>
               </div>
-              <button
-                type="button"
-                onClick={handleDetectGpsDistrict}
-                className="px-2.5 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1 shrink-0"
-                title="জিপিএস দিয়ে জেলা নির্বাচন"
-              >
-                <Compass className={`w-3.5 h-3.5 text-red-500 ${isGpsLocating ? 'animate-spin' : ''}`} />
-                <span className="hidden sm:inline">GPS</span>
-              </button>
-            </div>
-          </div>
-        </div>
 
-        {/* Main List Body */}
-        <div className="p-4 sm:p-5 flex-1 min-h-0 overflow-y-auto space-y-4">
-          {/* TAB 1: EMERGENCY BLOOD REQUESTS */}
-          {activeTab === 'requests' && (
-            <div className="space-y-3.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-600 dark:text-slate-400">
-                  মোট রক্তের আবেদন: {filteredRequests.length} টি
-                </span>
-                <span className="text-[11px] text-red-600 dark:text-red-400 font-semibold flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                  সরাসরি কল বা চ্যাট করে সহায়তা করুন
-                </span>
-              </div>
+              {/* Filter Panel (Shown on Requests & Donors tabs) */}
+              {(activeTab === 'requests' || activeTab === 'donors') && (
+                <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-4 space-y-3">
+                  {/* Blood Group Bar */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                    <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 shrink-0 mr-1">
+                      গ্রুপ:
+                    </span>
+                    {BLOOD_GROUPS_FILTER.map((grp) => {
+                      const isSelected = selectedGroup === grp;
+                      return (
+                        <button
+                          key={grp}
+                          type="button"
+                          onClick={() => setSelectedGroup(grp)}
+                          className={`min-h-[36px] px-3 rounded-xl text-xs font-bold tabular-nums whitespace-nowrap shrink-0 transition ${
+                            isSelected
+                              ? 'bg-red-600 text-white shadow-sm'
+                              : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                          }`}
+                        >
+                          {grp === 'ALL' ? 'সব গ্রুপ' : grp}
+                        </button>
+                      );
+                    })}
+                  </div>
 
-              {filteredRequests.length === 0 ? (
-                <div className="text-center py-12 bg-slate-50 dark:bg-slate-800/40 rounded-3xl border border-dashed border-slate-200 dark:border-slate-700 space-y-2">
-                  <Droplet className="w-10 h-10 text-red-400 mx-auto" />
-                  <p className="text-sm font-bold text-slate-700 dark:text-slate-200">
-                    এই ফিল্টারে কোনো রক্তের আবেদন নেই
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    অন্য গ্রুপ বেছে নিন অথবা নিজেই একটি আবেদন পোস্ট করুন
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setShowPostRequestModal(true)}
-                    className="mt-2 px-4 py-2 rounded-xl bg-red-600 text-white font-bold text-xs"
-                  >
-                    নতুন আবেদন পোস্ট করুন
-                  </button>
-                </div>
-              ) : (
-                filteredRequests.map((req) => {
-                  const isManaged = req.status === 'managed';
-                  const isMyPost = req.posterId === effectiveUserId;
-                  const showComments = expandedComments[req.id];
+                  {/* Division, 64 Districts, GPS, Search */}
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                    <div className="relative sm:col-span-5">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder={
+                          activeTab === 'requests'
+                            ? 'হাসপাতাল, রোগীর নাম বা এলাকা...'
+                            : 'ডোনারের নাম বা এলাকা...'
+                        }
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full min-h-[42px] pl-9 pr-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 focus:border-red-500 focus:outline-none"
+                      />
+                    </div>
 
-                  return (
-                    <div
-                      key={req.id}
-                      className={`p-4 sm:p-5 rounded-3xl border transition-all shadow-sm ${
-                        isManaged
-                          ? 'bg-slate-50/80 dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 opacity-80'
-                          : 'bg-white dark:bg-slate-800/90 border-red-200/80 dark:border-red-950 hover:shadow-md'
-                      }`}
+                    <select
+                      aria-label="বিভাগ নির্বাচন করুন"
+                      value={selectedDivision}
+                      onChange={(e) =>
+                        setSelectedDivision(e.target.value as DivisionId | 'all')
+                      }
+                      className="sm:col-span-3 min-h-[42px] px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-700 focus:border-red-500 focus:outline-none"
                     >
-                      {/* Top Poster & Status Strip */}
-                      <div className="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-700/60 pb-3">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <OSAAvatar
-                            name={req.posterName}
-                            avatarUrl={req.posterAvatar}
-                            size="sm"
-                          />
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
-                                {req.posterName}
-                              </h4>
-                              {isMyPost && (
-                                <span className="px-1.5 py-0.5 text-[9px] font-bold bg-blue-100 dark:bg-blue-950 text-blue-600 rounded">
-                                  আমার পোস্ট
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[10px] text-slate-400 flex items-center gap-1">
-                              <Clock className="w-3 h-3 text-slate-400" />
-                              {new Date(req.createdAt).toLocaleDateString([], {
-                                month: 'short',
-                                day: 'numeric',
-                              })}{' '}
-                              • {new Date(req.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </p>
-                          </div>
-                        </div>
+                      <option value="all">সকল বিভাগ (৮)</option>
+                      {BD_DIVISIONS.map((div) => (
+                        <option key={div.id} value={div.id}>
+                          {div.nameBn}
+                        </option>
+                      ))}
+                    </select>
 
-                        {/* Status Badge */}
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {isManaged ? (
-                            <span className="px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 text-[11px] font-bold flex items-center gap-1">
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              রক্ত ম্যানেজ হয়েছে
-                            </span>
-                          ) : (
-                            <span className="px-2.5 py-1 rounded-full bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400 text-[11px] font-extrabold flex items-center gap-1">
-                              <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
-                              জরুরি প্রয়োজন
-                            </span>
-                          )}
-
-                          {isMyPost && (
-                            <button
-                              type="button"
-                              onClick={() => handleToggleRequestStatus(req.id)}
-                              className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200"
-                              title="স্ট্যাটাস পরিবর্তন করুন"
-                            >
-                              {isManaged ? 'পুনরায় সক্রিয় করুন' : 'ম্যানেজ হয়েছে চিহ্নিত করুন'}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Request Details Card */}
-                      <div className="pt-3.5 space-y-2.5">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
-                              রোগীর নাম:
-                            </span>
-                            <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-                              {req.patientName}
-                            </h3>
-                          </div>
-
-                          {/* Large Blood Group Badge */}
-                          <div className="px-3.5 py-1.5 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-600 text-white shadow-md shadow-red-600/30 text-center shrink-0">
-                            <span className="text-lg font-black leading-none block">{req.bloodGroup}</span>
-                            <span className="text-[10px] font-bold text-red-100 block">
-                              {req.bagsNeeded} ব্যাগ
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Hospital & Area */}
-                        <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/80 space-y-1 text-xs">
-                          <p className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                            <Building2 className="w-3.5 h-3.5 text-red-500 shrink-0" />
-                            {req.hospital}
-                          </p>
-                          <p className="text-slate-600 dark:text-slate-400 flex items-center gap-1.5 text-[11px]">
-                            <MapPin className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                            {req.area}, {req.district}
-                          </p>
-                          <p className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1.5 text-[11px]">
-                            <Clock className="w-3.5 h-3.5 shrink-0" />
-                            প্রয়োজনীয় সময়: {req.neededTime}
-                          </p>
-                        </div>
-
-                        {/* Notes */}
-                        {req.notes && (
-                          <p className="text-xs text-slate-700 dark:text-slate-300 italic leading-relaxed bg-red-50/40 dark:bg-red-950/20 p-2.5 rounded-xl border border-red-100 dark:border-red-950/40">
-                            "{req.notes}"
-                          </p>
-                        )}
-                      </div>
-
-                      {/* 4 Real Action Buttons: Call, OSA Chat, SMS, Share Everywhere */}
-                      <div className="mt-3.5 pt-3 border-t border-slate-100 dark:border-slate-700/60 grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {/* 1. Direct Phone Call */}
-                        <a
-                          href={`tel:${req.contactPhone}`}
-                          className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition"
-                          title="সরাসরি ফোন করুন"
-                        >
-                          <Phone className="w-4 h-4" />
-                          <span>কল করুন</span>
-                        </a>
-
-                        {/* 2. Direct OSA Chat */}
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleStartOsaChat(
-                              req.posterId,
-                              req.posterName,
-                              `${req.patientName} (${req.bloodGroup})`
-                            )
-                          }
-                          className="py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition"
-                          title="OSA-তে ১-অন-১ চ্যাট শুরু করুন"
-                        >
-                          <MessageCircle className="w-4 h-4" />
-                          <span>OSA চ্যাট</span>
-                        </button>
-
-                        {/* 3. SMS */}
-                        <a
-                          href={`sms:${req.contactPhone}?body=আসসালামু আলাইকুম, OSA ব্লাড নেটওয়ার্কে আপনার ${req.bloodGroup} রক্তের পোস্ট দেখেছি।`}
-                          className="py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition"
-                          title="এসএমএস পাঠান"
-                        >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>এসএমএস</span>
-                        </a>
-
-                        {/* 4. Share Everywhere */}
-                        <button
-                          type="button"
-                          onClick={() => handleShareEverywhere(req)}
-                          className="py-2.5 px-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-100 font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition"
-                          title="সব জায়গায় জরুরি শেয়ার করুন"
-                        >
-                          <Share2 className="w-3.5 h-3.5" />
-                          <span>শেয়ার করুন</span>
-                        </button>
-                      </div>
-
-                      {/* Interactive Comments & Assistance Accordion */}
-                      <div className="mt-3 pt-2.5 border-t border-dashed border-slate-200 dark:border-slate-700/80">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpandedComments((prev) => ({
-                              ...prev,
-                              [req.id]: !prev[req.id],
-                            }))
-                          }
-                          className="w-full flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white py-1"
-                        >
-                          <span className="flex items-center gap-1.5">
-                            <MessageSquare className="w-3.5 h-3.5 text-blue-500" />
-                            মন্তব্য ও সহায়তার আশ্বাস ({req.comments.length})
-                          </span>
-                          {showComments ? (
-                            <ChevronUp className="w-4 h-4" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4" />
-                          )}
-                        </button>
-
-                        {/* Collapsible Comment List & Input */}
-                        {showComments && (
-                          <div className="mt-2.5 space-y-2.5 animate-in fade-in">
-                            {/* Comments list */}
-                            {req.comments.length > 0 ? (
-                              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                                {req.comments.map((comm) => (
-                                  <div
-                                    key={comm.id}
-                                    className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-800 text-xs space-y-1"
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <div className="flex items-center gap-1.5">
-                                        <OSAAvatar
-                                          name={comm.userName}
-                                          avatarUrl={comm.userAvatar}
-                                          size="xs"
-                                        />
-                                        <span className="font-bold text-slate-900 dark:text-white text-[11px]">
-                                          {comm.userName}
-                                        </span>
-                                      </div>
-                                      <span className="text-[10px] text-slate-400">
-                                        {new Date(comm.createdAt).toLocaleTimeString([], {
-                                          hour: '2-digit',
-                                          minute: '2-digit',
-                                        })}
-                                      </span>
-                                    </div>
-                                    <p className="text-slate-700 dark:text-slate-300 text-xs pl-6">
-                                      {comm.text}
-                                    </p>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-[11px] text-slate-400 italic py-1">
-                                এখনো কোনো মন্তব্য করা হয়নি। প্রথম সহায়তা বার্তা দিন।
-                              </p>
-                            )}
-
-                            {/* Quick response chips */}
-                            <div className="flex flex-wrap gap-1">
-                              {[
-                                'আমি রক্ত দিতে পারব 🩸',
-                                'হাসপাতাল কোন ওয়ার্ডে?',
-                                'ম্যানেজ হয়েছে কি ভাই?',
-                                'গ্রুপে শেয়ার দিয়েছি',
-                              ].map((chip) => (
-                                <button
-                                  key={chip}
-                                  type="button"
-                                  onClick={() =>
-                                    setCommentInputs((prev) => ({
-                                      ...prev,
-                                      [req.id]: chip,
-                                    }))
-                                  }
-                                  className="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-400 text-[10px] font-medium"
-                                >
-                                  {chip}
-                                </button>
-                              ))}
-                            </div>
-
-                            {/* Comment Input Box */}
-                            <div className="flex gap-1.5 pt-1">
-                              <OSAAvatar
-                                name={effectiveUserName}
-                                avatarUrl={effectiveAvatar}
-                                size="xs"
-                              />
-                              <input
-                                type="text"
-                                placeholder="একটি মন্তব্য বা সহায়তার আশ্বাস লিখুন..."
-                                value={commentInputs[req.id] || ''}
-                                onChange={(e) =>
-                                  setCommentInputs((prev) => ({
-                                    ...prev,
-                                    [req.id]: e.target.value,
-                                  }))
-                                }
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    handleAddComment(req.id);
-                                  }
-                                }}
-                                className="flex-1 px-3 py-1.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white border border-transparent focus:border-blue-500 focus:outline-none"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => handleAddComment(req.id)}
-                                className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shrink-0 flex items-center gap-1"
-                              >
-                                <Send className="w-3 h-3" />
-                                <span>পাঠান</span>
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-
-          {/* TAB 2: REGISTERED DONORS DIRECTORY */}
-          {activeTab === 'donors' && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold text-slate-500">
-                  পাওয়া গেছে: {filteredDonors.length} জন নিবন্ধিত রক্তদাতা
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setShowRegisterDonorModal(true)}
-                  className="text-xs font-bold text-red-600 hover:underline flex items-center gap-1"
-                >
-                  <PlusCircle className="w-3.5 h-3.5" />
-                  নিজে রক্তদাতা হিসেবে যুক্ত হন
-                </button>
-              </div>
-
-              {filteredDonors.length === 0 ? (
-                <div className="text-center py-10 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-slate-200 dark:border-slate-700">
-                  <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                    এই গ্রুপ বা এলাকায় কোনো ডোনার পাওয়া যায়নি
-                  </p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    অন্য গ্রুপ বা পাশের জেলা নির্বাচন করে দেখুন
-                  </p>
-                </div>
-              ) : (
-                filteredDonors.map((donor) => (
-                  <div
-                    key={donor.id}
-                    className="p-3.5 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-red-300 dark:hover:border-red-800 transition shadow-2xs"
-                  >
-                    <div className="flex items-center gap-3">
-                      {/* Avatar with Blood Group badge overlay */}
-                      <div className="relative shrink-0">
-                        <OSAAvatar
-                          name={donor.name}
-                          avatarUrl={donor.avatarUrl}
-                          size="md"
-                        />
-                        <span className="absolute -bottom-1 -right-1 px-1.5 py-0.2 bg-red-600 text-white font-black text-[10px] rounded-md shadow">
-                          {donor.bloodGroup}
-                        </span>
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h4 className="text-sm font-bold text-slate-900 dark:text-white">
-                            {donor.name}
-                          </h4>
-                          {donor.isAvailable ? (
-                            <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950/80 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                              প্রস্তুত
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-500 rounded-full">
-                              বিশ্রামে
-                            </span>
-                          )}
-                        </div>
-
-                        <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1 mt-0.5">
-                          <MapPin className="w-3.5 h-3.5 text-red-500 shrink-0" />
-                          {donor.area}, {donor.district} • {donor.totalDonations} বার রক্ত দিয়েছেন
-                        </p>
-                        <p className="text-[11px] text-slate-400 mt-0.5">
-                          সর্বশেষ দান: {donor.lastDonated}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Action buttons on donor card: Call, OSA Chat, SMS */}
-                    <div className="flex items-center gap-2 self-end sm:self-center">
-                      <a
-                        href={`tel:${donor.phone}`}
-                        className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition active:scale-95"
-                        title="সরাসরি ফোন করুন"
+                    <div className="sm:col-span-4 flex items-center gap-1.5">
+                      <select
+                        aria-label="জেলা নির্বাচন করুন"
+                        value={selectedDistrict}
+                        onChange={(e) => setSelectedDistrict(e.target.value)}
+                        className="flex-1 min-h-[42px] px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-700 focus:border-red-500 focus:outline-none"
                       >
-                        <Phone className="w-3.5 h-3.5" />
-                        <span>কল</span>
-                      </a>
+                        <option value="সব জেলা">
+                          সব জেলা ({availableDistrictOptions.length})
+                        </option>
+                        {availableDistrictOptions.map((dist) => (
+                          <option key={dist.districtBn} value={dist.districtBn}>
+                            {dist.districtBn}
+                          </option>
+                        ))}
+                      </select>
 
                       <button
                         type="button"
-                        onClick={() =>
-                          handleStartOsaChat(
-                            donor.userId || '',
-                            donor.name,
-                            `রক্তদাতা হিসেবে (${donor.bloodGroup})`
-                          )
-                        }
-                        className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition active:scale-95"
-                        title="OSA তে চ্যাট করুন"
+                        onClick={handleDetectGpsDistrict}
+                        disabled={isGpsLocating}
+                        title="জিপিএস দিয়ে কাছের জেলা শনাক্ত করুন"
+                        className="min-h-[42px] px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition"
                       >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        <span>চ্যাট</span>
+                        <Compass
+                          className={`w-4 h-4 text-red-600 ${
+                            isGpsLocating ? 'animate-spin' : ''
+                          }`}
+                        />
+                        <span className="hidden sm:inline">জিপিএস</span>
                       </button>
-
-                      <a
-                        href={`sms:${donor.phone}?body=জরুরি রক্তের প্রয়োজন: আপনার রক্তের গ্রুপ ${donor.bloodGroup}। সহায়তা করতে পারবেন কি?`}
-                        className="p-2 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 text-slate-700 dark:text-slate-300 transition"
-                        title="এসএমএস পাঠান"
-                      >
-                        <Send className="w-3.5 h-3.5" />
-                      </a>
                     </div>
                   </div>
-                ))
+
+                  {/* Secondary Filters for Requests */}
+                  {activeTab === 'requests' && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-1.5">
+                        {(
+                          [
+                            { id: 'all', label: 'সব আবেদন' },
+                            { id: 'urgent', label: 'জরুরি চলমান' },
+                            { id: 'managed', label: 'ম্যানেজ হয়েছে' },
+                          ] as const
+                        ).map((st) => (
+                          <button
+                            key={st.id}
+                            type="button"
+                            onClick={() => setStatusFilter(st.id)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap shrink-0 transition ${
+                              statusFilter === st.id
+                                ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900'
+                                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                            }`}
+                          >
+                            {st.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {myBloodGroup && (
+                        <button
+                          type="button"
+                          onClick={() => setOnlyMyCompatible((v) => !v)}
+                          className={`px-3 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${
+                            onlyMyCompatible
+                              ? 'bg-red-600 text-white'
+                              : 'bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900'
+                          }`}
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          আমার {myBloodGroup} গ্রুপে দিতে পারব ({compatibleUrgentMatchesCount})
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {gpsStatusNote && (
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                      <MapPin className="w-3.5 h-3.5 shrink-0" />
+                      <span>{gpsStatusNote}</span>
+                    </p>
+                  )}
+                </section>
+              )}
+
+              {/* ======================= TAB 1: EMERGENCY REQUESTS ======================= */}
+              {activeTab === 'requests' && (
+                <div className="space-y-4">
+                  {filteredRequests.length === 0 ? (
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-8 sm:p-10 text-center">
+                      <div className="w-14 h-14 rounded-2xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto mb-3.5">
+                        <Droplet className="w-7 h-7" />
+                      </div>
+                      <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                        {requests.length === 0
+                          ? 'এখনো কোনো রক্তের আবেদন নেই'
+                          : 'নির্বাচিত ফিল্টারে কোনো আবেদন মেলেনি'}
+                      </h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 max-w-md mx-auto leading-relaxed">
+                        জরুরি প্রয়োজনে রক্তের আবেদন পোস্ট করলে জেলার স্বেচ্ছাসেবী রক্তদাতারা সরাসরি কল, এসএমএস ও OSA চ্যাটে যোগাযোগ করতে পারবেন।
+                      </p>
+                      <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setShowPostRequestModal(true)}
+                          className="min-h-[44px] px-5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                        >
+                          <PlusCircle className="w-4 h-4" />
+                          জরুরি রক্তের আবেদন করুন
+                        </button>
+                        {requests.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedGroup('ALL');
+                              setSelectedDivision('all');
+                              setSelectedDistrict('সব জেলা');
+                              setStatusFilter('all');
+                              setOnlyMyCompatible(false);
+                              setSearchQuery('');
+                            }}
+                            className="min-h-[44px] px-4 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 transition"
+                          >
+                            ফিল্টার রিসেট করুন
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    filteredRequests.map((req) => {
+                      const isExpanded = !!expandedComments[req.id];
+                      const isManaged = req.status === 'managed';
+                      const isOwner = req.posterId === effectiveUserId;
+                      const isCompatibleWithMe =
+                        !!myBloodGroup &&
+                        myCompatibleTargets.includes(req.bloodGroup as BloodGroupType);
+
+                      const urgencyText = isManaged
+                        ? 'ম্যানেজ হয়েছে'
+                        : req.urgencyLevel === 'critical'
+                          ? 'অতি জরুরি (এখনই)'
+                          : req.urgencyLevel === 'today'
+                            ? 'আজকের মধ্যে প্রয়োজন'
+                            : 'নির্ধারিত সময়';
+
+                      return (
+                        <article
+                          key={req.id}
+                          className={`bg-white dark:bg-slate-900 rounded-2xl border transition overflow-hidden ${
+                            isManaged
+                              ? 'border-slate-200 dark:border-slate-800 opacity-85'
+                              : 'border-slate-200/90 dark:border-slate-800 shadow-xs'
+                          }`}
+                        >
+                          <div className="p-4 sm:p-5 space-y-4">
+                            {/* Top Poster Meta + Status */}
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <OSAAvatar
+                                  avatarUrl={req.posterAvatar}
+                                  name={req.posterName}
+                                  size="md"
+                                />
+                                <div className="min-w-0">
+                                  <h4 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                                    {req.posterName}
+                                  </h4>
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5 flex-wrap">
+                                    <span>{formatRelativeTimeBn(req.createdAt)}</span>
+                                    <span>·</span>
+                                    <span>{req.district}</span>
+                                    {isCompatibleWithMe && !isManaged && (
+                                      <>
+                                        <span>·</span>
+                                        <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
+                                          আপনার {myBloodGroup} রক্ত ম্যাচ করে
+                                        </span>
+                                      </>
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <span
+                                  className={`inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${
+                                    isManaged
+                                      ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                                      : 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300'
+                                  }`}
+                                >
+                                  {isManaged ? (
+                                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                  ) : (
+                                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                  )}
+                                  {urgencyText}
+                                </span>
+
+                                {isOwner && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteRequest(req.id)}
+                                    title="আবেদন মুছুন"
+                                    className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Core Clinical Snapshot */}
+                            <div className="flex items-start gap-3.5 pt-1">
+                              {/* Blood Group Emblem */}
+                              <div
+                                className={`w-16 h-16 sm:w-[70px] sm:h-[70px] rounded-2xl flex flex-col items-center justify-center shrink-0 tabular-nums border ${
+                                  isManaged
+                                    ? 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'
+                                    : 'bg-red-600 border-red-700 text-white shadow-sm'
+                                }`}
+                              >
+                                <span className="text-xl sm:text-2xl font-black leading-none tracking-tight">
+                                  {req.bloodGroup}
+                                </span>
+                                <span
+                                  className={`text-[10px] font-bold mt-1 ${
+                                    isManaged ? 'text-slate-500' : 'text-red-100'
+                                  }`}
+                                >
+                                  {req.bagsNeeded} ব্যাগ
+                                </span>
+                              </div>
+
+                              {/* Patient & Location Specs */}
+                              <div className="flex-1 min-w-0 space-y-1.5">
+                                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                                  <h3 className="text-base font-bold text-slate-900 dark:text-white leading-snug">
+                                    রোগী: {req.patientName}
+                                  </h3>
+                                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                                    {req.bloodComponent || 'Whole Blood'}
+                                  </span>
+                                </div>
+
+                                <div className="text-xs text-slate-700 dark:text-slate-300 flex items-start gap-1.5">
+                                  <Building2 className="w-3.5 h-3.5 text-red-600 shrink-0 mt-0.5" />
+                                  <span>
+                                    <strong className="font-semibold">{req.hospital}</strong>
+                                    {req.wardInfo ? ` · ${req.wardInfo}` : ''} — {req.area},{' '}
+                                    {req.district}
+                                  </span>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                                  <span className="inline-flex items-center gap-1">
+                                    <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                    প্রয়োজন: <strong className="text-slate-800 dark:text-slate-200">{req.neededTime}</strong>
+                                  </span>
+                                  <a
+                                    href={getGoogleMapsSearchUrl(
+                                      `${req.hospital}, ${req.area}, ${req.district}, Bangladesh`
+                                    )}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-red-600 dark:text-red-400 hover:underline font-semibold"
+                                  >
+                                    <MapPin className="w-3.5 h-3.5 shrink-0" />
+                                    ম্যাপে হাসপাতাল দেখুন
+                                  </a>
+                                </div>
+
+                                {req.notes && (
+                                  <p className="text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl mt-2 leading-relaxed">
+                                    {req.notes}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Action Buttons Grid (Clean 44px touch targets) */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                              <a
+                                href={`tel:${req.contactPhone}`}
+                                className="min-h-[44px] px-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                              >
+                                <Phone className="w-3.5 h-3.5 shrink-0" />
+                                সরাসরি কল
+                              </a>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleStartOsaChat(
+                                    req.posterId,
+                                    req.posterName,
+                                    `${req.bloodGroup} রক্ত (${req.patientName})`
+                                  )
+                                }
+                                className="min-h-[44px] px-3 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                                OSA চ্যাট
+                              </button>
+
+                              <a
+                                href={`sms:${req.contactPhone}?body=${encodeURIComponent(
+                                  `আসসালামু আলাইকুম, আপনার ${req.bloodGroup} রক্তের আবেদন দেখে যোগাযোগ করছি (${req.hospital})।`
+                                )}`}
+                                className="min-h-[44px] px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                                এসএমএস
+                              </a>
+
+                              <button
+                                type="button"
+                                onClick={() => void handleShareEverywhere(req)}
+                                className="min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                              >
+                                <Share2 className="w-3.5 h-3.5 shrink-0" />
+                                শেয়ার ও পোস্টার
+                              </button>
+                            </div>
+
+                            {/* Comments Toggle & Own Status Control */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedComments((prev) => ({
+                                    ...prev,
+                                    [req.id]: !prev[req.id],
+                                  }))
+                                }
+                                className="min-h-[36px] px-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold inline-flex items-center gap-1.5"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5 text-red-600" />
+                                <span className="tabular-nums">
+                                  মন্তব্য ({req.comments.length})
+                                </span>
+                                {isExpanded ? (
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                ) : (
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+
+                              {isOwner && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleRequestStatus(req.id)}
+                                  className="min-h-[36px] px-3 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 hover:text-emerald-700 dark:hover:text-emerald-300 inline-flex items-center gap-1.5 transition"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  {isManaged
+                                    ? 'পুনরায় জরুরি চালু করুন'
+                                    : 'ম্যানেজ হয়েছে চিহ্নিত করুন'}
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Expandable Comments Section */}
+                            {isExpanded && (
+                              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+                                {req.comments.length === 0 ? (
+                                  <p className="text-xs text-slate-400">
+                                    প্রথম মন্তব্য করে রোগীর পরিবারকে আশ্বস্ত করুন।
+                                  </p>
+                                ) : (
+                                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                    {req.comments.map((comm) => (
+                                      <div
+                                        key={comm.id}
+                                        className="flex items-start gap-2.5 text-xs bg-slate-50 dark:bg-slate-800/70 p-2.5 rounded-xl"
+                                      >
+                                        <OSAAvatar
+                                          avatarUrl={comm.userAvatar}
+                                          name={comm.userName}
+                                          size="xs"
+                                        />
+                                        <div className="flex-1 min-w-0">
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span className="font-bold text-slate-900 dark:text-white truncate">
+                                              {comm.userName}
+                                            </span>
+                                            <span className="text-[10px] text-slate-400 shrink-0">
+                                              {formatRelativeTimeBn(comm.createdAt)}
+                                            </span>
+                                          </div>
+                                          <p className="text-slate-700 dark:text-slate-300 mt-0.5">
+                                            {comm.text}
+                                          </p>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Quick Assurance Chips */}
+                                <div className="flex flex-wrap gap-1.5">
+                                  {[
+                                    'আমি রক্ত দিতে আগ্রহী, কল করছি',
+                                    'গ্রুপে শেয়ার করছি',
+                                    'হাসপাতালে আসছি ইনশাআল্লাহ',
+                                  ].map((quickText) => (
+                                    <button
+                                      key={quickText}
+                                      type="button"
+                                      onClick={() => handleAddComment(req.id, quickText)}
+                                      className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-red-50 dark:hover:bg-red-950/50 text-[11px] font-medium text-slate-700 dark:text-slate-300 hover:text-red-700 dark:hover:text-red-300 transition"
+                                    >
+                                      {quickText}
+                                    </button>
+                                  ))}
+                                </div>
+
+                                {/* Comment Input */}
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    placeholder="মন্তব্য লিখুন..."
+                                    value={commentInputs[req.id] || ''}
+                                    onChange={(e) =>
+                                      setCommentInputs((prev) => ({
+                                        ...prev,
+                                        [req.id]: e.target.value,
+                                      }))
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        handleAddComment(req.id);
+                                      }
+                                    }}
+                                    className="flex-1 min-h-[40px] px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:outline-none focus:border-red-500 text-slate-900 dark:text-white"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAddComment(req.id)}
+                                    className="min-h-[40px] px-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 shrink-0 transition"
+                                  >
+                                    <Send className="w-3.5 h-3.5" />
+                                    পাঠান
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+
+              {/* ======================= TAB 2: DONORS DIRECTORY ======================= */}
+              {activeTab === 'donors' && (
+                <div className="space-y-4">
+                  {filteredDonors.length === 0 ? (
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-8 sm:p-10 text-center">
+                      <div className="w-14 h-14 rounded-2xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto mb-3.5">
+                        <Heart className="w-7 h-7" />
+                      </div>
+                      <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                        {donors.length === 0
+                          ? 'এখনো কোনো স্বেচ্ছাসেবী ডোনার যুক্ত হননি'
+                          : 'এই ফিল্টারে কোনো রক্তদাতা পাওয়া যায়নি'}
+                      </h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 max-w-md mx-auto leading-relaxed">
+                        স্বেচ্ছাসেবী রক্তদাতা হিসেবে নাম যুক্ত করুন — ডিজিটাল ডোনার আইডি কার্ড পাবেন এবং বিপদের সময় মানুষ সহজেই আপনার সাথে যোগাযোগ করতে পারবে।
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowRegisterDonorModal(true)}
+                        className="mt-5 min-h-[44px] px-5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                      >
+                        <Heart className="w-4 h-4 fill-white" />
+                        স্বেচ্ছাসেবী ডোনার হিসেবে যুক্ত হন
+                      </button>
+                    </div>
+                  ) : (
+                    filteredDonors.map((donor) => {
+                      const readiness = calculateDonorReadiness(donor.lastDonatedDate);
+                      const isReadyNow = donor.isAvailable && readiness.isReady;
+                      const isOwnDonor =
+                        donor.userId === effectiveUserId ||
+                        (currentUser?.phone && donor.phone === currentUser.phone);
+
+                      return (
+                        <article
+                          key={donor.id}
+                          className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div className="flex items-start gap-3.5 min-w-0">
+                              <OSAAvatar
+                                avatarUrl={donor.avatarUrl}
+                                name={donor.name}
+                                size="lg"
+                              />
+                              <div className="min-w-0 space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <h4 className="text-base font-bold text-slate-900 dark:text-white truncate">
+                                    {donor.name}
+                                  </h4>
+                                  <span className="text-xs font-black px-2 py-0.5 rounded-lg bg-red-600 text-white tabular-nums">
+                                    {donor.bloodGroup}
+                                  </span>
+                                </div>
+
+                                <p className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                                  <MapPin className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                                  <span>
+                                    {donor.area}, {donor.district}
+                                  </span>
+                                </p>
+
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-1 tabular-nums">
+                                  <span
+                                    className={`font-bold ${
+                                      isReadyNow
+                                        ? 'text-emerald-600 dark:text-emerald-400'
+                                        : 'text-amber-600 dark:text-amber-400'
+                                    }`}
+                                  >
+                                    {donor.isAvailable
+                                      ? readiness.labelBn
+                                      : 'সাময়িক বিরতিতে আছেন'}
+                                  </span>
+                                  <span>·</span>
+                                  <span>মোট রক্তদান: {donor.totalDonations} বার</span>
+                                  <span>·</span>
+                                  <span>শেষ দান: {donor.lastDonated}</span>
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                              <a
+                                href={`tel:${donor.phone}`}
+                                className="min-h-[44px] px-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                              >
+                                <Phone className="w-3.5 h-3.5" />
+                                কল করুন
+                              </a>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleStartOsaChat(
+                                    donor.userId || donor.id,
+                                    donor.name,
+                                    `${donor.bloodGroup} রক্তদান সহায়তা`
+                                  )
+                                }
+                                className="min-h-[44px] px-3.5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                                OSA চ্যাট
+                              </button>
+                              <a
+                                href={`sms:${donor.phone}?body=${encodeURIComponent(
+                                  `আসসালামু আলাইকুম ${donor.name}, আমাদের জরুরি ${donor.bloodGroup} রক্তের প্রয়োজন (${donor.district})। অনুগ্রহ করে সাহায্য করতে পারবেন?`
+                                )}`}
+                                className="min-h-[44px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                এসএমএস
+                              </a>
+                            </div>
+                          </div>
+
+                          {/* Donor Management Strip for Own Profile */}
+                          {isOwnDonor && (
+                            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleRecordDonationToday(donor.id)}
+                                  className="min-h-[38px] px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                                >
+                                  <Award className="w-3.5 h-3.5" />
+                                  আজ রক্ত দিয়েছি (+১)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleDonorAvailability(donor.id)}
+                                  className="min-h-[38px] px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-semibold whitespace-nowrap shrink-0 transition"
+                                >
+                                  {donor.isAvailable ? 'বিরতিতে যান' : 'সক্রিয় করুন'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setDonorIdCardTarget(donor)}
+                                  className="min-h-[38px] px-3 rounded-xl border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                                >
+                                  <IdCard className="w-3.5 h-3.5" />
+                                  ডোনার আইডি কার্ড
+                                </button>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteDonor(donor.id)}
+                                className="min-h-[38px] px-2.5 rounded-xl text-xs font-semibold text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 inline-flex items-center gap-1 transition"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                সরান
+                              </button>
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+
+              {/* ======================= TAB 3: COMPATIBILITY & ELIGIBILITY ======================= */}
+              {activeTab === 'guide' && (
+                <div className="space-y-5">
+                  {/* Interactive Blood Compatibility Matrix */}
+                  <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 space-y-4">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        <Activity className="w-4 h-4 text-red-600" />
+                        রক্তের গ্রুপ ম্যাচিং ম্যাট্রিক্স
+                      </h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                        যেকোনো গ্রুপ নির্বাচন করে দেখুন কাদের রক্ত দিতে পারবেন এবং কাদের থেকে নিতে পারবেন
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+                      {BLOOD_GROUP_LIST.map((grp) => {
+                        const isSelected = matrixGroup === grp;
+                        return (
+                          <button
+                            key={grp}
+                            type="button"
+                            onClick={() => setMatrixGroup(grp)}
+                            className={`min-h-[46px] rounded-xl text-sm font-black tabular-nums transition ${
+                              isSelected
+                                ? 'bg-red-600 text-white shadow-sm'
+                                : 'bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:border-red-300'
+                            }`}
+                          >
+                            {grp}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700 space-y-2.5">
+                        <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                          <ArrowRight className="w-3.5 h-3.5" />
+                          {matrixGroup} যাদের রক্ত দিতে পারবেন ({matrixInfo.canDonateTo.length}টি গ্রুপ)
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {matrixInfo.canDonateTo.map((target) => (
+                            <span
+                              key={target}
+                              className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-black text-slate-900 dark:text-white tabular-nums"
+                            >
+                              {target}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700 space-y-2.5">
+                        <p className="text-xs font-bold text-red-700 dark:text-red-400 flex items-center gap-1.5">
+                          <Droplet className="w-3.5 h-3.5" />
+                          {matrixGroup} যাদের থেকে রক্ত নিতে পারবেন ({matrixInfo.canReceiveFrom.length}টি গ্রুপ)
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {matrixInfo.canReceiveFrom.map((source) => (
+                            <span
+                              key={source}
+                              className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-black text-slate-900 dark:text-white tabular-nums"
+                            >
+                              {source}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-slate-700 dark:text-slate-300 bg-red-50/70 dark:bg-red-950/30 border border-red-100 dark:border-red-900/40 rounded-xl p-3 leading-relaxed">
+                      {matrixInfo.noteBn}
+                    </p>
+                  </section>
+
+                  {/* Pre-Donation Eligibility Self Check */}
+                  <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                          <ShieldCheck className="w-4 h-4 text-red-600" />
+                          রক্তদানের যোগ্যতা যাচাই (সেল্ফ-চেক)
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                          নিচের ৬টি সাধারণ স্বাস্থ্য শর্ত যাচাই করে দেখে নিন আপনি আজ রক্তদান করতে পারবেন কি না
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xs font-bold px-3 py-1 rounded-lg tabular-nums ${
+                          isEligibleToday
+                            ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                            : 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
+                        }`}
+                      >
+                        {passedQuestionsCount}/{ELIGIBILITY_QUESTIONS.length} শর্ত পূরণ
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {ELIGIBILITY_QUESTIONS.map((q) => {
+                        const isYes = !!eligibilityAnswers[q.id];
+                        return (
+                          <div
+                            key={q.id}
+                            className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between gap-3"
+                          >
+                            <span className="text-xs font-medium text-slate-800 dark:text-slate-200 leading-snug">
+                              {q.label}
+                            </span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEligibilityAnswers((prev) => ({
+                                    ...prev,
+                                    [q.id]: true,
+                                  }))
+                                }
+                                className={`min-h-[34px] px-3 rounded-lg text-xs font-bold transition ${
+                                  isYes
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                                }`}
+                              >
+                                হ্যাঁ
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEligibilityAnswers((prev) => ({
+                                    ...prev,
+                                    [q.id]: false,
+                                  }))
+                                }
+                                className={`min-h-[34px] px-3 rounded-lg text-xs font-bold transition ${
+                                  !isYes
+                                    ? 'bg-red-600 text-white'
+                                    : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                                }`}
+                              >
+                                না
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div
+                      className={`p-4 rounded-xl border text-xs leading-relaxed ${
+                        isEligibleToday
+                          ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900 text-emerald-900 dark:text-emerald-200'
+                          : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200'
+                      }`}
+                    >
+                      {isEligibleToday ? (
+                        <p className="font-semibold">
+                          আপনি প্রাথমিক মানদণ্ড অনুযায়ী আজই রক্তদানে সক্ষম। রক্তদানের ৩০ মিনিট আগে অন্তত ২ গ্লাস পানি ও হালকা পুষ্টিকর খাবার গ্রহণ করুন এবং রক্তদানের পর ১৫ মিনিট বিশ্রাম নিন।
+                        </p>
+                      ) : (
+                        <p className="font-semibold">
+                          বর্তমানে কিছুদিন বিশ্রাম নেওয়ার পরামর্শ রইল। জরুরি ক্ষেত্রে হাসপাতালের ব্লাড ব্যাংকের দায়িত্বরত চিকিৎসকের পরামর্শ নিন।
+                        </p>
+                      )}
+                    </div>
+                  </section>
+                </div>
+              )}
+
+              {/* ======================= TAB 4: BLOOD BANKS & HOTLINES ======================= */}
+              {activeTab === 'banks' && (
+                <div className="space-y-5">
+                  {/* National Emergency Helplines */}
+                  <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 space-y-3.5">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <PhoneCall className="w-4 h-4 text-red-600" />
+                      বাংলাদেশ জাতীয় জরুরি স্বাস্থ্য ও অ্যাম্বুলেন্স হটলাইন
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-slate-900 dark:text-white">
+                            ৯৯৯ — জাতীয় জরুরি সেবা
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            ফ্রি কল · জরুরি অ্যাম্বুলেন্স, পুলিশ ও উদ্ধার সহায়তা (২৪/৭)
+                          </p>
+                        </div>
+                        <a
+                          href="tel:999"
+                          className="min-h-[42px] px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0"
+                        >
+                          <Phone className="w-3.5 h-3.5" />
+                          ৯৯৯
+                        </a>
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-slate-900 dark:text-white">
+                            ১৬২৬৩ — স্বাস্থ্য বাতায়ন
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            স্বাস্থ্য অধিদপ্তরের ২৪/৭ সরকারি চিকিৎসক ও হাসপাতাল তথ্য সেবা
+                          </p>
+                        </div>
+                        <a
+                          href="tel:16263"
+                          className="min-h-[42px] px-4 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0"
+                        >
+                          <Phone className="w-3.5 h-3.5" />
+                          ১৬২৬৩
+                        </a>
+                      </div>
+                    </div>
+
+                    {/* Trusted National Voluntary Networks Quick Maps Search */}
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap gap-2">
+                      {[
+                        { label: 'সন্ধানী ব্লাড ব্যাংক (নিকটস্থ)', q: 'Sandhani Blood Bank Bangladesh' },
+                        { label: 'রেড ক্রিসেন্ট ব্লাড সেন্টার', q: 'Bangladesh Red Crescent Blood Bank' },
+                        { label: 'কোয়ান্টাম ল্যাব', q: 'Quantum Blood Lab Bangladesh' },
+                        { label: 'বাঁধন (বিশ্ববিদ্যালয় শাখা)', q: 'Badhan Blood Donor Bangladesh' },
+                      ].map((org) => (
+                        <a
+                          key={org.label}
+                          href={getGoogleMapsSearchUrl(org.q)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="min-h-[38px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-red-400 text-xs font-semibold text-slate-700 dark:text-slate-200 inline-flex items-center gap-1.5 transition"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                          {org.label}
+                        </a>
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* Live Nearby Hospitals & Blood Banks via OpenStreetMap Overpass */}
+                  <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                          <Building2 className="w-4 h-4 text-red-600" />
+                          কাছের হাসপাতাল ও ব্লাড ব্যাংক খুঁজুন
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                          {centersSearchedDistrict
+                            ? `অবস্থান: ${centersSearchedDistrict}`
+                            : 'জিপিএস বা জেলার মাধ্যমে নিকটস্থ চিকিৎসা কেন্দ্র খুঁজুন'}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                        <select
+                          aria-label="ব্লাড ব্যাংক খোঁজার জেলা"
+                          value={selectedDistrict === 'সব জেলা' ? 'ঢাকা' : selectedDistrict}
+                          onChange={(e) => {
+                            setSelectedDistrict(e.target.value);
+                            void handleLoadNearbyCenters(e.target.value);
+                          }}
+                          className="min-h-[40px] px-3 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100"
+                        >
+                          {ALL_BD_DISTRICTS.map((d) => (
+                            <option key={d.districtBn} value={d.districtBn}>
+                              {d.districtBn}
+                            </option>
+                          ))}
+                        </select>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleLoadNearbyCenters()}
+                          disabled={isLoadingCenters}
+                          className="min-h-[40px] px-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                        >
+                          <RefreshCw
+                            className={`w-3.5 h-3.5 ${
+                              isLoadingCenters ? 'animate-spin' : ''
+                            }`}
+                          />
+                          খুঁজুন
+                        </button>
+                      </div>
+                    </div>
+
+                    {isLoadingCenters ? (
+                      <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400">
+                        নিকটস্থ হাসপাতাল ও ব্লাড ব্যাংকের তথ্য সংগ্রহ করা হচ্ছে...
+                      </div>
+                    ) : centersError ? (
+                      <div className="p-5 rounded-xl bg-slate-50 dark:bg-slate-800/70 text-center space-y-3">
+                        <p className="text-xs text-slate-600 dark:text-slate-300">
+                          {centersError}
+                        </p>
+                        <a
+                          href={getGoogleMapsSearchUrl(
+                            `blood bank and hospital near ${
+                              selectedDistrict === 'সব জেলা' ? 'Bangladesh' : selectedDistrict
+                            }`
+                          )}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="min-h-[40px] px-4 rounded-xl bg-red-600 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          Google Maps-এ সরাসরি দেখুন
+                        </a>
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {nearbyCenters.map((center) => (
+                          <div
+                            key={center.id}
+                            className="py-3 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0 ${
+                                    center.type === 'blood_bank'
+                                      ? 'bg-red-600 text-white'
+                                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                                  }`}
+                                >
+                                  {center.type === 'blood_bank'
+                                    ? 'ব্লাড ব্যাংক'
+                                    : center.type === 'hospital'
+                                      ? 'হাসপাতাল'
+                                      : 'ক্লিনিক'}
+                                </span>
+                                <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                                  {center.name}
+                                </h4>
+                              </div>
+                              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 tabular-nums">
+                                দূরত্ব ~{center.distanceKm} কি.মি.
+                                {center.address ? ` · ${center.address}` : ''}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {center.phone && (
+                                <a
+                                  href={`tel:${center.phone}`}
+                                  className="min-h-[38px] px-3 rounded-xl bg-emerald-600 text-white text-xs font-bold inline-flex items-center gap-1"
+                                >
+                                  <Phone className="w-3.5 h-3.5" />
+                                  কল
+                                </a>
+                              )}
+                              <a
+                                href={`https://www.google.com/maps/search/?api=1&query=${center.lat},${center.lng}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="min-h-[38px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5"
+                              >
+                                <MapPin className="w-3.5 h-3.5 text-red-600" />
+                                পথ দেখুন
+                              </a>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
               )}
             </div>
-          )}
+
+            {/* RIGHT SIDEBAR COMPANION (Desktop 4 Cols) */}
+            <aside className="hidden lg:block lg:col-span-4 space-y-4">
+              <div className="sticky top-6 space-y-4">
+                {/* Smart Personal Blood Profile Card */}
+                <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 space-y-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                      আমার রক্তের প্রোফাইল
+                    </h3>
+                    {myBloodGroup && (
+                      <span className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-xs font-black tabular-nums">
+                        {myBloodGroup}
+                      </span>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-1.5">
+                      আপনার রক্তের গ্রুপ নির্বাচন করুন
+                    </label>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {BLOOD_GROUP_LIST.map((grp) => (
+                        <button
+                          key={grp}
+                          type="button"
+                          onClick={() =>
+                            setMyBloodGroup((prev) => (prev === grp ? '' : grp))
+                          }
+                          className={`min-h-[36px] rounded-xl text-xs font-bold tabular-nums transition ${
+                            myBloodGroup === grp
+                              ? 'bg-red-600 text-white shadow-xs'
+                              : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-red-300'
+                          }`}
+                        >
+                          {grp}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {myBloodGroup ? (
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 space-y-2">
+                      <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
+                        আপনি{' '}
+                        <strong className="text-red-600 dark:text-red-400">
+                          {myCompatibleTargets.join(', ')}
+                        </strong>{' '}
+                        গ্রুপের রোগীদের রক্ত দিতে পারবেন।
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('requests');
+                          setOnlyMyCompatible(true);
+                        }}
+                        className="w-full min-h-[38px] rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition tabular-nums"
+                      >
+                        ম্যাচিং জরুরি আবেদন দেখুন ({compatibleUrgentMatchesCount})
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                      আপনার গ্রুপ বাছাই করলে সাথে সাথে দেখতে পারবেন কোন রোগীদের আপনি রক্ত দিয়ে সাহায্য করতে পারবেন।
+                    </p>
+                  )}
+
+                  {myDonorListing && (
+                    <button
+                      type="button"
+                      onClick={() => setDonorIdCardTarget(myDonorListing)}
+                      className="w-full min-h-[42px] rounded-xl border border-red-200 dark:border-red-900 bg-red-50/70 dark:bg-red-950/30 hover:bg-red-100/80 dark:hover:bg-red-950/60 text-red-700 dark:text-red-300 text-xs font-bold flex items-center justify-center gap-2 transition"
+                    >
+                      <IdCard className="w-4 h-4" />
+                      আমার ডিজিটাল ডোনার আইডি কার্ড
+                    </button>
+                  )}
+                </section>
+
+                {/* Live Impact Summary */}
+                <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 space-y-3">
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    নেটওয়ার্ক সারসংক্ষেপ
+                  </h3>
+                  <div className="grid grid-cols-3 gap-2 text-center tabular-nums">
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70">
+                      <p className="text-lg font-black text-red-600 dark:text-red-400">
+                        {activeUrgentCount}
+                      </p>
+                      <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                        চলমান জরুরি
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70">
+                      <p className="text-lg font-black text-emerald-600 dark:text-emerald-400">
+                        {availableDonorsCount}
+                      </p>
+                      <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                        সক্ষম ডোনার
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70">
+                      <p className="text-lg font-black text-slate-900 dark:text-white">
+                        {managedCount}
+                      </p>
+                      <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                        সফল সংগ্রহ
+                      </p>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Safety Notice */}
+                <section className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 space-y-2.5">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-white">
+                    <ShieldCheck className="w-4 h-4 text-red-600 shrink-0" />
+                    <h4 className="text-xs font-bold">নিরাপদ রক্তদান নির্দেশিকা</h4>
+                  </div>
+                  <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-1.5 leading-relaxed">
+                    <li>• রক্ত সম্পূর্ণ মানবিক সেবা — কোনো ধরনের অর্থ লেনদেন করবেন না।</li>
+                    <li>• রক্ত দেওয়ার আগে হাসপাতালের নির্ধারিত ক্রস-ম্যাচিং ও স্ক্রিনিং নিশ্চিত করুন।</li>
+                    <li>• দুবার রক্তদানের মাঝে কমপক্ষে ১২০ দিন (৪ মাস) বিরতি রাখুন।</li>
+                  </ul>
+                </section>
+              </div>
+            </aside>
+          </div>
         </div>
 
-        {/* MODAL 1: POST BLOOD REQUEST */}
-        {showPostRequestModal && (
-          <div className="fixed inset-0 z-60 bg-black/70 backdrop-blur-sm p-4 flex items-center justify-center animate-in fade-in duration-150">
-            <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 max-h-[90vh] overflow-y-auto space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-xl bg-red-600 text-white flex items-center justify-center">
-                    <Droplet className="w-5 h-5 fill-white" />
-                  </div>
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                      রক্তের জরুরি আবেদন পোস্ট করুন
-                    </h3>
-                    <p className="text-[11px] text-slate-400">
-                      আপনার প্রোফাইল ছবি ও নম্বর সহ পোস্ট সরাসরি লাইভ হবে
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowPostRequestModal(false)}
-                  className="w-8 h-8 rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+        {/* Mobile Bottom Ergonomic Thumb Action Bar (Slim height <10% viewport) */}
+        <div className="sm:hidden px-4 py-2.5 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowRegisterDonorModal(true)}
+            className="flex-1 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap"
+          >
+            <Heart className="w-4 h-4 text-red-600" />
+            ডোনার হোন
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowPostRequestModal(true)}
+            className="flex-[1.3] min-h-[44px] rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shadow-sm"
+          >
+            <PlusCircle className="w-4 h-4" />
+            রক্তের আবেদন পোস্ট
+          </button>
+        </div>
+      </div>
 
-              {/* Author badge preview */}
-              <div className="p-3 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/40 flex items-center gap-3">
-                <OSAAvatar
-                  name={effectiveUserName}
-                  avatarUrl={effectiveAvatar}
-                  size="sm"
+      {/* ================= SUB-MODAL 1: POST BLOOD REQUEST ================= */}
+      {showPostRequestModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-3 sm:p-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <Droplet className="w-5 h-5 text-red-600" />
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  জরুরি রক্তের আবেদন পোস্ট করুন
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPostRequestModal(false)}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={handlePostBloodRequest}
+              className="p-5 space-y-3.5 overflow-y-auto text-xs"
+            >
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  রোগীর নাম / সংক্ষিপ্ত পরিচয় *
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="যেমন: মোছা. রহিমা বেগম (অপারেশন)"
+                  value={reqPatientName}
+                  onChange={(e) => setReqPatientName(e.target.value)}
+                  className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:border-red-500 focus:outline-none"
                 />
-                <div>
-                  <p className="text-xs font-bold text-slate-900 dark:text-white">
-                    পোস্টদাতা: {effectiveUserName}
-                  </p>
-                  <p className="text-[11px] text-red-600 dark:text-red-400 font-medium">
-                    OSA ভেরিফাইড ইউজার অ্যাকাউন্ট
-                  </p>
-                </div>
               </div>
 
-              <form onSubmit={handlePostBloodRequest} className="space-y-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                 <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                    রোগীর নাম ও বয়স:
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    রক্তের গ্রুপ *
+                  </label>
+                  <select
+                    value={reqBloodGroup}
+                    onChange={(e) => setReqBloodGroup(e.target.value as BloodGroupType)}
+                    className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-red-600 dark:text-red-400"
+                  >
+                    {BLOOD_GROUP_LIST.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    প্রয়োজনীয় ব্যাগ *
                   </label>
                   <input
-                    type="text"
                     required
-                    placeholder="যেমন: মিসেস রোকেয়া (৪৫)"
-                    value={reqPatientName}
-                    onChange={(e) => setReqPatientName(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
+                    type="number"
+                    min={1}
+                    max={15}
+                    value={reqBags}
+                    onChange={(e) => setReqBags(Number(e.target.value))}
+                    className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white tabular-nums"
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    রক্তের ধরন
+                  </label>
+                  <select
+                    value={reqBloodComponent}
+                    onChange={(e) =>
+                      setReqBloodComponent(e.target.value as BloodComponentType)
+                    }
+                    className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  >
+                    {BLOOD_COMPONENTS.map((comp) => (
+                      <option key={comp} value={comp}>
+                        {comp}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    হাসপাতালের নাম *
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    placeholder="যেমন: ঢাকা মেডিকেল কলেজ হাসপাতাল"
+                    value={reqHospital}
+                    onChange={(e) => setReqHospital(e.target.value)}
+                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    ওয়ার্ড / বেড (ঐচ্ছিক)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="যেমন: কেবিন ১২ / জরুরি বিভাগ"
+                    value={reqWardInfo}
+                    onChange={(e) => setReqWardInfo(e.target.value)}
+                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    জেলা *
+                  </label>
+                  <select
+                    value={reqDistrict}
+                    onChange={(e) => setReqDistrict(e.target.value)}
+                    className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  >
+                    {ALL_BD_DISTRICTS.map((d) => (
+                      <option key={d.districtBn} value={d.districtBn}>
+                        {d.districtBn}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    উপজেলা / এলাকা *
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    placeholder="যেমন: শাহবাগ / বিরামপুর"
+                    value={reqArea}
+                    onChange={(e) => setReqArea(e.target.value)}
+                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    জরুরি পর্যায়
+                  </label>
+                  <select
+                    value={reqUrgency}
+                    onChange={(e) => setReqUrgency(e.target.value as UrgencyLevel)}
+                    className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  >
+                    <option value="critical">অতি জরুরি (এখনই)</option>
+                    <option value="today">আজকের মধ্যে</option>
+                    <option value="scheduled">নির্ধারিত তারিখ</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    কখন প্রয়োজন *
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    placeholder="যেমন: আজ বিকাল ৫টার আগে"
+                    value={reqNeededTime}
+                    onChange={(e) => setReqNeededTime(e.target.value)}
+                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  যোগাযোগের মোবাইল নম্বর *
+                </label>
+                <input
+                  required
+                  type="tel"
+                  placeholder="+8801XXXXXXXXX"
+                  value={reqPhone}
+                  onChange={(e) => setReqPhone(e.target.value)}
+                  className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white tabular-nums"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  রোগীর অবস্থা / বিশেষ নোট
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="যেমন: থ্যালাসেমিয়া রোগী বা ডেলিভারি অপারেশন। যাতায়াত খরচ দেওয়া হবে।"
+                  value={reqNotes}
+                  onChange={(e) => setReqNotes(e.target.value)}
+                  className="w-full p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white resize-none"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full min-h-[46px] rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-sm transition active:scale-[0.99]"
+              >
+                জরুরি রক্তের আবেদন প্রকাশ করুন
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= SUB-MODAL 2: REGISTER DONOR ================= */}
+      {showRegisterDonorModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-3 sm:p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <Heart className="w-5 h-5 text-red-600 fill-red-600" />
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  স্বেচ্ছাসেবী রক্তদাতা নিবন্ধন
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRegisterDonorModal(false)}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {regSuccess ? (
+              <div className="p-8 text-center space-y-3">
+                <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto" />
+                <h4 className="text-base font-bold text-slate-900 dark:text-white">
+                  নিবন্ধন সম্পন্ন হয়েছে!
+                </h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  আপনার স্বেচ্ছাসেবী রক্তদাতা প্রোফাইল ও ডিজিটাল আইডি কার্ড তৈরি করা হয়েছে।
+                </p>
+              </div>
+            ) : (
+              <form
+                onSubmit={handleRegisterDonor}
+                className="p-5 space-y-3.5 overflow-y-auto text-xs"
+              >
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    আপনার পূর্ণ নাম *
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={regName}
+                    onChange={(e) => setRegName(e.target.value)}
+                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
                   <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      প্রয়োজনীয় রক্তের গ্রুপ:
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      রক্তের গ্রুপ *
                     </label>
                     <select
-                      value={reqBloodGroup}
-                      onChange={(e) => setReqBloodGroup(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none font-bold text-red-600"
+                      value={regGroup}
+                      onChange={(e) => setRegGroup(e.target.value as BloodGroupType)}
+                      className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-red-600 dark:text-red-400"
                     >
-                      {BLOOD_GROUPS.filter((g) => g !== 'ALL').map((g) => (
+                      {BLOOD_GROUP_LIST.map((g) => (
                         <option key={g} value={g}>
                           {g}
                         </option>
@@ -1100,339 +2418,277 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
                     </select>
                   </div>
                   <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      কত ব্যাগ প্রয়োজন:
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
-                      required
-                      value={reqBags}
-                      onChange={(e) => setReqBags(Number(e.target.value))}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                    হাসপাতালের নাম ও ঠিকানা:
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="যেমন: ঢাকা মেডিকেল কলেজ হাসপাতাল, জরুরি বিভাগ"
-                    value={reqHospital}
-                    onChange={(e) => setReqHospital(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      জেলা:
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      জেলা *
                     </label>
                     <select
-                      value={reqDistrict}
-                      onChange={(e) => setReqDistrict(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
+                      value={regDistrict}
+                      onChange={(e) => setRegDistrict(e.target.value)}
+                      className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
                     >
-                      {DISTRICTS.filter((d) => d !== 'সব জেলা').map((d) => (
-                        <option key={d} value={d}>
-                          {d}
+                      {ALL_BD_DISTRICTS.map((d) => (
+                        <option key={d.districtBn} value={d.districtBn}>
+                          {d.districtBn}
                         </option>
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      এলাকা / থানা:
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="যেমন: ধানমন্ডি"
-                      value={reqArea}
-                      onChange={(e) => setReqArea(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      কখন লাগবে (সময়):
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="যেমন: আজ বিকাল ৪:০০ টায়"
-                      value={reqNeededTime}
-                      onChange={(e) => setReqNeededTime(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      জরুরি যোগাযোগের নম্বর:
-                    </label>
-                    <input
-                      type="tel"
-                      required
-                      placeholder="+8801..."
-                      value={reqPhone}
-                      onChange={(e) => setReqPhone(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
                 </div>
 
                 <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                    রোগীর সমস্যা / অতিরিক্ত বিবরণ:
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    বর্তমান এলাকা / উপজেলা *
                   </label>
-                  <textarea
-                    rows={2}
-                    placeholder="অপারেশন বা সমস্যার বিবরণ লিখুন..."
-                    value={reqNotes}
-                    onChange={(e) => setReqNotes(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
+                  <input
+                    required
+                    type="text"
+                    placeholder="যেমন: উত্তরা / কলেজ বাজার, বিরামপুর"
+                    value={regArea}
+                    onChange={(e) => setRegArea(e.target.value)}
+                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
                   />
                 </div>
 
-                <div className="pt-2 flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowPostRequestModal(false)}
-                    className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300"
-                  >
-                    বাতিল
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md shadow-red-500/20 active:scale-95 transition"
-                  >
-                    লাইভ পোস্ট করুন
-                  </button>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    মোবাইল নম্বর *
+                  </label>
+                  <input
+                    required
+                    type="tel"
+                    placeholder="+8801XXXXXXXXX"
+                    value={regPhone}
+                    onChange={(e) => setRegPhone(e.target.value)}
+                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white tabular-nums"
+                  />
                 </div>
-              </form>
-            </div>
-          </div>
-        )}
 
-        {/* MODAL 2: REGISTER AS DONOR */}
-        {showRegisterDonorModal && (
-          <div className="fixed inset-0 z-60 bg-black/70 backdrop-blur-sm p-4 flex items-center justify-center animate-in fade-in duration-150">
-            <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <UserCheck className="w-5 h-5 text-red-500" />
-                  স্বেচ্ছাসেবী রক্তদাতা নিবন্ধন
-                </h3>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      সর্বশেষ রক্তদানের তারিখ
+                    </label>
+                    <input
+                      type="date"
+                      max={new Date().toISOString().slice(0, 10)}
+                      value={regLastDonatedDate}
+                      onChange={(e) => setRegLastDonatedDate(e.target.value)}
+                      className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      মোট রক্তদান (বার)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={regTotalDonations}
+                      onChange={(e) => setRegTotalDonations(Number(e.target.value))}
+                      className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white tabular-nums"
+                    />
+                  </div>
+                </div>
+
                 <button
-                  type="button"
-                  onClick={() => setShowRegisterDonorModal(false)}
-                  className="w-8 h-8 rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center"
+                  type="submit"
+                  className="w-full min-h-[46px] rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-sm transition active:scale-[0.99]"
                 >
-                  <X className="w-4 h-4" />
+                  নিবন্ধন সম্পন্ন করুন
                 </button>
-              </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
 
-              {regSuccess ? (
-                <div className="text-center py-8 space-y-2">
-                  <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto" />
-                  <p className="text-base font-bold text-slate-900 dark:text-white">
-                    ধন্যবাদ! নিবন্ধন সফলভাবে সম্পন্ন হয়েছে
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    রক্তের প্রয়োজনে যে-কেউ আপনাকে কল বা OSA চ্যাটে নক দিতে পারবে।
-                  </p>
-                </div>
-              ) : (
-                <form onSubmit={handleRegisterDonor} className="space-y-3">
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      আপনার নাম:
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={regName}
-                      onChange={(e) => setRegName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
+      {/* ================= SUB-MODAL 3: SHARE & APPEAL POSTER ================= */}
+      {shareTargetRequest && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-3 sm:p-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Share2 className="w-4 h-4 text-red-600" />
+                রক্তের আবেদন ও পোস্টার শেয়ার করুন
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShareTargetRequest(null)}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto">
+              {/* Generated Poster Image Preview */}
+              {sharePosterUrl && (
+                <div className="space-y-2">
+                  <div className="rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950">
+                    <img
+                      src={sharePosterUrl}
+                      alt={`জরুরি ${shareTargetRequest.bloodGroup} রক্তের পোস্টার`}
+                      className="w-full max-h-64 object-contain mx-auto"
                     />
                   </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                        রক্তের গ্রুপ:
-                      </label>
-                      <select
-                        value={regGroup}
-                        onChange={(e) => setRegGroup(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none font-bold text-red-600"
-                      >
-                        {BLOOD_GROUPS.filter((g) => g !== 'ALL').map((g) => (
-                          <option key={g} value={g}>
-                            {g}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                        জেলা:
-                      </label>
-                      <select
-                        value={regDistrict}
-                        onChange={(e) => setRegDistrict(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
-                      >
-                        {DISTRICTS.filter((d) => d !== 'সব জেলা').map((d) => (
-                          <option key={d} value={d}>
-                            {d}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      নির্দিষ্ট এলাকা (যেমন: ধানমন্ডি, মিরপুর):
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="আপনার বর্তমান এলাকা"
-                      value={regArea}
-                      onChange={(e) => setRegArea(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-400 block mb-1">
-                      মোবাইল নম্বর:
-                    </label>
-                    <input
-                      type="tel"
-                      required
-                      value={regPhone}
-                      onChange={(e) => setRegPhone(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white border border-transparent focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="pt-2 flex items-center justify-end gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      onClick={() => setShowRegisterDonorModal(false)}
-                      className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300"
+                      onClick={() =>
+                        handleDownloadDataUrl(
+                          sharePosterUrl,
+                          `osa-blood-sos-${shareTargetRequest.bloodGroup}.png`
+                        )
+                      }
+                      className="flex-1 min-h-[42px] px-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"
                     >
-                      বাতিল
+                      <Download className="w-4 h-4" />
+                      পোস্টার ডাউনলোড (PNG)
                     </button>
-                    <button
-                      type="submit"
-                      className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md shadow-red-500/20 active:scale-95 transition"
-                    >
-                      নিবন্ধন নিশ্চিত করুন
-                    </button>
+                    {typeof navigator !== 'undefined' &&
+                      typeof navigator.share === 'function' && (
+                        <button
+                          type="button"
+                          onClick={() => void handleNativeShareWithPoster(shareTargetRequest)}
+                          className="flex-1 min-h-[42px] px-3 rounded-xl bg-slate-900 dark:bg-slate-800 text-white text-xs font-bold flex items-center justify-center gap-1.5"
+                        >
+                          <Share2 className="w-4 h-4" />
+                          অ্যাপে শেয়ার করুন
+                        </button>
+                      )}
                   </div>
-                </form>
+                </div>
               )}
-            </div>
-          </div>
-        )}
 
-        {/* MODAL 3: SHARE EVERYWHERE */}
-        {shareTargetRequest && (
-          <div className="fixed inset-0 z-60 bg-black/70 backdrop-blur-sm p-4 flex items-center justify-center animate-in fade-in duration-150">
-            <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <Share2 className="w-5 h-5 text-red-500" />
-                  সব জায়গায় জরুরি শেয়ার করুন
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setShareTargetRequest(null)}
-                  className="w-8 h-8 rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+              {/* Shareable Text & Copy */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  টেক্সট মেসেজ কপি বা সোশ্যাল মিডিয়ায় পাঠান:
+                </p>
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300 whitespace-pre-line max-h-36 overflow-y-auto">
+                  {getFormattedShareText(shareTargetRequest)}
+                </div>
 
-              {/* Formatted Preview Box */}
-              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-xs font-mono whitespace-pre-line text-slate-800 dark:text-slate-200 leading-relaxed max-h-48 overflow-y-auto">
-                {getFormattedShareText(shareTargetRequest)}
-              </div>
-
-              {/* 1-Tap Share Buttons */}
-              <div className="grid grid-cols-1 gap-2">
-                {/* Native Share */}
-                {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => handleShareEverywhere(shareTargetRequest)}
-                    className="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm"
+                    onClick={() => handleCopyShareText(shareTargetRequest)}
+                    className={`min-h-[42px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
+                      copySuccess
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
                   >
-                    <Share2 className="w-4 h-4" />
-                    <span>ফোনের অন্যান্য অ্যাপে শেয়ার করুন</span>
+                    {copySuccess ? (
+                      <Check className="w-4 h-4" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                    {copySuccess ? 'কপি হয়েছে!' : 'তথ্য কপি করুন'}
                   </button>
-                )}
 
-                {/* WhatsApp */}
-                <a
-                  href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
-                    getFormattedShareText(shareTargetRequest)
-                  )}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm"
-                >
-                  <MessageCircle className="w-4 h-4" />
-                  <span>WhatsApp এ মেসেজ পাঠান</span>
-                </a>
+                  <a
+                    href={`https://wa.me/?text=${encodeURIComponent(
+                      getFormattedShareText(shareTargetRequest)
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[42px] rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    WhatsApp
+                  </a>
 
-                {/* Facebook / Messenger */}
-                <a
-                  href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(
-                    window.location.href
-                  )}&quote=${encodeURIComponent(getFormattedShareText(shareTargetRequest))}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  <span>Facebook / Messenger এ পোস্ট</span>
-                </a>
+                  <a
+                    href={`https://t.me/share/url?url=${encodeURIComponent(
+                      window.location.href
+                    )}&text=${encodeURIComponent(
+                      getFormattedShareText(shareTargetRequest)
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[42px] rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"
+                  >
+                    <Send className="w-4 h-4" />
+                    Telegram
+                  </a>
 
-                {/* Copy Text */}
+                  <a
+                    href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(
+                      window.location.href
+                    )}&quote=${encodeURIComponent(
+                      getFormattedShareText(shareTargetRequest)
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[42px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    Facebook
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= SUB-MODAL 4: DIGITAL DONOR ID CARD ================= */}
+      {donorIdCardTarget && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-3 sm:p-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <IdCard className="w-4 h-4 text-red-600" />
+                ডিজিটাল স্বেচ্ছাসেবী রক্তদাতা কার্ড
+              </h3>
+              <button
+                type="button"
+                onClick={() => setDonorIdCardTarget(null)}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {donorIdCardUrl && (
+                <div className="rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800">
+                  <img
+                    src={donorIdCardUrl}
+                    alt={`${donorIdCardTarget.name} Donor Card`}
+                    className="w-full h-auto"
+                  />
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => handleCopyShareText(shareTargetRequest)}
-                  className="w-full py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center justify-center gap-2"
+                  onClick={() =>
+                    handleDownloadDataUrl(
+                      donorIdCardUrl,
+                      `osa-donor-id-${donorIdCardTarget.bloodGroup}.png`
+                    )
+                  }
+                  className="flex-1 min-h-[44px] px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"
                 >
-                  {copySuccess ? (
-                    <>
-                      <Check className="w-4 h-4 text-emerald-500" />
-                      <span>টেক্সট কপি সম্পন্ন হয়েছে!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-4 h-4" />
-                      <span>সম্পূর্ণ টেক্সট কপি করুন</span>
-                    </>
-                  )}
+                  <Download className="w-4 h-4" />
+                  আইডি কার্ড সেভ করুন (PNG)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDonorIdCardTarget(null)}
+                  className="min-h-[44px] px-4 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200"
+                >
+                  বন্ধ করুন
                 </button>
               </div>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
