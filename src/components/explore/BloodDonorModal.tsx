@@ -874,9 +874,9 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
               type="button"
               onClick={onClose}
               aria-label="বন্ধ করুন"
-              className="w-11 h-11 rounded-xl flex items-center justify-center text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition shrink-0"
+              className="w-11 h-11 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 active:scale-95 transition shrink-0"
             >
-              <X className="w-5 h-5" />
+              <X className="w-5 h-5 stroke-[2.25]" />
             </button>
           </div>
         </header>
@@ -2355,9 +2355,9 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowPostRequestModal(false)}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 active:scale-95 transition"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.25]" />
               </button>
             </div>
 
@@ -2574,9 +2574,9 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowRegisterDonorModal(false)}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 active:scale-95 transition"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.25]" />
               </button>
             </div>
 
@@ -2723,9 +2723,9 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShareTargetRequest(null)}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 active:scale-95 transition"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.25]" />
               </button>
             </div>
 
@@ -2854,9 +2854,9 @@ export const BloodDonorModal: React.FC<BloodDonorModalProps> = ({
               <button
                 type="button"
                 onClick={() => setDonorIdCardTarget(null)}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 active:scale-95 transition"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.25]" />
               </button>
             </div>
 

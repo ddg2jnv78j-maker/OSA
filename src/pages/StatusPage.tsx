@@ -380,9 +380,9 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
               <button
                 type="button"
                 onClick={() => setShowTextModal(false)}
-                className="w-9 h-9 rounded-full bg-white/15 flex items-center justify-center hover:bg-white/25"
+                className="w-10 h-10 rounded-xl bg-slate-900/90 border border-white/30 text-white flex items-center justify-center hover:bg-slate-800 shadow-md active:scale-95 transition-all"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.5]" />
               </button>
             </div>
 
@@ -474,9 +474,9 @@ export const StatusPage: React.FC<StatusPageProps> = ({ currentUser, t }) => {
               <button
                 type="button"
                 onClick={() => setViewingStatus(null)}
-                className="w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center"
+                className="w-10 h-10 rounded-xl bg-slate-900/90 border border-white/30 text-white hover:bg-slate-800 shadow-md flex items-center justify-center active:scale-95 transition-all"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.5]" />
               </button>
             </div>
           </div>

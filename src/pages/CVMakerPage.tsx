@@ -197,9 +197,10 @@ export const CVMakerPage: React.FC<CVMakerPageProps> = ({ currentUser, onBack, t
           <button
             type="button"
             onClick={onBack}
-            className="w-10 h-10 rounded-2xl bg-slate-800 text-slate-300 flex items-center justify-center hover:bg-slate-700 transition-colors"
+            aria-label="Back"
+            className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-600 text-white flex items-center justify-center hover:bg-slate-700 shadow-sm active:scale-95 transition-all shrink-0"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="w-5 h-5 stroke-[2.5]" />
           </button>
           <div>
             <h1 className="text-lg md:text-xl font-extrabold text-white tracking-tight flex items-center gap-2">

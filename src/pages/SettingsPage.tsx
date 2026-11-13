@@ -655,13 +655,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   };
 
   const renderSubHeader = (title: string, backTarget: SettingsSubPage = 'main') => (
-    <div className="sticky top-0 z-20 -mx-4 px-4 py-3 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md flex items-center gap-3 border-b border-slate-200 dark:border-slate-800 mb-4">
+    <div className="sticky top-0 z-20 -mx-4 px-4 py-3 bg-white dark:bg-slate-900 flex items-center gap-3 border-b border-slate-200 dark:border-slate-800 mb-4 shadow-2xs">
       <button
         type="button"
         onClick={() => setSubPage(backTarget)}
-        className="w-10 h-10 rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+        aria-label="Back"
+        className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 shadow-2xs flex items-center justify-center shrink-0 active:scale-95 transition-all"
       >
-        <ArrowLeft className="w-5 h-5" />
+        <ArrowLeft className="w-5 h-5 stroke-[2.5]" />
       </button>
       <h2 className="text-base font-bold text-slate-900 dark:text-white">{title}</h2>
     </div>

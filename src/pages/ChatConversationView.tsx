@@ -3395,10 +3395,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               <button
                 type="button"
                 onClick={clearSelection}
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 shrink-0 transition-colors"
+                className="w-10 h-10 rounded-xl bg-emerald-800 border border-emerald-500/60 text-white hover:bg-emerald-900 shadow-xs flex items-center justify-center shrink-0 active:scale-95 transition-all"
                 aria-label="Cancel selection"
               >
-                <ArrowLeft className="w-5 h-5" />
+                <ArrowLeft className="w-5 h-5 stroke-[2.5]" />
               </button>
               <span className="text-base font-bold font-mono-num">
                 {totalSelectedCount}
@@ -3502,10 +3502,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             <button
               type="button"
               onClick={onBack}
-              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+              className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 shadow-2xs flex items-center justify-center shrink-0 active:scale-95 transition-all"
               aria-label="Back to chats"
             >
-              <ArrowLeft className="w-5 h-5" />
+              <ArrowLeft className="w-5 h-5 stroke-[2.5]" />
             </button>
 
             <button
@@ -7159,10 +7159,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               <button
                 type="button"
                 onClick={() => setLightboxMedia(null)}
-                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center shrink-0"
+                className="w-10 h-10 rounded-xl bg-slate-900 border border-white/30 text-white hover:bg-slate-800 shadow-md flex items-center justify-center shrink-0 active:scale-95 transition-all"
                 aria-label="Close"
               >
-                <ArrowLeft className="w-5 h-5" />
+                <ArrowLeft className="w-5 h-5 stroke-[2.5]" />
               </button>
               <div className="min-w-0">
                 <p className="text-sm font-bold truncate">
@@ -7256,9 +7256,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowChatInfo(false)}
-                className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center shrink-0 active:scale-95 transition-all"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.25]" />
               </button>
             </div>
 
@@ -8160,9 +8160,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowTranslationModal(false)}
-                className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center shrink-0 active:scale-95 transition-all"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.25]" />
               </button>
             </div>
 
@@ -8230,9 +8230,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             <button
               type="button"
               onClick={() => setActiveViewOnceMedia(null)}
-              className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
+              className="w-10 h-10 rounded-xl bg-slate-900 border border-white/30 text-white hover:bg-slate-800 shadow-md flex items-center justify-center active:scale-95 transition-all"
             >
-              <X className="w-5 h-5" />
+              <X className="w-5 h-5 stroke-[2.5]" />
             </button>
           </div>
 
@@ -8281,9 +8281,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowCreatePollModal(false)}
-                className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center shrink-0 active:scale-95 transition-all"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5 stroke-[2.25]" />
               </button>
             </div>
 
