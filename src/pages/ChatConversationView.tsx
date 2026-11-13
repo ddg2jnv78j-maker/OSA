@@ -165,6 +165,7 @@ import {
   fetchConversationCallHistory,
   fetchGroupMembers,
   formatBytes,
+  forwardMessageToChat,
   generateGroupInviteLink,
   getDetailedBlockStatus,
   markChatAsRead,
@@ -189,6 +190,7 @@ import {
   Chat,
   GroupMember,
   Message,
+  MessageAttachment,
   PrivacySettings,
   Profile,
 } from '../types/osa';
@@ -230,12 +232,48 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const [error, setError] = useState('');
 
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [replyToCall, setReplyToCall] = useState<CallRecord | null>(null);
   const [editingMsg, setEditingMsg] = useState<Message | null>(null);
   const [aiDrafting, setAiDrafting] = useState(false);
   const [activeMenuMsgId, setActiveMenuMsgId] = useState<string | null>(null);
-  const [forwardModalMsg, setForwardModalMsg] = useState<Message | null>(null);
+  const [activeMenuCallId, setActiveMenuCallId] = useState<string | null>(null);
+  const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
+  const [selectedCallIds, setSelectedCallIds] = useState<string[]>([]);
+  const [deletedCallIds, setDeletedCallIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(`osa_deleted_calls_${currentUser.id}_${chat.id}`);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{
+    msgs: Message[];
+    calls: CallRecord[];
+  } | null>(null);
+  const [isDeletingAction, setIsDeletingAction] = useState(false);
+  const [forwardModalMsgs, setForwardModalMsgs] = useState<Message[]>([]);
+  const [forwardModalCalls, setForwardModalCalls] = useState<CallRecord[]>([]);
+  const [forwardSelectedChatIds, setForwardSelectedChatIds] = useState<string[]>([]);
+  const [forwardSearchQuery, setForwardSearchQuery] = useState('');
+  const [isForwarding, setIsForwarding] = useState(false);
+  const [shareModalData, setShareModalData] = useState<{
+    title: string;
+    text: string;
+    url?: string;
+    fileName?: string;
+    mimeType?: string;
+    msgs?: Message[];
+    calls?: CallRecord[];
+  } | null>(null);
+  const [shareCopiedToast, setShareCopiedToast] = useState(false);
+  const [swipingKey, setSwipingKey] = useState<string | null>(null);
+  const [swipeOffsetX, setSwipeOffsetX] = useState(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-  const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
+  const [lightboxMedia, setLightboxMedia] = useState<{
+    msg: Message;
+    att: MessageAttachment;
+  } | null>(null);
   const [showRemoteCameraModal, setShowRemoteCameraModal] = useState(false);
   const [showRemoteLocationModal, setShowRemoteLocationModal] = useState(false);
   const [showRingtoneModal, setShowRingtoneModal] = useState(false);
@@ -541,9 +579,18 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const composerInputRef = useRef<HTMLInputElement | null>(null);
   const groupPhotoInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const lastBroadcastTypingRef = useRef<number>(0);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef<boolean>(false);
+  const swipeTouchRef = useRef<{
+    key: string;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   const isGroup = chat.type === 'group';
@@ -704,6 +751,18 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     setIsMuted(Boolean(chat.my_membership?.is_muted));
     setEditGroupName(chat.group?.name || '');
     setEditGroupDesc(chat.group?.description || '');
+    setSelectedMsgIds([]);
+    setSelectedCallIds([]);
+    setReplyTo(null);
+    setReplyToCall(null);
+    setActiveMenuMsgId(null);
+    setActiveMenuCallId(null);
+    try {
+      const raw = localStorage.getItem(`osa_deleted_calls_${currentUser.id}_${chat.id}`);
+      setDeletedCallIds(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      setDeletedCallIds([]);
+    }
     loadMessagesAndMeta();
   }, [chat.id]);
 
@@ -1210,15 +1269,20 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         return;
       }
 
+      const messageBody = replyToCall
+        ? `> ${replyToCall.call_type === 'video' ? '📹' : '📞'} ${formatCallSummaryText(replyToCall)}\n${clean}`
+        : clean;
+
       const sent = await sendTextMessage({
         chatId: chat.id,
         senderId: currentUser.id,
-        content: clean,
+        content: messageBody,
         replyToId: replyTo?.id || null,
       });
       setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
       setText('');
       setReplyTo(null);
+      setReplyToCall(null);
       setShowEmojiPicker(false);
 
       if (channelRef.current) {
@@ -1292,14 +1356,18 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       const isBn = currentUser.language === 'bn';
       const label = isBn ? 'ভয়েস বার্তা' : 'Voice Message';
       const clean = `🎤 ${label} (${durationText})`;
+      const voiceContent = replyToCall
+        ? `> ${replyToCall.call_type === 'video' ? '📹' : '📞'} ${formatCallSummaryText(replyToCall)}\n${clean}`
+        : clean;
       const sent = await sendTextMessage({
         chatId: chat.id,
         senderId: currentUser.id,
-        content: clean,
+        content: voiceContent,
         replyToId: replyTo?.id || null,
       });
       setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
       setReplyTo(null);
+      setReplyToCall(null);
       onChatUpdated();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send voice message.');
@@ -1403,6 +1471,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
       setText('');
       setReplyTo(null);
+      setReplyToCall(null);
 
       // Notify recipients of attachment message
       const previewBody =
@@ -1447,52 +1516,433 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     }
   };
 
-  const handleCopyMessage = async (msg: Message) => {
-    await navigator.clipboard.writeText(msg.content);
-    setActiveMenuMsgId(null);
+  const isSelectionMode = selectedMsgIds.length + selectedCallIds.length > 0;
+  const totalSelectedCount = selectedMsgIds.length + selectedCallIds.length;
+
+  const formatCallDurationMMSS = (secs: number) => {
+    if (!secs || secs <= 0) return null;
+    const mins = Math.floor(secs / 60).toString().padStart(2, '0');
+    const rem = (secs % 60).toString().padStart(2, '0');
+    return `${mins}:${rem}`;
   };
 
-  const handleDeleteForMe = async (msg: Message) => {
+  const formatCallSummaryText = (c: CallRecord) => {
+    const isBn = currentUser.language === 'bn';
+    const isOutgoing = c.caller_id === currentUser.id;
+    const isVideo = c.call_type === 'video';
+    const isMissed = c.status === 'missed';
+    const isRejected = c.status === 'rejected';
+    const dur = formatCallDurationMMSS(c.duration_seconds);
+    const timeStr = new Date(c.created_at).toLocaleTimeString(
+      isBn ? 'bn-BD' : 'en-US',
+      { hour: 'numeric', minute: '2-digit', hour12: true }
+    );
+    let label = '';
+    if (isMissed) {
+      label = isBn
+        ? isVideo ? 'মিসড ভিডিও কল' : 'মিসড অডিও কল'
+        : isVideo ? 'Missed video call' : 'Missed audio call';
+    } else if (isRejected) {
+      label = isBn
+        ? isVideo ? 'বাতিল ভিডিও কল' : 'বাতিল অডিও কল'
+        : isVideo ? 'Rejected video call' : 'Rejected audio call';
+    } else if (isOutgoing) {
+      label = isBn
+        ? isVideo ? 'আউটগোয়িং ভিডিও কল' : 'আউটগোয়িং অডিও কল'
+        : isVideo ? 'Outgoing video call' : 'Outgoing audio call';
+    } else {
+      label = isBn
+        ? isVideo ? 'ইনকামিং ভিডিও কল' : 'ইনকামিং অডিও কল'
+        : isVideo ? 'Incoming video call' : 'Incoming audio call';
+    }
+    return `${label}${dur ? ` (${dur})` : ''} · ${timeStr}`;
+  };
+
+  const getMessageSummaryLabel = (msg: Message): string => {
+    const isBn = currentUser.language === 'bn';
+    if (msg.is_deleted_for_everyone) return t.messageDeleted;
+    const att = msg.attachments?.[0];
+    const cleanText = msg.content.replace(/^\[VIEW_ONCE\]\s*/i, '').trim();
+    if (att) {
+      const hasCustomCaption = Boolean(cleanText && cleanText !== att.file_name);
+      if (att.file_type === 'image') {
+        return `📷 ${isBn ? 'ছবি' : 'Photo'}${hasCustomCaption ? `: ${cleanText}` : ''}`;
+      }
+      if (att.file_type === 'video') {
+        return `🎥 ${isBn ? 'ভিডিও' : 'Video'}${hasCustomCaption ? `: ${cleanText}` : ''}`;
+      }
+      if (att.file_type === 'audio') {
+        return `🎤 ${isBn ? 'অডিও' : 'Audio'}${hasCustomCaption ? `: ${cleanText}` : ''}`;
+      }
+      return `📄 ${att.file_name || (isBn ? 'ডকুমেন্ট' : 'Document')}`;
+    }
+    if (msg.content.startsWith('🎤')) {
+      return `🎤 ${isBn ? 'ভয়েস মেসেজ' : 'Voice message'}`;
+    }
+    if (msg.content.startsWith('[VIEW_ONCE]')) {
+      return `👁️ ${isBn ? 'ভিউ ওয়ান্স মিডিয়া' : 'View Once Media'}`;
+    }
+    if (msg.content.startsWith('[POLL_DATA]')) {
+      return `📊 ${isBn ? 'পোল' : 'Poll'}`;
+    }
+    if (msg.content.startsWith('OSA_PRODUCT_CARD:')) {
+      return '🛍️ Product Deal';
+    }
+    if (msg.content.startsWith('> 📞 ') || msg.content.startsWith('> 📹 ')) {
+      const nlIdx = msg.content.indexOf('\n');
+      return nlIdx >= 0 ? msg.content.slice(nlIdx + 1).trim() || msg.content : msg.content;
+    }
+    return msg.content;
+  };
+
+  const clearSelection = () => {
+    setSelectedMsgIds([]);
+    setSelectedCallIds([]);
+  };
+
+  const toggleMsgSelection = (msgId: string) => {
     setActiveMenuMsgId(null);
-    try {
-      await deleteMessageForMe(msg.id, currentUser.id);
-      setMessages((prev) => prev.filter((m) => m.id !== msg.id));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not delete message.');
+    setActiveMenuCallId(null);
+    setSelectedMsgIds((prev) =>
+      prev.includes(msgId) ? prev.filter((id) => id !== msgId) : [...prev, msgId]
+    );
+  };
+
+  const toggleCallSelection = (callId: string) => {
+    setActiveMenuMsgId(null);
+    setActiveMenuCallId(null);
+    setSelectedCallIds((prev) =>
+      prev.includes(callId) ? prev.filter((id) => id !== callId) : [...prev, callId]
+    );
+  };
+
+  const handleReplyToMessage = (msg: Message) => {
+    setReplyToCall(null);
+    setReplyTo(msg);
+    setEditingMsg(null);
+    setActiveMenuMsgId(null);
+    setActiveMenuCallId(null);
+    clearSelection();
+    window.setTimeout(() => composerInputRef.current?.focus(), 60);
+  };
+
+  const handleReplyToCallRecord = (call: CallRecord) => {
+    setReplyTo(null);
+    setReplyToCall(call);
+    setEditingMsg(null);
+    setActiveMenuMsgId(null);
+    setActiveMenuCallId(null);
+    clearSelection();
+    window.setTimeout(() => composerInputRef.current?.focus(), 60);
+  };
+
+  const cancelLongPress = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
     }
   };
 
-  const handleDeleteForEveryone = async (msg: Message) => {
+  const startLongPress = (kind: 'msg' | 'call', id: string) => {
+    cancelLongPress();
+    longPressTriggeredRef.current = false;
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+          navigator.vibrate(18);
+        }
+      } catch {}
+      if (kind === 'msg') {
+        setSelectedMsgIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+      } else {
+        setSelectedCallIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+      }
+      setActiveMenuMsgId(null);
+      setActiveMenuCallId(null);
+    }, 450);
+  };
+
+  const handleItemTouchStart = (
+    key: string,
+    kind: 'msg' | 'call',
+    id: string,
+    e: React.TouchEvent
+  ) => {
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    swipeTouchRef.current = {
+      key,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      active: false,
+    };
+    if (!isSelectionMode) {
+      startLongPress(kind, id);
+    }
+  };
+
+  const handleItemTouchMove = (key: string, e: React.TouchEvent) => {
+    const st = swipeTouchRef.current;
+    if (!st || st.key !== key || e.touches.length !== 1) return;
+    const dx = e.touches[0].clientX - st.startX;
+    const dy = e.touches[0].clientY - st.startY;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+      cancelLongPress();
+    }
+    if (!isSelectionMode && dx > 12 && Math.abs(dx) > Math.abs(dy) * 1.35) {
+      st.active = true;
+      setSwipingKey(key);
+      setSwipeOffsetX(Math.min(64, dx));
+    }
+  };
+
+  const handleItemTouchEnd = (key: string, onTriggerReply: () => void) => {
+    cancelLongPress();
+    const st = swipeTouchRef.current;
+    if (st && st.key === key && st.active && swipeOffsetX >= 44) {
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+          navigator.vibrate(14);
+        }
+      } catch {}
+      onTriggerReply();
+    }
+    swipeTouchRef.current = null;
+    setSwipingKey(null);
+    setSwipeOffsetX(0);
+  };
+
+  const handleCopyMessage = async (msg: Message) => {
+    const att = msg.attachments?.[0];
+    const copyValue = att?.file_url
+      ? msg.content && msg.content !== att.file_name
+        ? `${msg.content}\n${att.file_url}`
+        : att.file_url
+      : msg.content;
+    await navigator.clipboard.writeText(copyValue);
+    setActiveMenuMsgId(null);
+  };
+
+  const handleCopySelected = async () => {
+    const selMsgs = messages.filter((m) => selectedMsgIds.includes(m.id));
+    const selCalls = chatCalls.filter((c) => selectedCallIds.includes(c.id));
+    const lines = [
+      ...selMsgs.map((m) => getMessageSummaryLabel(m)),
+      ...selCalls.map((c) => `📞 ${formatCallSummaryText(c)}`),
+    ].filter(Boolean);
+    if (lines.length > 0) {
+      await navigator.clipboard.writeText(lines.join('\n'));
+    }
+    clearSelection();
+  };
+
+  const handleDownloadAttachment = async (att: MessageAttachment) => {
     setActiveMenuMsgId(null);
     try {
-      await deleteMessageForEveryone(msg.id, currentUser.id);
+      const resp = await fetch(att.file_url);
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = att.file_name || 'osa-media';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 2500);
+    } catch {
+      const a = document.createElement('a');
+      a.href = att.file_url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.download = att.file_name || 'osa-media';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+  };
+
+  const openDeleteModal = (msgs: Message[], calls: CallRecord[]) => {
+    setActiveMenuMsgId(null);
+    setActiveMenuCallId(null);
+    setDeleteConfirmTarget({ msgs, calls });
+  };
+
+  const handleDeleteForMe = async (msg: Message) => {
+    openDeleteModal([msg], []);
+  };
+
+  const handleDeleteForEveryone = async (msg: Message) => {
+    openDeleteModal([msg], []);
+  };
+
+  const confirmDeleteForMe = async () => {
+    if (!deleteConfirmTarget || isDeletingAction) return;
+    setIsDeletingAction(true);
+    try {
+      const { msgs, calls } = deleteConfirmTarget;
+      if (msgs.length > 0) {
+        await Promise.all(msgs.map((m) => deleteMessageForMe(m.id, currentUser.id)));
+        const delIds = new Set(msgs.map((m) => m.id));
+        setMessages((prev) => prev.filter((m) => !delIds.has(m.id)));
+      }
+      if (calls.length > 0) {
+        const nextDeletedCalls = Array.from(
+          new Set([...deletedCallIds, ...calls.map((c) => c.id)])
+        );
+        setDeletedCallIds(nextDeletedCalls);
+        try {
+          localStorage.setItem(
+            `osa_deleted_calls_${currentUser.id}_${chat.id}`,
+            JSON.stringify(nextDeletedCalls)
+          );
+        } catch {}
+      }
+      setDeleteConfirmTarget(null);
+      setLightboxMedia(null);
+      clearSelection();
+      onChatUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete selected items.');
+    } finally {
+      setIsDeletingAction(false);
+    }
+  };
+
+  const confirmDeleteForEveryone = async () => {
+    if (!deleteConfirmTarget || isDeletingAction) return;
+    setIsDeletingAction(true);
+    try {
+      const { msgs } = deleteConfirmTarget;
+      await Promise.all(
+        msgs.map((m) => deleteMessageForEveryone(m.id, currentUser.id))
+      );
+      const delIds = new Set(msgs.map((m) => m.id));
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === msg.id
+          delIds.has(m.id)
             ? { ...m, is_deleted_for_everyone: true, content: t.messageDeleted }
             : m
         )
       );
+      setDeleteConfirmTarget(null);
+      setLightboxMedia(null);
+      clearSelection();
       onChatUpdated();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not delete message for everyone.');
+      setError(err instanceof Error ? err.message : 'Could not delete for everyone.');
+    } finally {
+      setIsDeletingAction(false);
     }
   };
 
-  const handleForwardToChat = async (targetChatId: string) => {
-    if (!forwardModalMsg) return;
+  const openForwardModal = (msgs: Message[], calls: CallRecord[] = []) => {
+    setActiveMenuMsgId(null);
+    setActiveMenuCallId(null);
+    setForwardModalMsgs(msgs.filter((m) => !m.is_deleted_for_everyone));
+    setForwardModalCalls(calls);
+    setForwardSelectedChatIds([]);
+    setForwardSearchQuery('');
+  };
+
+  const handleConfirmForward = async (directChatIds?: string[]) => {
+    const targetIds = directChatIds && directChatIds.length > 0 ? directChatIds : forwardSelectedChatIds;
+    if (targetIds.length === 0 || isForwarding) return;
+    setIsForwarding(true);
     try {
-      await sendTextMessage({
-        chatId: targetChatId,
-        senderId: currentUser.id,
-        content: forwardModalMsg.content,
-        forwardedFromId: forwardModalMsg.id,
-      });
-      setForwardModalMsg(null);
+      for (const targetChatId of targetIds) {
+        for (const msg of forwardModalMsgs) {
+          await forwardMessageToChat({
+            sourceMessage: msg,
+            targetChatId,
+            senderId: currentUser.id,
+          });
+        }
+        for (const call of forwardModalCalls) {
+          await sendTextMessage({
+            chatId: targetChatId,
+            senderId: currentUser.id,
+            content: `${call.call_type === 'video' ? '📹' : '📞'} ${formatCallSummaryText(call)}`,
+          });
+        }
+      }
+      setForwardModalMsgs([]);
+      setForwardModalCalls([]);
+      setForwardSelectedChatIds([]);
+      clearSelection();
       onChatUpdated();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not forward message.');
+    } finally {
+      setIsForwarding(false);
     }
+  };
+
+  const handleShareItems = async (msgs: Message[], calls: CallRecord[]) => {
+    setActiveMenuMsgId(null);
+    setActiveMenuCallId(null);
+    const activeMsgs = msgs.filter((m) => !m.is_deleted_for_everyone);
+    const singleMsg = activeMsgs.length === 1 && calls.length === 0 ? activeMsgs[0] : null;
+    const singleAtt = singleMsg?.attachments?.[0];
+
+    const textParts = [
+      ...activeMsgs.map((m) => {
+        const a = m.attachments?.[0];
+        if (a) {
+          const cap = m.content && m.content !== a.file_name ? `${m.content}\n` : '';
+          return `${cap}${a.file_url}`;
+        }
+        return m.content;
+      }),
+      ...calls.map((c) => `📞 ${formatCallSummaryText(c)}`),
+    ].filter(Boolean);
+
+    const combinedText = textParts.join('\n\n');
+    const shareTitle = `${chatTitle} · OSA`;
+
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        if (singleAtt) {
+          const resp = await fetch(singleAtt.file_url);
+          const blob = await resp.blob();
+          const file = new File([blob], singleAtt.file_name || 'osa-media', {
+            type: singleAtt.mime_type || blob.type || 'application/octet-stream',
+          });
+          if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              title: shareTitle,
+              text:
+                singleMsg?.content && singleMsg.content !== singleAtt.file_name
+                  ? singleMsg.content
+                  : undefined,
+              files: [file],
+            });
+            clearSelection();
+            return;
+          }
+        }
+        await navigator.share({
+          title: shareTitle,
+          text: combinedText,
+          url: singleAtt?.file_url,
+        });
+        clearSelection();
+        return;
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+      }
+    }
+
+    setShareCopiedToast(false);
+    setShareModalData({
+      title: shareTitle,
+      text: combinedText,
+      url: singleAtt?.file_url,
+      fileName: singleAtt?.file_name,
+      mimeType: singleAtt?.mime_type,
+      msgs: activeMsgs,
+      calls,
+    });
   };
 
   const handleToggleMute = async () => {
@@ -1880,6 +2330,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
     saveScheduledMessages([...scheduledMessages, newScheduled]);
     setText('');
     setReplyTo(null);
+    setReplyToCall(null);
     setShowScheduleModal(false);
     setScheduleTargetDate('');
     setScheduleTargetTime('');
@@ -2937,8 +3388,116 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           </div>
         )}
 
+        {/* WhatsApp-Style Multi-Select Action Bar */}
+        {isSelectionMode && (
+          <header className="flex items-center justify-between gap-2 px-3 sm:px-5 min-h-16 pt-safe bg-emerald-700 dark:bg-emerald-900 text-white shrink-0 w-full max-w-full relative z-30 shadow-sm animate-in fade-in duration-150">
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                type="button"
+                onClick={clearSelection}
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 shrink-0 transition-colors"
+                aria-label="Cancel selection"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <span className="text-base font-bold font-mono-num">
+                {totalSelectedCount}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+              {/* Reply (when 1 item selected & not deleted) */}
+              {totalSelectedCount === 1 && (() => {
+                if (selectedMsgIds.length === 1) {
+                  const targetMsg = messages.find((m) => m.id === selectedMsgIds[0]);
+                  if (targetMsg && !targetMsg.is_deleted_for_everyone) {
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => handleReplyToMessage(targetMsg)}
+                        className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                        title={t.reply}
+                      >
+                        <CornerUpLeft className="w-5 h-5" />
+                      </button>
+                    );
+                  }
+                }
+                if (selectedCallIds.length === 1) {
+                  const targetCall = chatCalls.find((c) => c.id === selectedCallIds[0]);
+                  if (targetCall) {
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => handleReplyToCallRecord(targetCall)}
+                        className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                        title={t.reply}
+                      >
+                        <CornerUpLeft className="w-5 h-5" />
+                      </button>
+                    );
+                  }
+                }
+                return null;
+              })()}
+
+              {/* Copy */}
+              <button
+                type="button"
+                onClick={handleCopySelected}
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                title={t.copy}
+              >
+                <Copy className="w-4.5 h-4.5" />
+              </button>
+
+              {/* Share (External / Social / File Share) */}
+              <button
+                type="button"
+                onClick={() => {
+                  const selMsgs = messages.filter((m) => selectedMsgIds.includes(m.id));
+                  const selCalls = chatCalls.filter((c) => selectedCallIds.includes(c.id));
+                  handleShareItems(selMsgs, selCalls);
+                }}
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                title={currentUser.language === 'bn' ? 'শেয়ার করুন' : 'Share'}
+              >
+                <Share2 className="w-4.5 h-4.5" />
+              </button>
+
+              {/* Delete (Opens WhatsApp Delete Modal) */}
+              <button
+                type="button"
+                onClick={() => {
+                  const selMsgs = messages.filter((m) => selectedMsgIds.includes(m.id));
+                  const selCalls = chatCalls.filter((c) => selectedCallIds.includes(c.id));
+                  openDeleteModal(selMsgs, selCalls);
+                }}
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                title={currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}
+              >
+                <Trash2 className="w-4.5 h-4.5" />
+              </button>
+
+              {/* Forward (Multi-Chat Forward) */}
+              <button
+                type="button"
+                onClick={() => {
+                  const selMsgs = messages.filter((m) => selectedMsgIds.includes(m.id));
+                  const selCalls = chatCalls.filter((c) => selectedCallIds.includes(c.id));
+                  openForwardModal(selMsgs, selCalls);
+                }}
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/15 transition-colors"
+                title={t.forward}
+              >
+                <CornerUpRight className="w-5 h-5" />
+              </button>
+            </div>
+          </header>
+        )}
+
         {/* Top Conversation Header */}
-        <header className="flex items-center justify-between gap-1 px-2 sm:px-5 min-h-16 pt-safe bg-white dark:bg-slate-900 shrink-0 w-full max-w-full relative z-30 overflow-visible">
+        <header className={`${isSelectionMode ? 'hidden' : 'flex'} items-center justify-between gap-1 px-2 sm:px-5 min-h-16 pt-safe bg-white dark:bg-slate-900 shrink-0 w-full max-w-full relative z-30 overflow-visible`}>
           <div className="flex items-center gap-1.5 sm:gap-2.5 flex-1 min-w-0 overflow-hidden">
             <button
               type="button"
@@ -3449,10 +4008,13 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
       <div
         ref={messagesContainerRef}
         className="osa-chat-messages-zone px-3 sm:px-5 py-4 pb-6 space-y-3 relative"
-        onClick={() => setActiveMenuMsgId(null)}
+        onClick={() => {
+          setActiveMenuMsgId(null);
+          setActiveMenuCallId(null);
+        }}
       >
         <AnimatedChatWallpaper theme={chatTheme} opacity={themeOpacity} speed={themeSpeed} />
-        {visibleMessages.length === 0 && chatCalls.length === 0 ? (
+        {visibleMessages.length === 0 && chatCalls.filter((c) => !deletedCallIds.includes(c.id)).length === 0 ? (
           <div className="py-16 text-center">
             <p className="text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">
               {chatSearchQuery ? 'No messages match your search' : 'No messages yet'}
@@ -3467,8 +4029,9 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               | { kind: 'message'; createdAt: string; msg: Message }
               | { kind: 'call'; createdAt: string; call: CallRecord };
 
+            const activeCalls = chatCalls.filter((c) => !deletedCallIds.includes(c.id));
             const filteredCalls = chatSearchQuery.trim()
-              ? chatCalls.filter((c) => {
+              ? activeCalls.filter((c) => {
                   const q = chatSearchQuery.trim().toLowerCase();
                   return (
                     c.call_type.toLowerCase().includes(q) ||
@@ -3476,7 +4039,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                     'call'.includes(q)
                   );
                 })
-              : chatCalls;
+              : activeCalls;
 
             const timeline: TimelineEntry[] = [
               ...visibleMessages.map((msg) => ({
@@ -3492,15 +4055,6 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
             ].sort(
               (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
             );
-
-            const formatCallDurationMMSS = (secs: number) => {
-              if (!secs || secs <= 0) return null;
-              const mins = Math.floor(secs / 60)
-                .toString()
-                .padStart(2, '0');
-              const rem = (secs % 60).toString().padStart(2, '0');
-              return `${mins}:${rem}`;
-            };
 
             let lastDateHeader = '';
 
@@ -3523,6 +4077,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
               if (entry.kind === 'call') {
                 const c = entry.call;
+                const callKey = `call-${c.id}`;
+                const isCallSelected = selectedCallIds.includes(c.id);
+                const isSwipingCall = swipingKey === callKey;
+                const callSwipeX = isSwipingCall ? swipeOffsetX : 0;
                 const isOutgoing = c.caller_id === currentUser.id;
                 const isVideo = c.call_type === 'video';
                 const isMissed = c.status === 'missed';
@@ -3568,13 +4126,67 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 );
 
                 return (
-                  <React.Fragment key={`call-${c.id}`}>
+                  <React.Fragment key={callKey}>
                     {dateSeparatorNode}
                     <div
-                      className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}
+                      onMouseDown={() => !isSelectionMode && startLongPress('call', c.id)}
+                      onMouseUp={cancelLongPress}
+                      onMouseLeave={cancelLongPress}
+                      onTouchStart={(e) => handleItemTouchStart(callKey, 'call', c.id, e)}
+                      onTouchMove={(e) => handleItemTouchMove(callKey, e)}
+                      onTouchEnd={() =>
+                        handleItemTouchEnd(callKey, () => handleReplyToCallRecord(c))
+                      }
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        if (!isSelectionMode) {
+                          toggleCallSelection(c.id);
+                        }
+                      }}
+                      onClick={(e) => {
+                        if (longPressTriggeredRef.current) {
+                          longPressTriggeredRef.current = false;
+                          return;
+                        }
+                        if (isSelectionMode) {
+                          e.stopPropagation();
+                          toggleCallSelection(c.id);
+                        }
+                      }}
+                      className={`relative flex items-center gap-2 rounded-xl px-1 py-0.5 transition-colors ${
+                        isCallSelected
+                          ? 'bg-emerald-500/15 dark:bg-emerald-500/20'
+                          : ''
+                      } ${isOutgoing ? 'justify-end' : 'justify-start'}`}
                     >
+                      {isSelectionMode && (
+                        <div
+                          className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
+                            isCallSelected
+                              ? 'bg-emerald-600 border-emerald-600 text-white'
+                              : 'border-slate-400 dark:border-slate-500 bg-white/70 dark:bg-slate-900/70'
+                          }`}
+                        >
+                          {isCallSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                        </div>
+                      )}
+
+                      {callSwipeX > 14 && (
+                        <div
+                          style={{ opacity: Math.min(1, callSwipeX / 48) }}
+                          className="w-7 h-7 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm"
+                        >
+                          <CornerUpLeft className="w-3.5 h-3.5" />
+                        </div>
+                      )}
+
                       <div
-                        className={`flex items-center gap-3 rounded-2xl px-3.5 py-2.5 border shadow-xs max-w-[86%] sm:max-w-[70%] ${
+                        style={
+                          callSwipeX > 0
+                            ? { transform: `translateX(${callSwipeX}px)` }
+                            : undefined
+                        }
+                        className={`relative flex items-center gap-2.5 sm:gap-3 rounded-2xl px-3.5 py-2.5 border shadow-xs max-w-[88%] sm:max-w-[70%] transition-transform ${
                           isOutgoing
                             ? 'bg-blue-600/10 dark:bg-blue-950/50 border-blue-500/25 text-slate-900 dark:text-white rounded-br-xs'
                             : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 text-slate-900 dark:text-white rounded-bl-xs'
@@ -3615,10 +4227,13 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                           </div>
                         </div>
 
-                        {!isGroup && peer && !blockState.anyBlock && (
+                        {!isGroup && peer && !blockState.anyBlock && !isSelectionMode && (
                           <button
                             type="button"
-                            onClick={() => onStartCall(peer, c.call_type, chat.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onStartCall(peer, c.call_type, chat.id);
+                            }}
                             className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold inline-flex items-center gap-1 shrink-0 transition-colors"
                             title={`Call back (${c.call_type})`}
                           >
@@ -3627,8 +4242,103 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                             ) : (
                               <Phone className="w-3.5 h-3.5" />
                             )}
-                            <span>Call back</span>
+                            <span className="hidden xs:inline">Call back</span>
                           </button>
+                        )}
+
+                        {!isSelectionMode && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveMenuMsgId(null);
+                              setActiveMenuCallId((prev) => (prev === c.id ? null : c.id));
+                            }}
+                            className="p-1 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-slate-400 shrink-0"
+                            aria-label="Call actions"
+                          >
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+                        )}
+
+                        {activeMenuCallId === c.id && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className={`absolute z-30 top-full mt-1 w-48 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl py-1.5 text-xs text-slate-700 dark:text-slate-200 ${
+                              isOutgoing ? 'right-0' : 'left-0'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => handleReplyToCallRecord(c)}
+                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                            >
+                              <CornerUpLeft className="w-4 h-4 text-slate-400" />
+                              <span>{t.reply}</span>
+                            </button>
+
+                            {!isGroup && peer && !blockState.anyBlock && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveMenuCallId(null);
+                                  onStartCall(peer, c.call_type, chat.id);
+                                }}
+                                className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                              >
+                                <PhoneCall className="w-4 h-4 text-emerald-500" />
+                                <span>{currentUser.language === 'bn' ? 'আবার কল করুন' : 'Call Back'}</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => openForwardModal([], [c])}
+                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                            >
+                              <CornerUpRight className="w-4 h-4 text-slate-400" />
+                              <span>{t.forward}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleShareItems([], [c])}
+                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                            >
+                              <Share2 className="w-4 h-4 text-slate-400" />
+                              <span>{currentUser.language === 'bn' ? 'শেয়ার' : 'Share'}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await navigator.clipboard.writeText(`📞 ${formatCallSummaryText(c)}`);
+                                setActiveMenuCallId(null);
+                              }}
+                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                            >
+                              <Copy className="w-4 h-4 text-slate-400" />
+                              <span>{t.copy}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => toggleCallSelection(c.id)}
+                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                            >
+                              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                              <span>{currentUser.language === 'bn' ? 'নির্বাচন করুন' : 'Select'}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => openDeleteModal([], [c])}
+                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-red-600 dark:text-red-400 font-semibold"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              <span>{currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}</span>
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -3637,6 +4347,10 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               }
 
               const msg = entry.msg;
+              const msgKey = `msg-${msg.id}`;
+              const isMsgSelected = selectedMsgIds.includes(msg.id);
+              const isSwipingMsg = swipingKey === msgKey;
+              const msgSwipeX = isSwipingMsg ? swipeOffsetX : 0;
               const isMine = msg.sender_id === currentUser.id;
               const senderName = msg.sender?.full_name || 'OSA User';
               const attachments = msg.attachments || [];
@@ -3645,17 +4359,77 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                 <React.Fragment key={msg.id}>
                   {dateSeparatorNode}
                   <div
-                    className={`flex flex-col ${isMine ? 'items-end' : 'items-start'}`}
+                    id={`msg-${msg.id}`}
+                    onMouseDown={() => !isSelectionMode && startLongPress('msg', msg.id)}
+                    onMouseUp={cancelLongPress}
+                    onMouseLeave={cancelLongPress}
+                    onTouchStart={(e) => handleItemTouchStart(msgKey, 'msg', msg.id, e)}
+                    onTouchMove={(e) => handleItemTouchMove(msgKey, e)}
+                    onTouchEnd={() =>
+                      handleItemTouchEnd(msgKey, () => {
+                        if (!msg.is_deleted_for_everyone) {
+                          handleReplyToMessage(msg);
+                        }
+                      })
+                    }
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      if (!isSelectionMode) {
+                        toggleMsgSelection(msg.id);
+                      }
+                    }}
+                    onClick={(e) => {
+                      if (longPressTriggeredRef.current) {
+                        longPressTriggeredRef.current = false;
+                        return;
+                      }
+                      if (isSelectionMode) {
+                        e.stopPropagation();
+                        toggleMsgSelection(msg.id);
+                      }
+                    }}
+                    className={`relative flex items-center gap-2 rounded-xl px-1 py-0.5 transition-colors ${
+                      isMsgSelected
+                        ? 'bg-emerald-500/15 dark:bg-emerald-500/20'
+                        : ''
+                    } ${isMine ? 'justify-end' : 'justify-start'}`}
                   >
+                    {isSelectionMode && (
+                      <div
+                        className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
+                          isMsgSelected
+                            ? 'bg-emerald-600 border-emerald-600 text-white'
+                            : 'border-slate-400 dark:border-slate-500 bg-white/70 dark:bg-slate-900/70'
+                        }`}
+                      >
+                        {isMsgSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                      </div>
+                    )}
+
+                    {msgSwipeX > 14 && !msg.is_deleted_for_everyone && (
+                      <div
+                        style={{ opacity: Math.min(1, msgSwipeX / 48) }}
+                        className="w-7 h-7 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm"
+                      >
+                        <CornerUpLeft className="w-3.5 h-3.5" />
+                      </div>
+                    )}
+
+                    <div className={`flex flex-col max-w-[84%] sm:max-w-[70%] ${isMine ? 'items-end' : 'items-start'}`}>
                 <div
-                  className={`relative group max-w-[84%] sm:max-w-[70%] rounded-2xl px-3.5 py-2.5 shadow-xs ${
+                  style={
+                    msgSwipeX > 0
+                      ? { transform: `translateX(${msgSwipeX}px)` }
+                      : undefined
+                  }
+                  className={`relative group w-full rounded-2xl px-3.5 py-2.5 shadow-xs transition-transform ${
                     isMine
                       ? 'bg-blue-600 text-white rounded-br-xs'
                       : 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-slate-800 rounded-bl-xs'
                   }`}
                 >
                   {/* Floating Quick Reaction Bar on hover */}
-                  {!msg.is_deleted_for_everyone && (
+                  {!msg.is_deleted_for_everyone && !isSelectionMode && (
                     <div
                       className={`absolute z-20 -top-8 ${
                         isMine ? 'right-2' : 'left-2'
@@ -3696,20 +4470,50 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   )}
 
                   {/* Quoted Reply Preview */}
-                  {msg.reply_to && !msg.is_deleted_for_everyone && (
-                    <div
-                      className={`mb-2 rounded-xl px-2.5 py-1.5 text-xs border-l-3 ${
-                        isMine
-                          ? 'bg-blue-700/60 border-white/70 text-blue-50'
-                          : 'bg-slate-100 dark:bg-slate-800 border-blue-600 text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      <p className="font-semibold text-[11px] truncate">
-                        {msg.reply_to.sender_id === currentUser.id ? 'You' : chatTitle}
-                      </p>
-                      <p className="truncate opacity-90">{msg.reply_to.content}</p>
-                    </div>
-                  )}
+                  {msg.reply_to && !msg.is_deleted_for_everyone && (() => {
+                    const rThumb =
+                      msg.reply_to.attachments?.find((a) => a.file_type === 'image')?.file_url ||
+                      null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          if (isSelectionMode) return;
+                          e.stopPropagation();
+                          const targetEl = document.getElementById(`msg-${msg.reply_to?.id}`);
+                          if (targetEl) {
+                            targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            targetEl.classList.add('ring-2', 'ring-emerald-400');
+                            setTimeout(() => targetEl.classList.remove('ring-2', 'ring-emerald-400'), 1500);
+                          }
+                        }}
+                        className={`mb-2 w-full text-left rounded-xl px-2.5 py-1.5 text-xs border-l-3 flex items-center justify-between gap-2 ${
+                          isMine
+                            ? 'bg-blue-700/60 border-white/70 text-blue-50'
+                            : 'bg-slate-100 dark:bg-slate-800 border-blue-600 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-[11px] truncate">
+                            {msg.reply_to.sender_id === currentUser.id
+                              ? 'You'
+                              : msg.reply_to.sender?.full_name || chatTitle}
+                          </p>
+                          <p className="truncate opacity-90">
+                            {getMessageSummaryLabel(msg.reply_to)}
+                          </p>
+                        </div>
+                        {rThumb && (
+                          <img
+                            src={rThumb}
+                            alt="Reply thumbnail"
+                            referrerPolicy="no-referrer"
+                            className="w-9 h-9 rounded-lg object-cover shrink-0"
+                          />
+                        )}
+                      </button>
+                    );
+                  })()}
 
                   {/* Attachments Rendering */}
                   {!msg.is_deleted_for_everyone &&
@@ -3758,7 +4562,11 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                             {att.file_type === 'image' && (
                               <button
                                 type="button"
-                                onClick={() => setLightboxImageUrl(att.file_url)}
+                                onClick={(e) => {
+                                  if (isSelectionMode) return;
+                                  e.stopPropagation();
+                                  setLightboxMedia({ msg, att });
+                                }}
                                 className="block rounded-xl overflow-hidden max-h-64 bg-slate-900/20"
                               >
                                 <img
@@ -5099,9 +5907,16 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
 
                     if (msg.is_deleted_for_everyone) {
                       return (
-                        <p className="text-xs italic opacity-75 whitespace-pre-wrap break-words leading-relaxed">
-                          {t.messageDeleted}
-                        </p>
+                        <div className="flex items-center gap-1.5 text-xs italic opacity-80 py-0.5 select-none">
+                          <Ban className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            {msg.sender_id === currentUser.id
+                              ? currentUser.language === 'bn'
+                                ? 'আপনি এই মেসেজটি মুছে দিয়েছেন'
+                                : 'You deleted this message'
+                              : t.messageDeleted}
+                          </span>
+                        </div>
                       );
                     }
 
@@ -5303,6 +6118,37 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       );
                     }
 
+                    if (msg.content.startsWith('> 📞 ') || msg.content.startsWith('> 📹 ')) {
+                      const nlIdx = msg.content.indexOf('\n');
+                      const quotedCallHeader = (nlIdx >= 0 ? msg.content.slice(2, nlIdx) : msg.content.slice(2)).trim();
+                      const bodyAfterQuote = nlIdx >= 0 ? msg.content.slice(nlIdx + 1).trim() : '';
+                      return (
+                        <div>
+                          <div
+                            className={`mb-1.5 rounded-xl px-2.5 py-1.5 text-xs border-l-3 flex items-center gap-2 ${
+                              isMine
+                                ? 'bg-blue-700/60 border-white/80 text-blue-50'
+                                : 'bg-slate-100 dark:bg-slate-800 border-emerald-500 text-slate-700 dark:text-slate-200'
+                            }`}
+                          >
+                            {quotedCallHeader.startsWith('📹') ? (
+                              <Video className="w-3.5 h-3.5 shrink-0 opacity-90" />
+                            ) : (
+                              <Phone className="w-3.5 h-3.5 shrink-0 opacity-90" />
+                            )}
+                            <span className="truncate font-medium">
+                              {quotedCallHeader.replace(/^(📞|📹)\s*/, '')}
+                            </span>
+                          </div>
+                          {bodyAfterQuote && (
+                            <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+                              {bodyAfterQuote}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    }
+
                     return (
                       <div>
                         <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
@@ -5354,11 +6200,12 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                       </span>
                     )}
 
-                    {!msg.is_deleted_for_everyone && (
+                    {!isSelectionMode && (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          setActiveMenuCallId(null);
                           setActiveMenuMsgId((prev) => (prev === msg.id ? null : msg.id));
                         }}
                         className={`p-0.5 rounded hover:bg-black/10 ${
@@ -5379,116 +6226,132 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                         isMine ? 'right-0' : 'left-0'
                       }`}
                     >
-                      {/* Emoji reaction picker inside menu */}
-                      <div className="px-2.5 py-1.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
-                        {REACTION_EMOJIS.map((emoji) => (
+                      {!msg.is_deleted_for_everyone && (
+                        <>
+                          {/* Emoji reaction picker inside menu */}
+                          <div className="px-2.5 py-1.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
+                            {REACTION_EMOJIS.map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => {
+                                  handleToggleReaction(msg.id, emoji);
+                                  setActiveMenuMsgId(null);
+                                }}
+                                className="w-6 h-6 rounded-full flex items-center justify-center text-sm hover:scale-125 transition-transform"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+
                           <button
-                            key={emoji}
+                            type="button"
+                            onClick={() => handleReplyToMessage(msg)}
+                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                          >
+                            <CornerUpLeft className="w-4 h-4 text-slate-400" />
+                            <span>{t.reply}</span>
+                          </button>
+
+                          {isMine && attachments.length === 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingMsg(msg);
+                                setReplyTo(null);
+                                setReplyToCall(null);
+                                setText(msg.content);
+                                setActiveMenuMsgId(null);
+                              }}
+                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                            >
+                              <Pencil className="w-4 h-4 text-slate-400" />
+                              <span>{currentUser.language === 'bn' ? 'এডিট করুন' : 'Edit'}</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handleCopyMessage(msg)}
+                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                          >
+                            <Copy className="w-4 h-4 text-slate-400" />
+                            <span>{t.copy}</span>
+                          </button>
+
+                          {attachments[0] && (
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadAttachment(attachments[0])}
+                              className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                            >
+                              <Download className="w-4 h-4 text-slate-400" />
+                              <span>{currentUser.language === 'bn' ? 'ডাউনলোড' : 'Download'}</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => openForwardModal([msg], [])}
+                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                          >
+                            <CornerUpRight className="w-4 h-4 text-slate-400" />
+                            <span>{t.forward}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleShareItems([msg], [])}
+                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                          >
+                            <Share2 className="w-4 h-4 text-slate-400" />
+                            <span>{currentUser.language === 'bn' ? 'শেয়ার' : 'Share'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => toggleMsgSelection(msg.id)}
+                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                          >
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                            <span>{currentUser.language === 'bn' ? 'নির্বাচন করুন' : 'Select'}</span>
+                          </button>
+
+                          <button
                             type="button"
                             onClick={() => {
-                              handleToggleReaction(msg.id, emoji);
-                              setActiveMenuMsgId(null);
+                              if (pinnedMessageId === msg.id) {
+                                handleUnpinMessage();
+                              } else {
+                                handlePinMessage(msg.id);
+                              }
                             }}
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-sm hover:scale-125 transition-transform"
+                            className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-slate-700 dark:text-slate-200"
                           >
-                            {emoji}
+                            {pinnedMessageId === msg.id ? (
+                              <>
+                                <PinOff className="w-4 h-4 text-amber-500" />
+                                <span>{currentUser.language === 'bn' ? 'আনপিন করুন' : 'Unpin Message'}</span>
+                              </>
+                            ) : (
+                              <>
+                                <Pin className="w-4 h-4 text-indigo-500" />
+                                <span>{currentUser.language === 'bn' ? 'পিন করুন' : 'Pin Message'}</span>
+                              </>
+                            )}
                           </button>
-                        ))}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setReplyTo(msg);
-                          setEditingMsg(null);
-                          setActiveMenuMsgId(null);
-                        }}
-                        className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                      >
-                        <CornerUpLeft className="w-4 h-4 text-slate-400" />
-                        <span>{t.reply}</span>
-                      </button>
-
-                      {isMine && !msg.is_deleted_for_everyone && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingMsg(msg);
-                            setReplyTo(null);
-                            setText(msg.content);
-                            setActiveMenuMsgId(null);
-                          }}
-                          className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                        >
-                          <Pencil className="w-4 h-4 text-slate-400" />
-                          <span>Edit</span>
-                        </button>
+                        </>
                       )}
 
                       <button
                         type="button"
-                        onClick={() => handleCopyMessage(msg)}
-                        className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                      >
-                        <Copy className="w-4 h-4 text-slate-400" />
-                        <span>{t.copy}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setForwardModalMsg(msg);
-                          setActiveMenuMsgId(null);
-                        }}
-                        className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                      >
-                        <CornerUpRight className="w-4 h-4 text-slate-400" />
-                        <span>{t.forward}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (pinnedMessageId === msg.id) {
-                            handleUnpinMessage();
-                          } else {
-                            handlePinMessage(msg.id);
-                          }
-                        }}
-                        className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-slate-700 dark:text-slate-200"
-                      >
-                        {pinnedMessageId === msg.id ? (
-                          <>
-                            <PinOff className="w-4 h-4 text-amber-500" />
-                            <span>{currentUser.language === 'bn' ? 'আনপিন করুন' : 'Unpin Message'}</span>
-                          </>
-                        ) : (
-                          <>
-                            <Pin className="w-4 h-4 text-indigo-500" />
-                            <span>{currentUser.language === 'bn' ? 'পিন করুন' : 'Pin Message'}</span>
-                          </>
-                        )}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteForMe(msg)}
-                        className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-red-600 dark:text-red-400"
+                        onClick={() => openDeleteModal([msg], [])}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-red-600 dark:text-red-400 font-semibold"
                       >
                         <Trash2 className="w-4 h-4" />
-                        <span>{t.deleteForMe}</span>
+                        <span>{currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}</span>
                       </button>
-
-                      {isMine && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteForEveryone(msg)}
-                          className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-red-600 dark:text-red-400 font-semibold"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          <span>{t.deleteForEveryone}</span>
-                        </button>
-                      )}
                     </div>
                   )}
                 </div>
@@ -5531,6 +6394,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
                   );
                 })()}
               </div>
+                  </div>
                 </React.Fragment>
               );
             });
@@ -5606,21 +6470,46 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
           </div>
         )}
 
-        {/* Reply Banner */}
-        {replyTo && (
-          <div className="shrink-0 px-4 py-2 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
-            <div className="min-w-0 flex-1 border-l-3 border-blue-600 pl-2.5">
-              <p className="text-xs font-semibold text-blue-600 dark:text-blue-400">
-                Replying to {replyTo.sender_id === currentUser.id ? 'yourself' : chatTitle}
+        {/* Reply Banner (Supports Messages, Photos, Videos, Audio, Documents & Calls) */}
+        {(replyTo || replyToCall) && (
+          <div className="shrink-0 px-4 py-2 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2.5 animate-in fade-in slide-in-from-bottom-1 duration-150">
+            <div className="min-w-0 flex-1 border-l-3 border-emerald-600 pl-2.5">
+              <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                {currentUser.language === 'bn' ? 'রিপ্লাই দিচ্ছেন: ' : 'Replying to '}
+                {replyTo
+                  ? replyTo.sender_id === currentUser.id
+                    ? currentUser.language === 'bn'
+                      ? 'আপনার মেসেজ'
+                      : 'yourself'
+                    : replyTo.sender?.full_name || chatTitle
+                  : currentUser.language === 'bn'
+                  ? 'কল লগ'
+                  : 'Call'}
               </p>
               <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
-                {replyTo.content}
+                {replyTo
+                  ? getMessageSummaryLabel(replyTo)
+                  : replyToCall
+                  ? `${replyToCall.call_type === 'video' ? '📹' : '📞'} ${formatCallSummaryText(replyToCall)}`
+                  : ''}
               </p>
             </div>
+            {replyTo?.attachments?.find((a) => a.file_type === 'image')?.file_url && (
+              <img
+                src={replyTo.attachments.find((a) => a.file_type === 'image')!.file_url}
+                alt="Reply preview"
+                referrerPolicy="no-referrer"
+                className="w-10 h-10 rounded-lg object-cover shrink-0 border border-slate-300 dark:border-slate-700"
+              />
+            )}
             <button
               type="button"
-              onClick={() => setReplyTo(null)}
+              onClick={() => {
+                setReplyTo(null);
+                setReplyToCall(null);
+              }}
               className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 shrink-0"
+              aria-label="Cancel reply"
             >
               <X className="w-4 h-4" />
             </button>
@@ -5928,6 +6817,7 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
               )}
 
               <input
+                ref={composerInputRef}
                 type="text"
                 value={text}
                 onChange={(e) => handleTypingChange(e.target.value)}
@@ -5963,64 +6853,394 @@ export const ChatConversationView: React.FC<ChatConversationViewProps> = ({
         )}
       </div>
 
-      {/* Forward Message Modal */}
-      {forwardModalMsg && (
+      {/* WhatsApp-Style Multi-Chat Forward Modal (Preserves Text, Photos, Videos, Audio, Docs & Calls) */}
+      {(forwardModalMsgs.length > 0 || forwardModalCalls.length > 0) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl max-h-dvh-modal flex flex-col overflow-hidden">
             <div className="shrink-0 flex items-center justify-between mb-3">
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                {t.forward} Message
-              </h3>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  {currentUser.language === 'bn' ? 'ফরোয়ার্ড করুন...' : 'Forward to...'}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[230px]">
+                  {forwardModalMsgs.length + forwardModalCalls.length === 1
+                    ? forwardModalMsgs[0]
+                      ? getMessageSummaryLabel(forwardModalMsgs[0])
+                      : `📞 ${formatCallSummaryText(forwardModalCalls[0])}`
+                    : currentUser.language === 'bn'
+                    ? `${forwardModalMsgs.length + forwardModalCalls.length}টি আইটেম নির্বাচিত`
+                    : `${forwardModalMsgs.length + forwardModalCalls.length} items selected`}
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={() => setForwardModalMsg(null)}
+                onClick={() => {
+                  setForwardModalMsgs([]);
+                  setForwardModalCalls([]);
+                  setForwardSelectedChatIds([]);
+                }}
                 className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
-              {allChats.map((c) => {
-                const name = c.type === 'group' ? c.group?.name || 'Group' : c.peer?.full_name || 'User';
-                const avatar = c.type === 'group' ? c.group?.avatar_url : c.peer?.avatar_url;
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => handleForwardToChat(c.id)}
-                    className="w-full flex items-center gap-3 py-3 px-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-left rounded-xl"
-                  >
-                    <OSAAvatar name={name} avatarUrl={avatar} size="sm" isGroup={c.type === 'group'} />
-                    <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                      {name}
-                    </span>
-                  </button>
-                );
-              })}
+
+            <div className="shrink-0 relative mb-3">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={forwardSearchQuery}
+                onChange={(e) => setForwardSearchQuery(e.target.value)}
+                placeholder={currentUser.language === 'bn' ? 'চ্যাট খুঁজুন...' : 'Search chats...'}
+                className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+              />
             </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+              {allChats
+                .filter((c) => {
+                  if (!forwardSearchQuery.trim()) return true;
+                  const name = c.type === 'group' ? c.group?.name || 'Group' : c.peer?.full_name || 'User';
+                  return name.toLowerCase().includes(forwardSearchQuery.trim().toLowerCase());
+                })
+                .map((c) => {
+                  const name = c.type === 'group' ? c.group?.name || 'Group' : c.peer?.full_name || 'User';
+                  const avatar = c.type === 'group' ? c.group?.avatar_url : c.peer?.avatar_url;
+                  const isChecked = forwardSelectedChatIds.includes(c.id);
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() =>
+                        setForwardSelectedChatIds((prev) =>
+                          prev.includes(c.id) ? prev.filter((id) => id !== c.id) : [...prev, c.id]
+                        )
+                      }
+                      className={`w-full flex items-center justify-between gap-3 py-2.5 px-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-left rounded-xl transition-colors ${
+                        isChecked ? 'bg-emerald-50 dark:bg-emerald-950/30' : ''
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <OSAAvatar name={name} avatarUrl={avatar} size="sm" isGroup={c.type === 'group'} />
+                        <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                          {name}
+                        </span>
+                      </div>
+                      <div
+                        className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
+                          isChecked
+                            ? 'bg-emerald-600 border-emerald-600 text-white'
+                            : 'border-slate-300 dark:border-slate-600'
+                        }`}
+                      >
+                        {isChecked && <Check className="w-3 h-3 stroke-[3]" />}
+                      </div>
+                    </button>
+                  );
+                })}
+            </div>
+
+            {forwardSelectedChatIds.length > 0 && (
+              <div className="shrink-0 pt-3 mt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 truncate">
+                  {forwardSelectedChatIds.length} {currentUser.language === 'bn' ? 'টি চ্যাট নির্বাচিত' : 'selected'}
+                </span>
+                <button
+                  type="button"
+                  disabled={isForwarding}
+                  onClick={() => handleConfirmForward()}
+                  className="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-md"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>
+                    {isForwarding
+                      ? currentUser.language === 'bn'
+                        ? 'পাঠানো হচ্ছে...'
+                        : 'Sending...'
+                      : currentUser.language === 'bn'
+                      ? 'ফরোয়ার্ড করুন'
+                      : 'Forward'}
+                  </span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Fullscreen Image Viewer Lightbox */}
-      {lightboxImageUrl && (
+      {/* WhatsApp-Style Delete Confirmation Dialog */}
+      {deleteConfirmTarget && (() => {
+        const { msgs, calls } = deleteConfirmTarget;
+        const totalItems = msgs.length + calls.length;
+        const canDeleteAllForEveryone =
+          calls.length === 0 &&
+          msgs.length > 0 &&
+          msgs.every((m) => m.sender_id === currentUser.id && !m.is_deleted_for_everyone);
+        const isBn = currentUser.language === 'bn';
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <div className="w-full max-w-xs rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl animate-in zoom-in-95 duration-150">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1.5">
+                {totalItems === 1
+                  ? calls.length === 1
+                    ? isBn ? 'কল রেকর্ড মুছবেন?' : 'Delete call log?'
+                    : isBn ? 'মেসেজ মুছবেন?' : 'Delete message?'
+                  : isBn
+                  ? `${totalItems}টি আইটেম মুছবেন?`
+                  : `Delete ${totalItems} items?`}
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-5 leading-relaxed">
+                {canDeleteAllForEveryone
+                  ? isBn
+                    ? 'আপনি এটি কেবল আপনার চ্যাট থেকে নাকি সবার চ্যাট থেকেই মুছতে চান?'
+                    : 'Delete for everyone removes this from all participants, or delete just for yourself.'
+                  : isBn
+                  ? 'এটি কেবল আপনার ডিভাইস ও চ্যাট বক্স থেকে মুছে যাবে।'
+                  : 'This will remove the selected item(s) from your chat view.'}
+              </p>
+
+              <div className="flex flex-col gap-2">
+                {canDeleteAllForEveryone && (
+                  <button
+                    type="button"
+                    disabled={isDeletingAction}
+                    onClick={confirmDeleteForEveryone}
+                    className="w-full py-2.5 px-4 rounded-2xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold text-center transition-colors"
+                  >
+                    {t.deleteForEveryone}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={isDeletingAction}
+                  onClick={confirmDeleteForMe}
+                  className="w-full py-2.5 px-4 rounded-2xl bg-red-50 dark:bg-red-950/50 hover:bg-red-100 dark:hover:bg-red-950 text-red-600 dark:text-red-400 text-xs font-bold text-center transition-colors border border-red-200/70 dark:border-red-900/60"
+                >
+                  {t.deleteForMe}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isDeletingAction}
+                  onClick={() => setDeleteConfirmTarget(null)}
+                  className="w-full py-2.5 px-4 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold text-center transition-colors"
+                >
+                  {t.cancel}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* External & Social Share Modal Fallback */}
+      {shareModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Share2 className="w-4 h-4 text-emerald-600" />
+                <span>{currentUser.language === 'bn' ? 'শেয়ার করুন' : 'Share'}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShareModalData(null)}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/70 text-xs text-slate-600 dark:text-slate-300 max-h-28 overflow-y-auto mb-4 whitespace-pre-wrap break-words">
+              {shareModalData.text || shareModalData.url || shareModalData.fileName}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <a
+                href={`https://wa.me/?text=${encodeURIComponent(shareModalData.text || shareModalData.url || '')}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShareModalData(null)}
+                className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>WhatsApp</span>
+              </a>
+
+              <a
+                href={`https://t.me/share/url?url=${encodeURIComponent(shareModalData.url || '')}&text=${encodeURIComponent(shareModalData.text || '')}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShareModalData(null)}
+                className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Telegram</span>
+              </a>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const msgsToFwd = shareModalData.msgs || [];
+                  const callsToFwd = shareModalData.calls || [];
+                  setShareModalData(null);
+                  openForwardModal(msgsToFwd, callsToFwd);
+                }}
+                className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
+              >
+                <CornerUpRight className="w-3.5 h-3.5" />
+                <span>{currentUser.language === 'bn' ? 'OSA চ্যাটে পাঠান' : 'OSA Chat'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(shareModalData.text || shareModalData.url || '');
+                  setShareCopiedToast(true);
+                  setTimeout(() => setShareCopiedToast(false), 1800);
+                }}
+                className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-white text-xs font-bold"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>
+                  {shareCopiedToast
+                    ? currentUser.language === 'bn'
+                      ? 'কপি হয়েছে!'
+                      : 'Copied!'
+                    : currentUser.language === 'bn'
+                    ? 'কপি করুন'
+                    : 'Copy'}
+                </span>
+              </button>
+            </div>
+
+            {shareModalData.url && (
+              <button
+                type="button"
+                onClick={async () => {
+                  await handleDownloadAttachment({
+                    id: 'share-dl',
+                    message_id: '',
+                    chat_id: chat.id,
+                    uploader_id: currentUser.id,
+                    file_name: shareModalData.fileName || 'osa-media',
+                    file_url: shareModalData.url || '',
+                    storage_path: '',
+                    file_type: 'document',
+                    mime_type: shareModalData.mimeType || 'application/octet-stream',
+                    file_size: 0,
+                    created_at: new Date().toISOString(),
+                  });
+                  setShareModalData(null);
+                }}
+                className="mt-2.5 w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold"
+              >
+                <Download className="w-4 h-4" />
+                <span>{currentUser.language === 'bn' ? 'ফাইল ডাউনলোড করুন' : 'Download Media'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Upgraded WhatsApp-Style Fullscreen Media Viewer Lightbox */}
+      {lightboxMedia && (
         <div
-          onClick={() => setLightboxImageUrl(null)}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          onClick={() => setLightboxMedia(null)}
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/95"
         >
-          <button
-            type="button"
-            onClick={() => setLightboxImageUrl(null)}
-            className="absolute top-5 right-5 w-11 h-11 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20"
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full flex items-center justify-between px-4 py-3 pt-safe bg-gradient-to-b from-black/80 to-transparent text-white shrink-0"
           >
-            <X className="w-6 h-6" />
-          </button>
-          <img
-            src={lightboxImageUrl}
-            alt="Attachment preview"
-            referrerPolicy="no-referrer"
-            className="max-h-[88vh] max-w-[92vw] rounded-2xl object-contain"
-          />
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                type="button"
+                onClick={() => setLightboxMedia(null)}
+                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center shrink-0"
+                aria-label="Close"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <div className="min-w-0">
+                <p className="text-sm font-bold truncate">
+                  {lightboxMedia.msg.sender_id === currentUser.id
+                    ? currentUser.language === 'bn'
+                      ? 'আপনি'
+                      : 'You'
+                    : lightboxMedia.msg.sender?.full_name || chatTitle}
+                </p>
+                <p className="text-[11px] text-white/70 font-mono-num">
+                  {new Date(lightboxMedia.msg.created_at).toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  const target = lightboxMedia.msg;
+                  setLightboxMedia(null);
+                  handleReplyToMessage(target);
+                }}
+                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+                title={t.reply}
+              >
+                <CornerUpLeft className="w-4.5 h-4.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = lightboxMedia.msg;
+                  setLightboxMedia(null);
+                  openForwardModal([target], []);
+                }}
+                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+                title={t.forward}
+              >
+                <CornerUpRight className="w-4.5 h-4.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleShareItems([lightboxMedia.msg], [])}
+                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+                title={currentUser.language === 'bn' ? 'শেয়ার' : 'Share'}
+              >
+                <Share2 className="w-4.5 h-4.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDownloadAttachment(lightboxMedia.att)}
+                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+                title={currentUser.language === 'bn' ? 'ডাউনলোড' : 'Download'}
+              >
+                <Download className="w-4.5 h-4.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => openDeleteModal([lightboxMedia.msg], [])}
+                className="w-9 h-9 rounded-full bg-red-500/20 hover:bg-red-500/40 text-red-300 flex items-center justify-center"
+                title={currentUser.language === 'bn' ? 'মুছুন' : 'Delete'}
+              >
+                <Trash2 className="w-4.5 h-4.5" />
+              </button>
+            </div>
+          </div>
+
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="flex-1 min-h-0 w-full flex items-center justify-center p-4"
+          >
+            <img
+              src={lightboxMedia.att.file_url}
+              alt={lightboxMedia.att.file_name}
+              referrerPolicy="no-referrer"
+              className="max-h-[82vh] max-w-[94vw] rounded-2xl object-contain"
+            />
+          </div>
         </div>
       )}
 

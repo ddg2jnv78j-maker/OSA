@@ -1119,6 +1119,107 @@ export async function sendMediaAttachmentMessage(params: {
   return finalMsg;
 }
 
+export async function forwardMessageToChat(params: {
+  sourceMessage: Message;
+  targetChatId: string;
+  senderId: string;
+}): Promise<Message> {
+  const { sourceMessage, targetChatId, senderId } = params;
+  const attachments = sourceMessage.attachments || [];
+
+  if (attachments.length === 0) {
+    return sendTextMessage({
+      chatId: targetChatId,
+      senderId,
+      content: sourceMessage.content,
+      forwardedFromId: sourceMessage.id,
+    });
+  }
+
+  const msgType = sourceMessage.message_type === 'system' ? 'text' : sourceMessage.message_type;
+  const cleanedText = (sourceMessage.content || '')
+    .replace(/^\[VIEW_ONCE\]\s*/i, '')
+    .trim();
+  const contentValue = cleanedText || attachments[0]?.file_name || 'Media';
+
+  const { data: msgData, error: msgErr } = await supabase
+    .from('messages')
+    .insert({
+      chat_id: targetChatId,
+      sender_id: senderId,
+      content: contentValue,
+      message_type: msgType,
+      forwarded_from_id: sourceMessage.id,
+      status: 'sent',
+    })
+    .select('*')
+    .single();
+
+  if (msgErr) throw msgErr;
+
+  const attRows = attachments.map((att) => ({
+    message_id: msgData.id,
+    chat_id: targetChatId,
+    uploader_id: senderId,
+    file_name: att.file_name,
+    file_url: att.file_url,
+    storage_path: att.storage_path,
+    file_type: att.file_type,
+    mime_type: att.mime_type,
+    file_size: att.file_size,
+  }));
+
+  const { error: attErr } = await supabase
+    .from('message_attachments')
+    .insert(attRows);
+
+  if (attErr) throw attErr;
+
+  const firstCat = attachments[0]?.file_type || msgType;
+  await supabase
+    .from('chats')
+    .update({
+      last_message_text: `[${String(firstCat).toUpperCase()}] ${contentValue}`.slice(0, 120),
+      last_message_at: new Date().toISOString(),
+    })
+    .eq('id', targetChatId);
+
+  const { data: fullMsg } = await supabase
+    .from('messages')
+    .select('*, sender:profiles(*), attachments:message_attachments(*)')
+    .eq('id', msgData.id)
+    .single();
+
+  const resolvedMsg = (fullMsg || {
+    ...msgData,
+    attachments: attRows as unknown as MessageAttachment[],
+  }) as Message;
+
+  const senderObj = Array.isArray(resolvedMsg.sender) ? resolvedMsg.sender[0] : resolvedMsg.sender;
+  const mediaBodyLabel =
+    firstCat === 'image'
+      ? 'Photo'
+      : firstCat === 'video'
+      ? 'Video'
+      : firstCat === 'audio'
+      ? 'Voice message'
+      : 'File';
+
+  dispatchWebPushNotification({
+    senderId,
+    senderName: senderObj?.full_name || undefined,
+    type: 'message',
+    title: senderObj?.full_name || 'OSA',
+    body: mediaBodyLabel,
+    chatId: targetChatId,
+    conversationId: targetChatId,
+    messageId: resolvedMsg.id,
+    messageType: msgType,
+  }).catch(() => {});
+
+  return resolvedMsg;
+}
+
 export async function markChatAsRead(chatId: string, currentUserId: string, sendReadReceipt = true): Promise<void> {
   await supabase
     .from('chat_members')
