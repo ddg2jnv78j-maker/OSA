@@ -659,17 +659,26 @@ export async function searchUsers(query: string, currentUserId: string): Promise
     .from('profiles')
     .select('*')
     .neq('id', currentUserId)
+    .order('is_online', { ascending: false })
+    .order('last_seen', { ascending: false, nullsFirst: false })
     .order('full_name', { ascending: true })
-    .limit(40);
+    .limit(120);
 
   if (clean.length > 0) {
-    req = req.or(`full_name.ilike.%${clean}%,email.ilike.%${clean}%,username.ilike.%${clean}%`);
+    req = req.or(`full_name.ilike.%${clean}%,email.ilike.%${clean}%,username.ilike.%${clean}%,about.ilike.%${clean}%`);
   }
 
   const { data, error } = await req;
   if (error) throw error;
 
-  return ((data || []) as Profile[]).filter((p) => !excludedIds.has(p.id));
+  const filtered = ((data || []) as Profile[]).filter((p) => !excludedIds.has(p.id));
+  return filtered.sort((a, b) => {
+    if (a.is_online !== b.is_online) return a.is_online ? -1 : 1;
+    const aTime = new Date(a.last_heartbeat_at || a.last_seen_at || a.last_seen || a.updated_at || 0).getTime();
+    const bTime = new Date(b.last_heartbeat_at || b.last_seen_at || b.last_seen || b.updated_at || 0).getTime();
+    if (bTime !== aTime) return bTime - aTime;
+    return (a.full_name || '').localeCompare(b.full_name || '');
+  });
 }
 
 export async function searchMessagesInChat(chatId: string, query: string): Promise<Message[]> {

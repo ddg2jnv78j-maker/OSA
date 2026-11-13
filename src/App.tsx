@@ -14,7 +14,9 @@ import {
   ShoppingBag,
   Sparkles,
   Users,
+  Video,
   WifiOff,
+  X,
 } from 'lucide-react';
 import { CallOverlay } from './components/CallOverlay';
 import { AppUpdateModal } from './components/AppUpdateModal';
@@ -408,9 +410,13 @@ export default function App() {
   const [resolvingSameChat, setResolvingSameChat] = useState<boolean>(
     INITIAL_DEEP_ACTION.isSameChatLaunch
   );
-  const [chatFilter, setChatFilter] = useState<'all' | 'direct' | 'group'>('all');
+  const [chatFilter, setChatFilter] = useState<'all' | 'direct' | 'group' | 'users'>('all');
   const [homeSearchQuery, setHomeSearchQuery] = useState('');
   const [directorySearchResults, setDirectorySearchResults] = useState<Profile[]>([]);
+  const [allDirectoryUsers, setAllDirectoryUsers] = useState<Profile[]>([]);
+  const [directoryPrivacyMap, setDirectoryPrivacyMap] = useState<Record<string, PrivacySettings>>({});
+  const [loadingDirectoryUsers, setLoadingDirectoryUsers] = useState(false);
+  const [directoryOnlineOnly, setDirectoryOnlineOnly] = useState(false);
 
   // Chat Lock State & Handler
   const [unlockedChatIds, setUnlockedChatIds] = useState<string[]>([]);
@@ -2229,26 +2235,45 @@ export default function App() {
     checkPendingIncomingCall,
   ]);
 
-  // Live user directory search when typing in the Home Search bar
+  // Live user directory search & full Users tab loader
   useEffect(() => {
-    if (!currentUser || !homeSearchQuery.trim()) {
+    if (!currentUser) {
+      setDirectorySearchResults([]);
+      setAllDirectoryUsers([]);
+      return;
+    }
+    const cleanQuery = homeSearchQuery.trim();
+    if (!cleanQuery && chatFilter !== 'users') {
       setDirectorySearchResults([]);
       return;
     }
     let active = true;
     const timer = window.setTimeout(async () => {
+      if (chatFilter === 'users') setLoadingDirectoryUsers(true);
       try {
-        const users = await searchUsers(homeSearchQuery, currentUser.id);
-        if (active) setDirectorySearchResults(users);
+        const users = await searchUsers(cleanQuery, currentUser.id);
+        if (!active) return;
+        if (cleanQuery) {
+          setDirectorySearchResults(users);
+        } else {
+          setDirectorySearchResults([]);
+        }
+        if (chatFilter === 'users') {
+          setAllDirectoryUsers(users);
+          const priv = await fetchPrivacyMapForUsers(users.map((u) => u.id));
+          if (active) setDirectoryPrivacyMap(priv);
+        }
       } catch {
         // Ignore
+      } finally {
+        if (active && chatFilter === 'users') setLoadingDirectoryUsers(false);
       }
-    }, 220);
+    }, 200);
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [homeSearchQuery, currentUser]);
+  }, [homeSearchQuery, currentUser, chatFilter]);
 
   // Initiate Outgoing WebRTC Audio or Video Call
   const handleStartCall = async (
@@ -2672,27 +2697,38 @@ export default function App() {
                     value={homeSearchQuery}
                     onChange={(e) => setHomeSearchQuery(e.target.value)}
                     placeholder={t.searchPlaceholder}
-                    className="w-full pl-10 pr-4 py-2.5 min-h-[44px] rounded-2xl bg-slate-100 dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="w-full pl-10 pr-10 py-2.5 min-h-[44px] rounded-2xl bg-slate-100 dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
                   />
+                  {homeSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setHomeSearchQuery('')}
+                      className="w-7 h-7 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-200 flex items-center justify-center absolute right-2.5 top-1/2 -translate-y-1/2"
+                      aria-label="Clear search"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
 
                 {/* Interactive Filter Controls */}
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+                  <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl overflow-x-auto">
                     {(
                       [
-                        { id: 'all', label: 'All' },
-                        { id: 'direct', label: 'Direct' },
+                        { id: 'all', label: language === 'bn' ? 'সব' : 'All' },
+                        { id: 'direct', label: language === 'bn' ? 'চ্যাট' : 'Direct' },
                         { id: 'group', label: t.groups },
+                        { id: 'users', label: language === 'bn' ? 'সব ইউজার' : 'Users' },
                       ] as const
                     ).map((f) => (
                       <button
                         key={f.id}
                         type="button"
                         onClick={() => setChatFilter(f.id)}
-                        className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                        className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
                           chatFilter === f.id
-                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                            ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
                             : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
                         }`}
                       >
@@ -2704,17 +2740,201 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setShowNewChatModal(true)}
-                    className="px-3.5 py-1.5 min-h-[36px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                    className="px-3 py-1.5 min-h-[36px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
                   >
                     <MessageSquarePlus className="w-3.5 h-3.5" />
-                    <span>{t.newChat}</span>
+                    <span className="hidden xs:inline">{t.newChat}</span>
                   </button>
                 </div>
               </div>
 
-              {/* Conversation List (Scrollable Middle Content) */}
+              {/* Conversation List or Users Directory (Scrollable Middle Content) */}
               <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain pb-6 divide-y divide-slate-100 dark:divide-slate-800/70">
-                {visibleChats.length === 0 && directorySearchResults.length === 0 ? (
+                {chatFilter === 'users' ? (() => {
+                  const isBn = language === 'bn';
+                  const enriched = allDirectoryUsers.map((u) => {
+                    const priv = directoryPrivacyMap[u.id];
+                    const hidePhoto = priv?.profile_photo_visibility === 'nobody';
+                    const showOnline = priv ? priv.online_status : true;
+                    const showAbout = priv?.about_visibility !== 'nobody';
+                    const showLastSeen = priv ? priv.last_seen_visibility !== 'nobody' : true;
+                    const trulyOnline = Boolean(showOnline && isProfileTrulyOnline(u));
+                    const lastSeen = !trulyOnline && showLastSeen
+                      ? formatLastSeenText(getProfileLastSeenIso(u), t, language)
+                      : null;
+                    return { u, hidePhoto, showOnline, showAbout, trulyOnline, lastSeen };
+                  });
+                  const onlineOnlyList = enriched.filter((e) => e.trulyOnline);
+                  const displayList = directoryOnlineOnly ? onlineOnlyList : enriched;
+
+                  return (
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
+                      <div className="px-4 py-3 bg-slate-50/80 dark:bg-slate-950/50 flex items-center justify-between gap-2">
+                        <div className="text-xs text-slate-600 dark:text-slate-300 font-semibold font-mono-num">
+                          {isBn
+                            ? `${onlineOnlyList.length} অনলাইন · ${enriched.length} ব্যবহারকারী`
+                            : `${onlineOnlyList.length} online · ${enriched.length} users`}
+                        </div>
+                        <div className="flex items-center gap-1 p-0.5 bg-slate-200/80 dark:bg-slate-800 rounded-lg">
+                          <button
+                            type="button"
+                            onClick={() => setDirectoryOnlineOnly(false)}
+                            className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors ${
+                              !directoryOnlineOnly
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs'
+                                : 'text-slate-500 dark:text-slate-400'
+                            }`}
+                          >
+                            {isBn ? 'সবাই' : 'All'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDirectoryOnlineOnly(true)}
+                            className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors ${
+                              directoryOnlineOnly
+                                ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-2xs'
+                                : 'text-slate-500 dark:text-slate-400'
+                            }`}
+                          >
+                            {isBn ? 'অনলাইন' : 'Online'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {onlineOnlyList.length > 0 && !directoryOnlineOnly && !homeSearchQuery.trim() && (
+                        <div className="px-4 py-3 bg-white dark:bg-slate-900">
+                          <p className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 mb-2">
+                            {isBn ? 'এখন অনলাইনে আছেন' : 'Active Now'}
+                          </p>
+                          <div className="flex items-center gap-3 overflow-x-auto pb-1">
+                            {onlineOnlyList.slice(0, 12).map(({ u, hidePhoto }) => (
+                              <button
+                                key={`home-rail-${u.id}`}
+                                type="button"
+                                onClick={async () => {
+                                  const cid = await openOrCreateDirectChat(currentUser.id, u.id);
+                                  await refreshChatsAndNotifications(currentUser.id);
+                                  setSelectedChatId(cid);
+                                }}
+                                className="flex flex-col items-center gap-1 w-14 shrink-0 active:scale-95 transition-transform"
+                              >
+                                <OSAAvatar
+                                  name={u.full_name}
+                                  avatarUrl={u.avatar_url}
+                                  size="md"
+                                  isOnline={true}
+                                  showOnlineStatus={true}
+                                  hidePhotoForPrivacy={hidePhoto}
+                                />
+                                <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 truncate w-full text-center">
+                                  {u.full_name.split(' ')[0]}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {loadingDirectoryUsers ? (
+                        <div className="p-4 space-y-3">
+                          {[1, 2, 3, 4].map((idx) => (
+                            <div key={idx} className="flex items-center gap-3 animate-pulse">
+                              <div className="w-11 h-11 rounded-full bg-slate-200 dark:bg-slate-800 shrink-0" />
+                              <div className="flex-1 space-y-2">
+                                <div className="w-32 h-3.5 rounded bg-slate-200 dark:bg-slate-800" />
+                                <div className="w-44 h-2.5 rounded bg-slate-100 dark:bg-slate-800/70" />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : displayList.length === 0 ? (
+                        <div className="py-12 px-6 text-center">
+                          <p className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-1">
+                            {directoryOnlineOnly
+                              ? isBn ? 'এই মুহূর্তে কেউ অনলাইনে নেই' : 'No users online right now'
+                              : isBn ? 'কোনো ব্যবহারকারী পাওয়া যায়নি' : 'No users found'}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            {isBn ? 'অন্য নাম লিখে সার্চ করুন অথবা "সবাই" দেখুন।' : 'Try a different search or view All users.'}
+                          </p>
+                        </div>
+                      ) : (
+                        displayList.map(({ u, hidePhoto, showOnline, showAbout, trulyOnline, lastSeen }) => (
+                          <div
+                            key={`dir-${u.id}`}
+                            onClick={async () => {
+                              const cid = await openOrCreateDirectChat(currentUser.id, u.id);
+                              await refreshChatsAndNotifications(currentUser.id);
+                              setSelectedChatId(cid);
+                            }}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={async (e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                const cid = await openOrCreateDirectChat(currentUser.id, u.id);
+                                await refreshChatsAndNotifications(currentUser.id);
+                                setSelectedChatId(cid);
+                              }
+                            }}
+                            className="w-full flex items-center gap-3 px-4 py-3 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer"
+                          >
+                            <OSAAvatar
+                              name={u.full_name}
+                              avatarUrl={u.avatar_url}
+                              size="md"
+                              isOnline={trulyOnline}
+                              showOnlineStatus={showOnline}
+                              hidePhotoForPrivacy={hidePhoto}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                                {u.full_name}
+                              </p>
+                              <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                                {trulyOnline ? (
+                                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold shrink-0">
+                                    {t.online}
+                                  </span>
+                                ) : lastSeen ? (
+                                  <span className="truncate shrink-0 max-w-[130px]">{lastSeen}</span>
+                                ) : null}
+                                {(trulyOnline || lastSeen) && (u.username || (showAbout && u.about)) && (
+                                  <span aria-hidden="true">·</span>
+                                )}
+                                <span className="truncate">
+                                  {showAbout && u.about
+                                    ? u.about
+                                    : u.username
+                                    ? `@${u.username}`
+                                    : u.email}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                onClick={() => handleStartCall(u, 'audio', null)}
+                                className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/70 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600 hover:text-white flex items-center justify-center active:scale-95 transition-all"
+                                title={t.audioCall}
+                              >
+                                <Phone className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleStartCall(u, 'video', null)}
+                                className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800/70 text-blue-600 dark:text-blue-400 hover:bg-blue-600 hover:text-white flex items-center justify-center active:scale-95 transition-all"
+                                title={t.videoCall}
+                              >
+                                <Video className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  );
+                })() : visibleChats.length === 0 && directorySearchResults.length === 0 ? (
                   <div className="py-16 px-6 text-center">
                     <div className="w-14 h-14 rounded-2xl bg-blue-600/10 text-blue-600 flex items-center justify-center mx-auto mb-3">
                       <MessageSquare className="w-7 h-7" />
@@ -2864,9 +3084,9 @@ export default function App() {
 
                     {/* Global Directory Search Results when searching */}
                     {homeSearchQuery.trim() && directorySearchResults.length > 0 && (
-                      <div className="p-3 bg-slate-50 dark:bg-slate-950">
-                        <p className="text-[11px] font-bold text-slate-400 uppercase px-2 mb-2">
-                          OSA Users Directory
+                      <div className="p-3 bg-slate-50 dark:bg-slate-950 space-y-1">
+                        <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 px-2 mb-1.5">
+                          {language === 'bn' ? 'OSA ইউজার ডিরেক্টরি' : 'OSA Users Directory'}
                         </p>
                         {directorySearchResults.map((u) => {
                           const userOnline = isProfileTrulyOnline(u);
@@ -2876,9 +3096,8 @@ export default function App() {
                             language
                           );
                           return (
-                            <button
+                            <div
                               key={u.id}
-                              type="button"
                               onClick={async () => {
                                 const cid = await openOrCreateDirectChat(
                                   currentUser.id,
@@ -2888,7 +3107,18 @@ export default function App() {
                                 setSelectedChatId(cid);
                                 setHomeSearchQuery('');
                               }}
-                              className="w-full flex items-center gap-3 p-2.5 rounded-2xl hover:bg-white dark:hover:bg-slate-900 text-left"
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={async (e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  const cid = await openOrCreateDirectChat(currentUser.id, u.id);
+                                  await refreshChatsAndNotifications(currentUser.id);
+                                  setSelectedChatId(cid);
+                                  setHomeSearchQuery('');
+                                }
+                              }}
+                              className="w-full flex items-center gap-3 p-2.5 rounded-2xl hover:bg-white dark:hover:bg-slate-900 text-left cursor-pointer transition-colors"
                             >
                               <OSAAvatar
                                 name={u.full_name}
@@ -2901,17 +3131,36 @@ export default function App() {
                                 <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
                                   {u.full_name}
                                 </p>
-                                <p className="text-[11px] text-slate-400 truncate">
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                                   {userOnline ? (
                                     <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                                      ● {t.online}
+                                      {t.online}
                                     </span>
                                   ) : (
                                     userLastSeen
                                   )}
+                                  {u.about ? ` · ${u.about}` : u.username ? ` · @${u.username}` : ''}
                                 </p>
                               </div>
-                            </button>
+                              <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartCall(u, 'audio', null)}
+                                  className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/70 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600 hover:text-white flex items-center justify-center"
+                                  title={t.audioCall}
+                                >
+                                  <Phone className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartCall(u, 'video', null)}
+                                  className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800/70 text-blue-600 dark:text-blue-400 hover:bg-blue-600 hover:text-white flex items-center justify-center"
+                                  title={t.videoCall}
+                                >
+                                  <Video className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
                           );
                         })}
                       </div>
@@ -3104,6 +3353,8 @@ export default function App() {
         isOpen={showNewChatModal}
         onClose={() => setShowNewChatModal(false)}
         currentUserId={currentUser.id}
+        language={language}
+        onStartCall={(peer, callType) => handleStartCall(peer, callType, null)}
         onChatOpened={async (chatId) => {
           await refreshChatsAndNotifications(currentUser.id);
           setSelectedChatId(chatId);

@@ -49,6 +49,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
   const [loading, setLoading] = useState(false);
   const [showNewCallModal, setShowNewCallModal] = useState(false);
   const [userQuery, setUserQuery] = useState('');
+  const [userListFilter, setUserListFilter] = useState<'all' | 'online'>('all');
   const [users, setUsers] = useState<Profile[]>([]);
   const [remoteCameraTargetPeer, setRemoteCameraTargetPeer] = useState<Profile | null>(null);
   const [locationTargetPeer, setLocationTargetPeer] = useState<Profile | null>(null);
@@ -474,19 +475,60 @@ export const CallsPage: React.FC<CallsPageProps> = ({
               </button>
             </div>
 
-            <div className="shrink-0 relative mb-3">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={userQuery}
-                onChange={(e) => setUserQuery(e.target.value)}
-                placeholder="Search OSA user to call..."
-                className="w-full pl-10 pr-4 py-2.5 min-h-[44px] rounded-xl bg-slate-100 dark:bg-slate-800 text-sm text-slate-900 dark:text-white"
-              />
+            <div className="shrink-0 space-y-2.5 mb-3">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={userQuery}
+                  onChange={(e) => setUserQuery(e.target.value)}
+                  placeholder={currentUser.language === 'bn' ? 'নাম, @ইউজারনেম বা ইমেইল দিয়ে খুঁজুন...' : 'Search OSA user to call...'}
+                  className="w-full pl-10 pr-10 py-2.5 min-h-[44px] rounded-xl bg-slate-100 dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+                {userQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setUserQuery('')}
+                    className="w-7 h-7 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-200 flex items-center justify-center absolute right-2 top-1/2 -translate-y-1/2"
+                    aria-label="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setUserListFilter('all')}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors ${
+                    userListFilter === 'all'
+                      ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {currentUser.language === 'bn' ? `সবাই (${users.length})` : `All (${users.length})`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserListFilter('online')}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors ${
+                    userListFilter === 'online'
+                      ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {currentUser.language === 'bn'
+                    ? `অনলাইন (${users.filter((x) => isProfileTrulyOnline(x)).length})`
+                    : `Online (${users.filter((x) => isProfileTrulyOnline(x)).length})`}
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
-              {users.map((u) => {
+              {users
+                .filter((u) => userListFilter === 'all' || isProfileTrulyOnline(u))
+                .map((u) => {
                 const uOnline = isProfileTrulyOnline(u);
                 const uLastSeen = formatLastSeenText(
                   getProfileLastSeenIso(u),
@@ -494,7 +536,7 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                   currentUser.language
                 );
                 return (
-                  <div key={u.id} className="flex items-center justify-between py-3">
+                  <div key={u.id} className="flex items-center justify-between gap-2 py-3">
                     <div className="flex items-center gap-3 min-w-0">
                       <OSAAvatar
                         name={u.full_name}
@@ -504,21 +546,22 @@ export const CallsPage: React.FC<CallsPageProps> = ({
                         showOnlineStatus
                       />
                       <div className="min-w-0">
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                        <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
                           {u.full_name}
                         </p>
-                        <p className="text-xs text-slate-400 truncate">
+                        <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                           {uOnline ? (
                             <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                              ● {t.online}
+                              {t.online}
                             </span>
                           ) : (
                             uLastSeen
                           )}
+                          {u.username ? ` · @${u.username}` : ''}
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
                       onClick={() => {
