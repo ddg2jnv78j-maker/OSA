@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { getCachedCustomRingtoneDataUrlSync } from './callerTuneStudioService';
 
 export type OSARingtoneId =
   | 'osa-ringtone-01'
@@ -414,6 +415,7 @@ export function startIncomingCallRingtone(
 
   const selectedId = getSelectedRingtoneId(userId);
   const item = getRingtoneById(selectedId);
+  const customStudioUrl = getCachedCustomRingtoneDataUrlSync();
 
   if (!sharedIncomingCallAudio) {
     sharedIncomingCallAudio = new Audio();
@@ -422,7 +424,7 @@ export function startIncomingCallRingtone(
 
   activeIncomingCallId = callId;
   sharedIncomingCallAudio.loop = true;
-  sharedIncomingCallAudio.src = item.url;
+  sharedIncomingCallAudio.src = customStudioUrl || item.url;
   sharedIncomingCallAudio.currentTime = 0;
 
   const playPromise = sharedIncomingCallAudio.play();

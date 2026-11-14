@@ -130,9 +130,9 @@ export const ExploreHubPage: React.FC<ExploreHubPageProps> = ({ currentUser, onO
     {
       id: 'caller_tune',
       title: 'নিজের নামের কলার টিউন স্টুডিও',
-      subtitle: 'এআই সাউন্ড দিয়ে নিজের নামে কাস্টম কলার টিউন ও মিউজিক্যাল ডায়লগ সেট করুন',
+      subtitle: 'ডিজিটাল সিন্থ মিউজিক, ভয়েস মিক্সার, মাইক রেকর্ড, লাইভ স্পেকট্রাম ও .WAV ডাউনলোড স্টুডিও',
       icon: Music,
-      badge: 'AI Voice',
+      badge: 'Digital Studio',
       category: 'ai',
       gradient: 'from-amber-500 to-orange-500',
       action: () => setShowCallerTune(true),
